@@ -929,7 +929,7 @@ int ui_mp_lobby_run(int my_id)
         else if (oi_my_race != UIOBJI_INVALID && oi == oi_my_race) { g_mp_cl_lobby_set(MP_LOBBY_F_RACE, lobby_next_free(&lob, my_id, my_race, RACE_NUM, true)); }
         else if (oi_my_flag != UIOBJI_INVALID && oi == oi_my_flag) { g_mp_cl_lobby_set(MP_LOBBY_F_BANNER, lobby_next_free(&lob, my_id, my_banner, BANNER_NUM, false)); }
         else if (oi_ready != UIOBJI_INVALID && oi == oi_ready) { g_mp_cl_lobby_set(MP_LOBBY_F_READY, my_ready ? 0 : 1); }
-        else if (is_host && oi_galaxy != UIOBJI_INVALID && oi == oi_galaxy) { g_mp_cl_lobby_set(MP_LOBBY_F_GALAXY, (lob.galaxy_size + 1) % GALAXY_SIZE_NUM); }
+        else if (is_host && oi_galaxy != UIOBJI_INVALID && oi == oi_galaxy) { g_mp_cl_lobby_set(MP_LOBBY_F_GALAXY, (lob.galaxy_size + 1) % GALAXY_SIZE_SEL_NUM); } /* 1oom-mp: hide Enormous/Galactic (larger-maps branch) */
         else if (is_host && oi_diff != UIOBJI_INVALID && oi == oi_diff) { g_mp_cl_lobby_set(MP_LOBBY_F_DIFFICULTY, (lob.difficulty + 1) % DIFFICULTY_NUM); }
         else if (is_host && oi_ai != UIOBJI_INVALID && oi == oi_ai) { int mx = MP_MAX_PLAYERS - lob.num_humans; g_mp_cl_lobby_set(MP_LOBBY_F_NUM_AI, (lob.num_ai >= mx) ? 0 : lob.num_ai + 1); }
         else { /* per-slot clicks: AI portrait cycles its race (host); team tag cycles team (own/host) */
