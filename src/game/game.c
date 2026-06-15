@@ -842,19 +842,28 @@ static struct battle_s s_mp_battle;
 /* client: pump events while blocked. During a battle, keep the arena on screen
    instead of the black "waiting" frame (the other player's turn would otherwise
    blank our battle view, then flip back). */
+/* keep the "another player is in combat" notice up for a short while even after the battle ends, so
+   a quick / auto-resolved fight isn't an imperceptible on/off flash. Counted in on_wait iterations
+   (~1ms each), so ~1500 ≈ 1.5s. */
+static int s_mp_combat_hold = 0;
 static void mp_if_on_wait(void *ctx, int reason) {
     (void)ctx;
     if (s_mp_battle_uictx) {
-        /* watching the other side's battle turn: render one interactive examine frame
+        /* I'm a participant watching the other side's turn: render one interactive examine frame
            (banner + examine-only cursor) from the last streamed battle state, instead of
            a passive black "waiting" screen. on_spectate keeps s_mp_battle fresh. */
         s_mp_battle.uictx = s_mp_battle_uictx;
         ui_mp_battle_spectate(&s_mp_battle);
-    } else if (s_mp_audience_uictx) {
-        ui_mp_wait(MP_WAIT_BATTLE); /* an audience UI is live between its relayed calls: keep its screen, just pump */
-    } else {
-        ui_mp_wait(reason);
+        return;
     }
+    if (reason == MP_WAIT_COMBAT) { s_mp_combat_hold = 1500; } /* another player just started/continued a battle */
+    if (s_mp_combat_hold > 0) {
+        --s_mp_combat_hold;
+        ui_mp_wait(MP_WAIT_COMBAT); /* show the combat notice (sticky; also takes priority over a stale audience screen) */
+        return;
+    }
+    if (s_mp_audience_uictx) { ui_mp_wait(MP_WAIT_BATTLE); return; } /* mid AI-audience: keep its screen, just pump */
+    ui_mp_wait(reason);
 }
 
 /* interactive combat: the client renders a battle from the server's streamed
