@@ -78,4 +78,9 @@ extern uint8_t game_aux_get_firing_param_y(const struct game_aux_s *gaux, uint8_
 struct game_s;
 extern void game_aux_start(struct game_aux_s *gaux, struct game_s *g);
 
+/* (re)compute the galaxy star-to-star distance table from current star positions.
+   Part of game_aux_start, but exposed so the MP client (which loads state without
+   game_aux_start) can build it after receiving the galaxy. */
+extern void game_aux_init_star_dist(struct game_aux_s *gaux, struct game_s *g);
+
 #endif

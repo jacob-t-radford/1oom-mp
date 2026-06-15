@@ -91,7 +91,7 @@ static void ui_cmd_view_display(const struct game_s *g, player_id_t api, uint32_
 
 static void ui_cmd_view_do(const struct game_s *g, player_id_t api, uint32_t filter, int rangemax, int distmax)
 {
-    uint8_t planet_i = g->planet_focus_i[api];
+    planet_id_t planet_i = g->planet_focus_i[api];
     const planet_t *p = &(g->planet[planet_i]);
     int num = 0, cx = p->x, cy = p->y;
     if (filter & UI_VIEW_FILTER_PLANET) {

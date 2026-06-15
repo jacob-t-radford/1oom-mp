@@ -278,7 +278,7 @@ void game_diplo_annoy(struct game_s *g, player_id_t p1, player_id_t p2, int n)
     e1->mood_peace[p2] -= n;
 }
 
-void game_diplo_battle_finish(struct game_s *g, int def, int att, int popdiff, uint32_t app_def, uint16_t biodamage, uint32_t app_att, uint8_t planet_i)
+void game_diplo_battle_finish(struct game_s *g, int def, int att, int popdiff, uint32_t app_def, uint16_t biodamage, uint32_t app_att, planet_id_t planet_i)
 {
     player_id_t claim, side_z, side_ai;
     uint32_t app_ai;

@@ -25,7 +25,7 @@ struct ui_sab_data_s {
 static int cmd_look_sab(struct game_s *g, int api, struct input_token_s *param, int num_param, void *var)
 {
     struct ui_sab_data_s *sabdata = var;
-    for (uint8_t i = 0; i < g->galaxy_stars; ++i) {
+    for (planet_id_t i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p = &(g->planet[i]);
         if (p->owner == sabdata->target) {
             ui_planet_look(g, api, i, true);
@@ -37,7 +37,7 @@ static int cmd_look_sab(struct game_s *g, int api, struct input_token_s *param, 
 static int cmd_sab(struct game_s *g, int api, struct input_token_s *param, int num_param, void *var)
 {
     struct ui_sab_data_s *sabdata = var;
-    uint8_t planet = 0;
+    planet_id_t planet = 0;
     ui_sabotage_t act = sabdata->act;
     player_id_t target = sabdata->target;
     if (act != UI_SABOTAGE_NONE) {
@@ -74,7 +74,7 @@ static const struct input_cmd_s * const cmdsptr_sab[2] = {
 
 /* -------------------------------------------------------------------------- */
 
-ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, uint8_t *planetptr)
+ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_id_t *planetptr)
 {
     struct ui_sab_data_s sabdata;
     sabdata.target = target;
@@ -97,7 +97,7 @@ ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, uint8_t
                 }
                 v = cmd->handle(g, spy, &ui_data.input.tok[1], ui_data.input.num - 1, var);
                 if ((v >= 0) && (cmd->handle == cmd_sab)) {
-                    uint8_t planet = UI_SPY_SAB_PLANET(v);
+                    planet_id_t planet = UI_SPY_SAB_PLANET(v);
                     ui_sabotage_t act = UI_SPY_SAB_ACT(v);
                     *planetptr = planet;
                     return act;
@@ -108,7 +108,7 @@ ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, uint8_t
     return UI_SABOTAGE_NONE;
 }
 
-int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, uint8_t planet, int snum)
+int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
 {
     const planet_t *p = &(g->planet[planet]);
     ui_switch_1(g, pi);

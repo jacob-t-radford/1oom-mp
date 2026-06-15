@@ -26,7 +26,7 @@ void game_turn_start_messages(struct game_s *g, player_id_t pi)
             }
         }
     }
-    for (uint8_t pli = 0; pli < g->galaxy_stars; ++pli) {
+    for (planet_id_t pli = 0; pli < g->galaxy_stars; ++pli) {
         planet_t *p = &(g->planet[pli]);
         if (BOOLVEC_IS1(p->unrefuel, pi)) {
             struct strbuild_s str = strbuild_init(buf, UI_STRBUF_SIZE);

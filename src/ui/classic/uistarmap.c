@@ -19,6 +19,7 @@
 #include "lbxfont.h"
 #include "lib.h"
 #include "log.h"
+#include "mouse.h"
 #include "rnd.h"
 #include "types.h"
 #include "uicursor.h"
@@ -35,15 +36,65 @@
 
 /* -------------------------------------------------------------------------- */
 
+/* --- 1oom-mp: modern click-and-drag panning of the galaxy map --- */
+static bool sm_drag_active = false;
+static bool sm_drag_panned = false;
+static int sm_drag_px = 0;
+static int sm_drag_py = 0;
+
+static void ui_starmap_drag_pan(struct starmap_data_s *d)
+{
+    const struct game_s *g = d->g;
+    bool lb = (mouse_buttons & MOUSE_BUTTON_MASK_LEFT) != 0;
+    /* galaxy map viewport in scaled screen coords (unscaled 6..222 x 6..178) */
+    int vx0 = 6 * ui_scale, vx1 = 222 * ui_scale;
+    int vy0 = 6 * ui_scale, vy1 = 178 * ui_scale;
+    bool over_map = (moouse_x >= vx0) && (moouse_x < vx1) && (moouse_y >= vy0) && (moouse_y < vy1);
+    if (lb && (sm_drag_active || over_map)) {
+        if (!sm_drag_active) {
+            sm_drag_active = true;
+            sm_drag_panned = false;
+            sm_drag_px = moouse_x;
+            sm_drag_py = moouse_y;
+        } else {
+            int div = 2 * starmap_scale;   /* screen px per galaxy unit at the current zoom */
+            if (div < 1) div = 1;
+            int gdx = (moouse_x - sm_drag_px) / div;
+            int gdy = (moouse_y - sm_drag_py) / div;
+            if (gdx || gdy) {
+                int nx = ui_data.starmap.x - gdx;
+                int ny = ui_data.starmap.y - gdy;
+                ui_starmap_clamp_xy(g, &nx, &ny);
+                ui_data.starmap.x = nx;
+                ui_data.starmap.x2 = nx;
+                ui_data.starmap.y = ny;
+                ui_data.starmap.y2 = ny;
+                sm_drag_px += gdx * div;   /* retain sub-galaxy-unit remainder */
+                sm_drag_py += gdy * div;
+                sm_drag_panned = true;
+            }
+        }
+    } else {
+        sm_drag_active = false;
+    }
+}
+
 static void ui_starmap_draw_cb1(void *vptr)
 {
     struct starmap_data_s *d = vptr;
+    ui_starmap_drag_pan(d);
     ui_starmap_draw_basic(d);
     if (d->g->gaux->flag_cheat_events) {
         ui_draw_text_overlay(0, 0, game_str_no_events);
     }
     if (d->g->gaux->flag_cheat_elections) {
         ui_draw_text_overlay(0, 10, game_str_no_elections);
+    }
+    /* 1oom-mp soft-ready: a banner while I'm locked in and waiting for the other players. */
+    if (ui_mp_turn_active && ui_mp_turn_active() && ui_mp_turn_is_ready && ui_mp_turn_is_ready()) {
+        ui_draw_filled_rect(40, 0, 279, 8, 0 /*black*/, ui_scale);
+        lbxfont_select(2, 0xd /*bright*/, 0, 0);
+        lbxfont_print_str_center(160, 1, "READY - WAITING FOR OTHER PLAYERS", UI_SCREEN_W, ui_scale);
     }
 }
 
@@ -268,11 +319,38 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
         uiobj_set_help_id((p->owner == active_player) ? 0 : 3);
         scrollmisc = 0;
         oi1 = uiobj_handle_input_cond();
+        /* 1oom-mp: a drag pans the map; swallow the click-recenter that
+           would otherwise fire on button release after a drag. */
+        if (sm_drag_panned && (oi1 == d.oi_scroll)) {
+            oi1 = 0;
+        }
+        sm_drag_panned = false;
+        /* 1oom-mp soft-ready: pump the net each frame while browsing. Once the server says
+           everyone is ready, leave the map; ui_game_turn then ends the turn for resolution. */
+        if (ui_mp_turn_active && ui_mp_turn_active() && ui_mp_turn_poll && ui_mp_turn_poll()) {
+            flag_done = true;
+            oi1 = 0;
+        }
+        /* 1oom-mp: a live human-to-human audience request arrived -> leave the map to handle it,
+           then ui_game_turn returns here (re-establishing the starmap callback). */
+        if (ui_mp_turn_active && ui_mp_turn_active() && ui_mp_diplo_pump(active_player)) {
+            ui_data.ui_main_loop_action = UI_MAIN_LOOP_MP_DIPLO;
+            flag_done = true;
+            oi1 = 0;
+        }
         oi2 = uiobj_at_cursor();
         ui_delay_prepare();
         ui_starmap_handle_scrollkeys(&d, oi1);
         if (ui_starmap_handle_oi_bottom_buttons(&d, oi1)) {
-            flag_done = true;
+            if (ui_mp_turn_active && ui_mp_turn_active() && (ui_data.ui_main_loop_action == UI_MAIN_LOOP_NEXT_TURN)) {
+                /* soft-ready: "Next Turn" locks in / unlocks my orders; stay on the map and
+                   keep browsing. (Leaving the map for an edit screen clears the lock — handled
+                   in ui_game_turn.) The turn resolves once every player is ready. */
+                ui_mp_turn_set_ready((ui_mp_turn_is_ready && ui_mp_turn_is_ready()) ? 0 : 1);
+                ui_data.ui_main_loop_action = UI_MAIN_LOOP_STARMAP;
+            } else {
+                flag_done = true;
+            }
             ui_sound_play_sfx_24();
         } else if (ui_starmap_handle_oi_misc(&d, oi1)) {
             ui_sound_play_sfx_24();
@@ -399,7 +477,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
                     lib_strcat(buf, game_str_adj_lock, sizeof(buf));
                     if (ui_dialog_yesno(g, active_player, buf, 50, 30, 0)) {
                         bool locked = p->slider_lock[i];
-                        for (uint8_t pi = 0; pi < g->galaxy_stars; ++pi) {
+                        for (planet_id_t pi = 0; pi < g->galaxy_stars; ++pi) {
                             if (g->planet[pi].owner == active_player) {
                                 g->planet[pi].slider_lock[i] = !locked;
                             }
@@ -415,7 +493,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
                     if (ui_dialog_yesno(g, active_player, buf, 50, 30, 0)) {
                         bool locked = p->slider_lock[i];
                         planet_special_t special = p->special;
-                        for (uint8_t pi = 0; pi < g->galaxy_stars; ++pi) {
+                        for (planet_id_t pi = 0; pi < g->galaxy_stars; ++pi) {
                             if ((g->planet[pi].owner == active_player) && g->planet[pi].special == special) {
                                 g->planet[pi].slider_lock[i] = !locked;
                             }
@@ -614,7 +692,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
                     lib_strcat(buf, game_str_adj_ratios, sizeof(buf));
                     button = ui_dialog_choose(g, active_player, buf, 50, 30, 0);
                     if (button) {
-                        for (uint8_t pi = 0; pi < g->galaxy_stars; ++pi) {
+                        for (planet_id_t pi = 0; pi < g->galaxy_stars; ++pi) {
                             if (g->planet[pi].owner == active_player) {
                                 game_planet_adjust_percent2(g, pi, i, game_num_tbl_tech_autoadj[button], true);
                             }
@@ -627,7 +705,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
                     lib_strcat(buf, game_str_adj_slider[i], sizeof(buf));
                     lib_strcat(buf, game_str_adj_max, sizeof(buf));
                     if (ui_dialog_yesno(g, active_player, buf, 50, 30, 0)) {
-                        for (uint8_t pi = 0; pi < g->galaxy_stars; ++pi) {
+                        for (planet_id_t pi = 0; pi < g->galaxy_stars; ++pi) {
                             if (g->planet[pi].owner == active_player) {
                                 game_planet_adjust_percent2(g, pi, i, 100, true);
                             }
@@ -728,7 +806,9 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
                 ui_cursor_setup_area(2, &ui_cursor_area_tbl[0]);
             }
             ui_draw_finish();
-            if (g->difficulty < DIFFICULTY_AVERAGE) {
+            /* the auto "Master's notes" tutorial popups (HELP.LBX). Off in MP (just noise, and
+               they'd pop on every client), and toggleable elsewhere via the autohelp option. */
+            if ((g->difficulty < DIFFICULTY_AVERAGE) && ui_autohelp_enabled && !ui_mp_active) {
                 ui_starmap_do_help(g, active_player);
             }
             game_rng_step(g);

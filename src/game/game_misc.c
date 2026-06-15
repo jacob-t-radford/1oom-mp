@@ -360,7 +360,7 @@ void game_update_within_range(struct game_s *g)
                 mindist1 = 0x2710;
                 mindist2 = 0x2710;
                 for (int j = 0; (j < tblplanet_num) && ((mindist1 > frange) || (mindist2 > srange)); ++j) {
-                    uint8_t planet_i2;
+                    planet_id_t planet_i2;
                     planet_i2 = tblplanet[j];
                     dist = g->gaux->star_dist[i][planet_i2];
                     SETMIN(mindist1, dist);
@@ -818,7 +818,7 @@ bool game_transport_dest_ok(const struct game_s *g, const planet_t *p, player_id
     }
 }
 
-bool game_reloc_dest_ok(const struct game_s *g, uint8_t planet_i, player_id_t pi)
+bool game_reloc_dest_ok(const struct game_s *g, planet_id_t planet_i, player_id_t pi)
 {
     return game_num_extended_reloc_range ? (g->planet[planet_i].within_frange[pi] == 1) : (g->planet[planet_i].owner == pi);
 }
@@ -907,7 +907,7 @@ void game_turn_soil_enrich(struct planet_s *p, int best_tform, bool advanced) {
 }
 
 void game_ship_build_everywhere(struct game_s *g, player_id_t owner, uint8_t ship_i) {
-    for (uint8_t i = 0; i < g->galaxy_stars; ++i) {
+    for (planet_id_t i = 0; i < g->galaxy_stars; ++i) {
         planet_t *p = &(g->planet[i]);
         if (p->owner == owner) {
             if (ship_i == BUILDSHIP_STARGATE) {
@@ -922,7 +922,7 @@ void game_ship_build_everywhere(struct game_s *g, player_id_t owner, uint8_t shi
 }
 
 void game_ship_replace_everywhere(struct game_s *g, player_id_t owner, uint8_t replace_i, uint8_t ship_i) {
-    for (uint8_t i = 0; i < g->galaxy_stars; ++i) {
+    for (planet_id_t i = 0; i < g->galaxy_stars; ++i) {
         planet_t *p = &(g->planet[i]);
         if (p->owner == owner && p->buildship == replace_i) {
             if (ship_i == BUILDSHIP_STARGATE) {

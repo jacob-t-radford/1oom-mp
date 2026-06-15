@@ -65,7 +65,7 @@ void ui_sound_play_sfx(int sfxi)
 {
 }
 
-void ui_landing(struct game_s *g, int pi, uint8_t planet_i)
+void ui_landing(struct game_s *g, int pi, planet_id_t planet_i)
 {
 }
 

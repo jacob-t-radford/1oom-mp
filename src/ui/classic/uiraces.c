@@ -249,7 +249,11 @@ int ui_races(struct game_s *g, player_id_t api)
     lbxgfx_apply_palette(d.gfx);
 
     game_update_production(g);
-    game_update_empire_contact(g);
+    /* MP: contact is server-authoritative + symmetric (game_update_empire_contact uses MAX of both
+       fuel ranges). Re-deriving it here on the client uses the client's own per-player fuel ranges,
+       which can diverge and make contact asymmetric (one player sees the other but not vice versa).
+       Trust the synced bits instead. */
+    if (!ui_mp_active) { game_update_empire_contact(g); }
 
     d.num = 0;
     for (player_id_t pi = PLAYER_0; pi < g->players; ++pi) {

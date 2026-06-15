@@ -10,9 +10,14 @@
 #include "game_ai.h"
 #include "game_aux.h"
 #include "game_misc.h"
+#include "game_mp_orders.h"
 #include "game_new.h"
 #include "game_num.h"
 #include "game_nump.h"
+#include "game_audience.h"
+#include "game_battle.h"
+#include "game_battle_human.h"
+#include "game_election.h"
 #include "game_end.h"
 #include "game_event.h"
 #include "game_save.h"
@@ -21,10 +26,13 @@
 #include "game_turn.h"
 #include "game_tech.h"
 #include "log.h"
+#include "mp.h"
+#include "net.h"
 #include "options.h"
 #include "rnd.h"
 #include "ui.h"
 #include "util.h"
+#include <stdio.h>
 
 /* -------------------------------------------------------------------------- */
 
@@ -53,6 +61,12 @@ bool game_opt_message_filter[FINISHED_NUM] = { false, false, false, false, false
 
 static struct game_s game;
 static struct game_aux_s game_aux;
+
+/* 1oom-mp: multiplayer entry options (set via -mphost PORT / -mpjoin HOST[:PORT]) */
+static int opt_mp_host_port = 0;
+static char *opt_mp_join = NULL;
+static int opt_mp_humans = 1; /* host: number of human clients to wait for (empires 0..N-1) */
+#define MP_DEFAULT_PORT 24444
 
 
 /* -------------------------------------------------------------------------- */
@@ -208,7 +222,7 @@ static int game_opt_do_new_seed(char **argv, void *var)
         game_opt_new.difficulty = v2;
         v2 = v % 10;
         v = v / 10;
-        if (v2 > GALAXY_SIZE_HUGE) {
+        if (v2 >= GALAXY_SIZE_NUM) {
             log_error("invalid galaxy size num %i\n", v2);
             return -1;
         }
@@ -429,6 +443,15 @@ const struct cmdline_options_s main_cmdline_options[] = {
                   "GSEED is a 32 bit galaxy seed or 0 for random\n  default 0\n"
                   "HUMANS is PLAYERnISHUMAN*(10^n), n=0..5\n  default 1 (player 1 is human, others AI)"
     },
+    { "-mphost", 1,
+      options_set_int_var, (void *)&opt_mp_host_port,
+      "PORT", "Host a multiplayer game (authoritative server) on PORT" },
+    { "-mpjoin", 1,
+      options_set_str_var, (void *)&opt_mp_join,
+      "HOST[:PORT]", "Join a multiplayer game as a client" },
+    { "-mphumans", 1,
+      options_set_int_var, (void *)&opt_mp_humans,
+      "N", "Multiplayer (host): number of human players to wait for (default 1; rest of -new empires are AI)" },
     { "-ngn", 2,
       game_opt_set_new_name, 0,
       "PLAYER NAME", "Set new game emperor name for player 1..6" },
@@ -486,7 +509,7 @@ static bool game_cfg_check_difficulty_value(void *val)
 static bool game_cfg_check_galaxy_size_value(void *val)
 {
     int v = (int)(intptr_t)val;
-    if (v > GALAXY_SIZE_HUGE) {
+    if (v >= GALAXY_SIZE_NUM) {
         log_error("invalid galaxy size num %i\n", v);
         return false;
     }
@@ -524,7 +547,7 @@ static bool game_cfg_check_new_game_opts(void *val)
     }
     v2 = v % 10;
     v = v / 10;
-    if (v2 > GALAXY_SIZE_HUGE) {
+    if (v2 >= GALAXY_SIZE_NUM) {
         log_error("invalid galaxy size num %i\n", v2);
         return false;
     }
@@ -719,12 +742,658 @@ int main_handle_option(const char *argv)
     return -1;
 }
 
+/* ----- 1oom-mp: server/client entry points (Phase A) ----- */
+/* The game is accessed by mp.c through these engine-adapter callbacks. GAME_DATA
+   over the wire is a save blob; advancing a turn is game_turn_process. */
+static int mp_if_serialize(void *ctx, uint8_t *buf, int buflen) { return game_save_blob_save((struct game_s *)ctx, buf, buflen); }
+static int mp_if_deserialize(void *ctx, const uint8_t *buf, int len) { return game_save_blob_load((struct game_s *)ctx, buf, len); }
+static int mp_if_advance(void *ctx) {
+    struct game_s *g = (struct game_s *)ctx;
+    if (getenv("MP_PINGTEST") && g_mp_decision_hook) {
+        static bool pinged = false;
+        if (!pinged) { /* MP-DBG: prove the decision channel round-trips (client returns req+1) */
+            uint8_t rq = 7, rsp = 0;
+            int r = g_mp_decision_hook(0, MP_DEC_PING, &rq, 1, &rsp, 1);
+            log_message("MP-DBG ping: sent 7 -> got %d (rlen=%d, expect 8)\n", rsp, r);
+            pinged = true;
+        }
+    }
+    /* apply colonize requests BEFORE the turn resolves so the new colony plays this turn */
+    game_mp_colonize_apply_pending(g);
+    struct game_end_s ge = game_turn_process(g);
+    if (getenv("MP_BIGRANGE")) { /* test: make every empire's ships reach anywhere, for quick combat */
+        for (player_id_t i = PLAYER_0; i < g->players; ++i) { g->eto[i].fuel_range = 30; }
+    }
+    if (getenv("MP_CONTACT")) { /* test: bump fuel range so everyone is in contact. The Races
+        screen recomputes contact by range (game_update_empire_contact), so forcing the contact
+        bit doesn't stick -- making empires genuinely in-range does. */
+        for (player_id_t i = PLAYER_0; i < g->players; ++i) { if (g->eto[i].fuel_range < 200) { g->eto[i].fuel_range = 200; } }
+    }
+    if (getenv("MP_AITALK")) { /* test: once, drive an audience with the AI for each human so the
+        relay is exercised deterministically (each human sees the AI leader + treaty options). */
+        static bool aitalk_done = false;
+        if (!aitalk_done) {
+            aitalk_done = true;
+            player_id_t ai = PLAYER_NONE;
+            for (player_id_t i = PLAYER_0; i < g->players; ++i) { if (IS_AI(g, i)) { ai = i; break; } }
+            if (ai != PLAYER_NONE) {
+                for (player_id_t h = PLAYER_0; h < g->players; ++h) {
+                    if (IS_HUMAN(g, h)) { game_audience(g, h, ai); }
+                }
+            }
+        }
+    }
+    /* apply diplomacy actions AFTER turn processing (it clears queued proposals) */
+    game_mp_diplo_apply_pending(g);
+    /* return >0 to tell mp_server_run the game has ended (someone won/lost) */
+    return ((ge.type == GAME_END_NONE) || (ge.type == GAME_END_FINAL_WAR)) ? 0 : 1;
+}
+static int mp_if_turn(void *ctx) { return ((struct game_s *)ctx)->year; }
+static int mp_if_maxblob(void *ctx) { return game_save_blob_maxlen((struct game_s *)ctx); }
+
+/* --- turn-movement playback: the server snapshots state at movement-start (via
+   game_mp_premove_hook), then streams it so clients replay game_turn_move_ships. --- */
+static uint8_t *s_mp_premove_buf = NULL;
+static int s_mp_premove_cap = 0;
+static int s_mp_premove_len = 0;
+
+/* server: called mid-resolution (from the null UI) when fleet movement begins */
+static void mp_premove_capture(struct game_s *g) {
+    if (s_mp_premove_buf) {
+        int n = game_save_blob_save(g, s_mp_premove_buf, s_mp_premove_cap);
+        s_mp_premove_len = (n > 0) ? n : 0;
+    }
+}
+
+/* server: hand the captured pre-movement snapshot to mp_server_run for streaming */
+static int mp_if_get_movement(void *ctx, uint8_t *buf, int buflen) {
+    (void)ctx;
+    int n = s_mp_premove_len;
+    s_mp_premove_len = 0; /* consume */
+    if (n <= 0 || n > buflen || !s_mp_premove_buf) { return 0; }
+    memcpy(buf, s_mp_premove_buf, n);
+    return n;
+}
+
+/* client: load the pre-movement state and replay the movement animation. The
+   authoritative GAME_DATA follows immediately and overwrites this transient state. */
+static void mp_if_play_movement(void *ctx, int player_id, const uint8_t *buf, int len) {
+    struct game_s *g = (struct game_s *)ctx;
+    if (game_save_blob_load(g, buf, len) != 0) { return; }
+    /* Animate from THIS client's perspective only: game_turn_move_ships runs one
+       animation pass per non-AI empire, so treat every other empire as AI for the
+       replay (the authoritative GAME_DATA load right after restores the real flags). */
+    for (player_id_t i = PLAYER_0; i < g->players; ++i) {
+        if (i == (player_id_t)player_id) { BOOLVEC_SET0(g->is_ai, i); } else { BOOLVEC_SET1(g->is_ai, i); }
+    }
+    game_turn_move_ships(g);
+}
+
+/* set by the combat dispatch while a battle UI is live on this client */
+static void *s_mp_battle_uictx = NULL;
+/* set while a relayed AI<->human audience UI is live on this client (so on_wait keeps its screen) */
+static void *s_mp_audience_uictx = NULL;
+static struct audience_s s_mp_audience; /* client's working copy of the relayed audience */
+/* the client's working copy of the streamed battle (declared here so mp_if_on_wait, below,
+   can render the spectate/examine view from it). battle_s isn't fully self-contained, so we
+   re-establish g + sprite pointers (read directly each draw) after every memcpy. */
+static struct battle_s s_mp_battle;
+
+/* client: pump events while blocked. During a battle, keep the arena on screen
+   instead of the black "waiting" frame (the other player's turn would otherwise
+   blank our battle view, then flip back). */
+static void mp_if_on_wait(void *ctx, int reason) {
+    (void)ctx;
+    if (s_mp_battle_uictx) {
+        /* watching the other side's battle turn: render one interactive examine frame
+           (banner + examine-only cursor) from the last streamed battle state, instead of
+           a passive black "waiting" screen. on_spectate keeps s_mp_battle fresh. */
+        s_mp_battle.uictx = s_mp_battle_uictx;
+        ui_mp_battle_spectate(&s_mp_battle);
+    } else if (s_mp_audience_uictx) {
+        ui_mp_wait(MP_WAIT_BATTLE); /* an audience UI is live between its relayed calls: keep its screen, just pump */
+    } else {
+        ui_mp_wait(reason);
+    }
+}
+
+/* interactive combat: the client renders a battle from the server's streamed
+   battle_s and drives the real battle UI. battle_s isn't fully self-contained, so we
+   re-establish g + sprite pointers (read directly each draw) after every memcpy. */
+
+static void mp_battle_fixup(struct game_s *g, struct battle_s *bt) {
+    bt->g = g;
+    for (int i = 0; (i <= bt->items_num) && (i < BATTLE_ITEM_MAX); ++i) {
+        struct battle_item_s *b = &bt->item[i];
+        /* the planet (a defending owned colony) is always item[0]; identify it by bt->planet_side,
+           NOT b->side -- the planet item's side is left at 0 (SIDE_L) by memset (game_battle_item_add
+           never sets it for the SIDE_NONE/planet case), so "b->side == SIDE_NONE" is never true for it
+           and the planet would otherwise be re-gfx'd as a ship (the colony-ship sprite). */
+        bool is_planet = (i == 0) && (bt->planet_side != SIDE_NONE);
+        b->gfx = is_planet ? ui_gfx_get_planet(b->look) : ui_gfx_get_ship(b->look);
+    }
+    for (int i = 0; (i < bt->num_rocks) && (i < BATTLE_ROCK_MAX); ++i) {
+        bt->rock[i].gfx = ui_gfx_get_rock((bt->rock[i].sx + bt->rock[i].sy) & 3); /* cosmetic */
+    }
+}
+
+/* client: answer a mid-resolution interactive decision the server is blocking on.
+   Dispatches by type to the matching real UI; returns the response byte length. */
+static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int req_len, uint8_t *resp, int resp_buflen) {
+    struct game_s *g = (struct game_s *)ctx;
+    switch (dtype) {
+        case MP_DEC_PING: /* synthetic round-trip self-test: return req[0]+1 */
+            if (resp_buflen >= 1) { resp[0] = (req_len > 0) ? (uint8_t)(req[0] + 1) : 0x42; return 1; }
+            return 0;
+        case MP_DEC_BOMB: { /* "bomb this planet?" -> the real bomb prompt */
+            if ((req_len < 8) || (resp_buflen < 1)) { return 0; }
+            int bpi = (req[0] << 8) | req[1];
+            planet_id_t bplanet = (planet_id_t)((req[2] << 8) | req[3]);
+            int pop_inbound = (int)(((uint32_t)req[4] << 24) | ((uint32_t)req[5] << 16) | ((uint32_t)req[6] << 8) | req[7]);
+            resp[0] = ui_bomb_ask(g, bpi, bplanet, pop_inbound) ? 1 : 0;
+            return 1;
+        }
+        case MP_DEC_SPY_STEAL: { /* which tech field to steal */
+            struct { int32_t spy, target; uint8_t flags; } q;
+            if ((req_len < (int)sizeof(q)) || (resp_buflen < (int)sizeof(int32_t))) { return 0; }
+            memcpy(&q, req, sizeof(q));
+            int32_t field = ui_spy_steal(g, q.spy, q.target, (uint8_t)q.flags);
+            memcpy(resp, &field, sizeof(field));
+            return (int)sizeof(field);
+        }
+        case MP_DEC_SPY_SABOTAGE: { /* what to sabotage + which planet */
+            struct { int32_t spy, target; } q;
+            struct { int32_t act; uint16_t planet; } rs;
+            if ((req_len < (int)sizeof(q)) || (resp_buflen < (int)sizeof(rs))) { return 0; }
+            memcpy(&q, req, sizeof(q));
+            planet_id_t planet = PLANET_NONE;
+            rs.act = (int32_t)ui_spy_sabotage_ask(g, q.spy, q.target, &planet);
+            rs.planet = (uint16_t)planet;
+            memcpy(resp, &rs, sizeof(rs));
+            return (int)sizeof(rs);
+        }
+        case MP_DEC_ELECTION_VOTE: { /* galactic council: who to vote for */
+            static char ebuf[256];
+            struct election_s el;
+            int32_t pi32, vote;
+            if (req_len < (int)(sizeof(struct election_s) + 4)) { return 0; }
+            memcpy(&el, req, sizeof(el));
+            memcpy(&pi32, req + sizeof(el), 4);
+            el.g = g; el.uictx = NULL; el.buf = ebuf; el.str = NULL;
+            vote = ui_election_vote(&el, pi32);
+            if (resp_buflen >= (int)sizeof(vote)) { memcpy(resp, &vote, sizeof(vote)); return (int)sizeof(vote); }
+            return 0;
+        }
+        case MP_DEC_ELECTION_ACCEPT: { /* galactic council: accept the elected leader? */
+            static char ebuf[256];
+            struct election_s el;
+            int32_t pi32;
+            if ((req_len < (int)(sizeof(struct election_s) + 4)) || (resp_buflen < 1)) { return 0; }
+            memcpy(&el, req, sizeof(el));
+            memcpy(&pi32, req + sizeof(el), 4);
+            el.g = g; el.uictx = NULL; el.buf = ebuf; el.str = NULL;
+            resp[0] = ui_election_accept(&el, pi32) ? 1 : 0;
+            return 1;
+        }
+        case MP_DEC_BATTLE_INIT: { /* set up the battle UI + run the autoresolve prompt */
+            if ((req_len < (int)sizeof(struct battle_s)) || (resp_buflen < 1)) { return 0; }
+            memcpy(&s_mp_battle, req, sizeof(s_mp_battle));
+            s_mp_battle.uictx = NULL;
+            mp_battle_fixup(g, &s_mp_battle);
+            resp[0] = (uint8_t)ui_battle_init(&s_mp_battle);
+            s_mp_battle_uictx = s_mp_battle.uictx; /* capture the UI ctx it allocated */
+            return 1;
+        }
+        case MP_DEC_BATTLE_TURN: { /* render + poll locally until the human picks one action */
+            ui_battle_action_t act;
+            if ((req_len < (int)sizeof(struct battle_s)) || (resp_buflen < 1)) { return 0; }
+            if (!s_mp_battle_uictx) { resp[0] = UI_BATTLE_ACT_AUTO; return 1; } /* no UI -> auto, don't crash */
+            memcpy(&s_mp_battle, req, sizeof(s_mp_battle));
+            mp_battle_fixup(g, &s_mp_battle);
+            s_mp_battle.uictx = s_mp_battle_uictx;
+            ui_battle_area_setup(&s_mp_battle); /* per-hex cursor (move/attack arrows) from bt->area */
+            ui_battle_draw_basic(&s_mp_battle); /* draw the current battle state */
+            do { /* poll until a real action. We MUST redraw every frame: uiobj_finish_frame() is
+                    the only thing that recomputes the hover cursor (the move/attack arrow) from
+                    bt->area for the current mouse position. Without a per-frame redraw the icon
+                    sticks to whatever hex was under the cursor on the first frame — ui_delay only
+                    repositions the same sprite, it never re-picks it. Mirrors the SP loop. */
+                ui_battle_turn_pre(&s_mp_battle);
+                act = ui_battle_turn(&s_mp_battle);
+                ui_battle_draw_basic_copy(&s_mp_battle);
+                ui_battle_turn_post(&s_mp_battle);
+            } while (act == UI_BATTLE_ACT_NONE);
+            resp[0] = (uint8_t)act;
+            return 1;
+        }
+        case MP_DEC_BATTLE_END: { /* tear down the battle UI */
+            uint8_t colony; int32_t winner;
+            if (req_len < (int)(sizeof(struct battle_s) + 5)) { return 0; }
+            memcpy(&s_mp_battle, req, sizeof(s_mp_battle));
+            colony = req[sizeof(struct battle_s)];
+            memcpy(&winner, req + sizeof(struct battle_s) + 1, 4);
+            mp_battle_fixup(g, &s_mp_battle);
+            s_mp_battle.uictx = s_mp_battle_uictx;
+            if (s_mp_battle_uictx) { ui_battle_shutdown(&s_mp_battle, colony != 0, winner); }
+            s_mp_battle_uictx = NULL; /* battle over; require a fresh INIT next time */
+            return 0;
+        }
+        case MP_DEC_AUDIENCE: { /* relayed AI<->human audience: run one ui_audience_* call locally */
+            if (req_len < (int)(2 + sizeof(struct audience_s))) { return 0; }
+            const uint8_t *p = req;
+            uint8_t subtype = *p++;
+            uint8_t ntpi = *p++;
+            memcpy(&s_mp_audience, p, sizeof(s_mp_audience)); p += sizeof(s_mp_audience);
+            s_mp_audience.g = g;
+            /* message text */
+            uint16_t blen; memcpy(&blen, p, 2); p += 2;
+            static char s_aud_buf[AUDIENCE_DIPLO_MSG_SIZE + 1];
+            if (blen) {
+                int n = (blen > AUDIENCE_DIPLO_MSG_SIZE) ? AUDIENCE_DIPLO_MSG_SIZE : blen;
+                memcpy(s_aud_buf, p, n); s_aud_buf[n] = '\0'; p += blen;
+                s_mp_audience.buf = s_aud_buf;
+            } else { s_mp_audience.buf = NULL; }
+            /* option strings */
+            uint8_t nstr = *p++;
+            static char s_aud_str[AUDIENCE_STRTBL_BUFSIZE + AUDIENCE_STR_MAX + 16];
+            int realn = (nstr > AUDIENCE_STR_MAX) ? AUDIENCE_STR_MAX : nstr;
+            int sp = 0;
+            for (int i = 0; i < nstr; ++i) {
+                uint16_t l; memcpy(&l, p, 2); p += 2;
+                if (i < AUDIENCE_STR_MAX) {
+                    int n = l; if (sp + n + 1 > (int)sizeof(s_aud_str)) { n = (int)sizeof(s_aud_str) - sp - 1; if (n < 0) { n = 0; } }
+                    memcpy(s_aud_str + sp, p, n); s_aud_str[sp + n] = '\0';
+                    s_mp_audience.strtbl[i] = &s_aud_str[sp];
+                    sp += n + 1;
+                }
+                p += l;
+            }
+            s_mp_audience.strtbl[realn] = NULL;
+            /* condition table (which options are enabled) */
+            uint8_t has_cond = *p++;
+            static bool s_aud_cond[AUDIENCE_STR_MAX];
+            if (has_cond) {
+                for (int i = 0; i < nstr; ++i) { bool c = (*p++) != 0; if (i < AUDIENCE_STR_MAX) { s_aud_cond[i] = c; } }
+                s_mp_audience.condtbl = s_aud_cond;
+            } else { s_mp_audience.condtbl = NULL; }
+            /* the uictx is a static set up by ui_audience_start; preserve it across the calls */
+            if (subtype != MP_AUD_START) { s_mp_audience.uictx = s_mp_audience_uictx; }
+            int16_t result = 0; bool is_ask = false;
+            switch (subtype) {
+                case MP_AUD_START:   ui_audience_start(&s_mp_audience); s_mp_audience_uictx = s_mp_audience.uictx; break;
+                case MP_AUD_SHOW1:   ui_audience_show1(&s_mp_audience); break;
+                case MP_AUD_SHOW2:   ui_audience_show2(&s_mp_audience); break;
+                case MP_AUD_SHOW3:   ui_audience_show3(&s_mp_audience); break;
+                case MP_AUD_ASK2A:   result = ui_audience_ask2a(&s_mp_audience); is_ask = true; break;
+                case MP_AUD_ASK2B:   result = ui_audience_ask2b(&s_mp_audience); is_ask = true; break;
+                case MP_AUD_ASK3:    result = ui_audience_ask3(&s_mp_audience); is_ask = true; break;
+                case MP_AUD_ASK4:    result = ui_audience_ask4(&s_mp_audience); is_ask = true; break;
+                case MP_AUD_NEWTECH: ui_audience_newtech(&s_mp_audience, ntpi); break;
+                case MP_AUD_END:     ui_audience_end(&s_mp_audience); s_mp_audience_uictx = NULL; break;
+                default: break;
+            }
+            if (is_ask && (resp_buflen >= 2)) { memcpy(resp, &result, 2); return 2; }
+            return 0;
+        }
+        default:
+            return 0; /* unknown -> no answer; server falls back to its default */
+    }
+}
+
+/* client: a battle update to watch (the other side is acting) — refresh the cached battle
+   state; the interactive render happens in mp_if_on_wait between messages, so a burst of
+   updates just lands the latest frame instead of blocking the message pump on each one. */
+/* server: g_mp_battle_move_hook impl — relay a ship's move destination to every human in the battle
+   (they glide the ship). Reuses the spectate channel; a 7-byte MOVE event, not a battle_s snapshot. */
+static void mp_battle_move_relay(struct battle_s *bt, int itemi, int sx, int sy) {
+    if (!g_mp_spectate_hook) { return; }
+    uint8_t b[7];
+    b[0] = UI_MP_SPEC_MOVE;
+    b[1] = (uint8_t)(itemi & 0xff); b[2] = (uint8_t)((itemi >> 8) & 0xff);
+    b[3] = (uint8_t)(sx & 0xff);    b[4] = (uint8_t)((sx >> 8) & 0xff);
+    b[5] = (uint8_t)(sy & 0xff);    b[6] = (uint8_t)((sy >> 8) & 0xff);
+    for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
+        if (bt->s[side].flag_human) { g_mp_spectate_hook(bt->s[side].party, b, 7); }
+    }
+}
+
+static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
+    struct game_s *g = (struct game_s *)ctx;
+    if (!s_mp_battle_uictx) { return; }
+    if (len == (int)sizeof(struct battle_s)) {
+        /* a full snapshot: refresh the spectator's battle (the wait loop redraws it) */
+        memcpy(&s_mp_battle, data, sizeof(s_mp_battle));
+        mp_battle_fixup(g, &s_mp_battle);
+        s_mp_battle.uictx = s_mp_battle_uictx;
+        return;
+    }
+    /* otherwise a small animation event: replay the attack on the current battle so the spectator
+       sees the beam/bomb/etc. fire, not just the before/after states ([u8 kind] + int16 args). */
+    if (len < 1) { return; }
+    s_mp_battle.uictx = s_mp_battle_uictx;
+    {
+        int a[8];
+        int n = (len - 1) / 2;
+        if (n > 8) { n = 8; }
+        for (int i = 0; i < n; ++i) { a[i] = (int16_t)(data[1 + i * 2] | (data[2 + i * 2] << 8)); }
+        switch (data[0]) {
+            case UI_MP_SPEC_BEAM:      if (n >= 3) { ui_battle_draw_beam_attack(&s_mp_battle, a[0], a[1], a[2]); } break;
+            case UI_MP_SPEC_BOMB:      if (n >= 3) { ui_battle_draw_bomb_attack(&s_mp_battle, a[0], a[1], (ui_battle_bomb_t)a[2]); } break;
+            case UI_MP_SPEC_STASIS:    if (n >= 2) { ui_battle_draw_stasis(&s_mp_battle, a[0], a[1]); } break;
+            case UI_MP_SPEC_STREAM1:   if (n >= 2) { ui_battle_draw_stream1(&s_mp_battle, a[0], a[1]); } break;
+            case UI_MP_SPEC_STREAM2:   if (n >= 2) { ui_battle_draw_stream2(&s_mp_battle, a[0], a[1]); } break;
+            case UI_MP_SPEC_BLACKHOLE: if (n >= 2) { ui_battle_draw_blackhole(&s_mp_battle, a[0], a[1]); } break;
+            case UI_MP_SPEC_TECHNULL:  if (n >= 2) { ui_battle_draw_technull(&s_mp_battle, a[0], a[1]); } break;
+            case UI_MP_SPEC_REPULSE:   if (n >= 4) { ui_battle_draw_repulse(&s_mp_battle, a[0], a[1], a[2], a[3]); } break;
+            case UI_MP_SPEC_RETREAT:   if (n >= 1) { s_mp_battle.cur_item = a[0]; ui_battle_draw_retreat(&s_mp_battle); } break;
+            case UI_MP_SPEC_MOVE:      if (n >= 3) { ui_mp_battle_glide(&s_mp_battle, a[0], a[1], a[2]); } break;
+            case UI_MP_SPEC_DAMAGE:    if (n >= 5) { ui_battle_draw_damage(&s_mp_battle, a[0], a[1], a[2], (uint32_t)(uint16_t)a[3] | ((uint32_t)(uint16_t)a[4] << 16)); } break;
+            default: break;
+        }
+    }
+}
+
+/* server: apply a client's submitted production orders to its empire */
+static int mp_if_apply_orders(void *ctx, int player_id, const uint8_t *buf, int len) {
+    return game_mp_apply_orders((struct game_s *)ctx, (player_id_t)player_id, buf, len);
+}
+
+/* client: prepare a freshly-received state for display/play (recompute derived
+   values; one-time UI setup on the first load). */
+static void mp_if_on_state_loaded(void *ctx, int first) {
+    struct game_s *g = (struct game_s *)ctx;
+    if (first) {
+        /* The client never ran game_aux_start, so the galaxy distance table is empty.
+           Build it from the just-loaded star positions BEFORE game_start recomputes
+           visibility — otherwise star_dist=0 makes every star read as in scanner range
+           (revealing all empires' colonies). */
+        game_aux_init_star_dist(g->gaux, g);
+        game_start(g);
+        ui_game_start(g);
+    } else {
+        /* Per-turn display refresh: recompute derived values from the server's
+           authoritative state, but do NOT re-run the load-time slider auto-adjust
+           (game_update_eco_on_waste) — the server already resolved the sliders, so
+           we show them exactly as broadcast instead of re-adjusting them here. */
+        game_update_production(g);
+        game_update_tech_util(g);
+        for (player_id_t i = PLAYER_0; i < g->players; ++i) { game_update_seen_by_orbit(g, i); }
+        game_update_within_range(g);
+        game_update_visibility(g);
+        game_update_have_reserve_fuel(g);
+    }
+    if (getenv("MP_CONTACT")) { /* test: keep everyone in contact. The per-load range re-derive
+        (game_update_tech_util) resets fuel_range, which clears contact in the Races screen; bump
+        it back up and recompute contact so the other empires stay on the diplomacy page. */
+        for (player_id_t i = PLAYER_0; i < g->players; ++i) { g->eto[i].fuel_range = 200; }
+        game_update_empire_contact(g);
+    }
+}
+
+/* ---- soft-ready turn UI hooks (declared in ui.h, called by the starmap). Active only while a
+   networked planning phase runs, i.e. while mp_client_run has wired g_mp_cl_poll.
+
+   Model: "Next Turn" locks me in -- it submits my current orders and marks me ready. I keep
+   playing; any change to my orders is re-submitted automatically, so the state at resolution
+   time is what counts. The turn resolves once everyone is ready. To take more time on a bigger
+   change, I un-ready myself by hitting Next Turn again (toggle). ---- */
+static int s_mp_my_pid = -1;            /* my empire id this turn (for serializing orders) */
+static bool s_mp_ready = false;         /* am I locked in this turn? */
+static uint8_t *s_mp_orders_buf = NULL; /* the orders I last submitted (baseline for change detect) */
+static uint8_t *s_mp_orders_tmp = NULL; /* scratch: current orders, to compare against the baseline */
+static int s_mp_orders_cap = 0;
+static int s_mp_orders_len = 0;
+
+/* serialize my current orders, send them with the given ready flag, and remember them. */
+static void mp_submit_orders(bool ready) {
+    if (!s_mp_orders_buf) {
+        s_mp_orders_cap = game_save_blob_maxlen(&game);
+        s_mp_orders_buf = (uint8_t *)malloc(s_mp_orders_cap);
+    }
+    int olen = 0;
+    if (s_mp_orders_buf && (s_mp_my_pid >= 0)) {
+        olen = game_mp_write_orders(&game, (player_id_t)s_mp_my_pid, s_mp_orders_buf, s_mp_orders_cap);
+        if (olen < 0) { olen = 0; }
+    }
+    s_mp_orders_len = olen;
+    s_mp_ready = ready;
+    if (g_mp_cl_send_ready) { g_mp_cl_send_ready(ready ? 1 : 0, s_mp_orders_buf, olen); }
+}
+
+/* true if my orders now differ from the snapshot I last submitted */
+static bool mp_orders_changed(void) {
+    if (!s_mp_orders_buf || (s_mp_orders_cap <= 0) || (s_mp_my_pid < 0)) { return false; }
+    if (!s_mp_orders_tmp) { s_mp_orders_tmp = (uint8_t *)malloc(s_mp_orders_cap); }
+    if (!s_mp_orders_tmp) { return false; }
+    int n = game_mp_write_orders(&game, (player_id_t)s_mp_my_pid, s_mp_orders_tmp, s_mp_orders_cap);
+    if (n < 0) { n = 0; }
+    if (n != s_mp_orders_len) { return true; }
+    return memcmp(s_mp_orders_tmp, s_mp_orders_buf, (size_t)n) != 0;
+}
+
+static bool mp_turn_active_impl(void) { return g_mp_cl_poll != NULL; }
+static bool mp_turn_is_ready_impl(void) { return s_mp_ready; }
+/* "Next Turn": toggle my ready lock (submitting my current orders when I lock in). */
+static void mp_turn_set_ready_impl(int ready) { mp_submit_orders(ready != 0); }
+/* pump the socket once; while locked in, re-submit my orders if they changed (so the latest
+   state resolves). Returns true once the server signalled resolution (planning is over). */
+static bool mp_turn_poll_impl(void) {
+    if (s_mp_ready && mp_orders_changed()) { mp_submit_orders(true); }
+    return g_mp_cl_poll ? (g_mp_cl_poll() != 0) : false;
+}
+
+bool (*ui_mp_turn_active)(void) = mp_turn_active_impl;
+void (*ui_mp_turn_set_ready)(int ready) = mp_turn_set_ready_impl;
+bool (*ui_mp_turn_is_ready)(void) = mp_turn_is_ready_impl;
+bool (*ui_mp_turn_poll)(void) = mp_turn_poll_impl;
+bool ui_mp_active = false; /* true while this process is a networked client (set in game_mp_join) */
+bool game_mp_is_server = false; /* true while this process is the headless MP server (set in game_mp_host) */
+
+/* client: the human plays their empire's turn through the real game UI, then we
+   serialize their orders. Combat/resolution happen on the server, not here. */
+static int mp_if_write_orders(void *ctx, int player_id, uint8_t *buf, int buflen) {
+    struct game_s *g = (struct game_s *)ctx;
+    s_mp_my_pid = player_id;   /* soft-ready: who I am, for the Ready-submit hook */
+    s_mp_ready = false;        /* a fresh turn starts un-readied */
+    game_mp_orders_reset();    /* clear last turn's queued diplo/colonize actions before this turn re-queues */
+    if (getenv("MP_AUTOTECH")) {
+        /* MP-DBG: pour everything into TECH (unlocked) to reproduce the slider issue */
+        for (int i = 0; i < g->galaxy_stars; ++i) {
+            planet_t *p = &g->planet[i];
+            if (p->owner != (player_id_t)player_id) { continue; }
+            for (int j = 0; j < PLANET_SLIDER_NUM; ++j) { p->slider[j] = 0; p->slider_lock[j] = 0; }
+            p->slider[PLANET_SLIDER_TECH] = 100;
+        }
+    } else {
+        int load_game_i = -1;
+        ui_game_turn(g, &load_game_i, player_id);
+    }
+    /* MP-DBG diplomacy test hooks (env-gated): exercise the action path + round-trip. */
+    if (getenv("MP_AUTOWAR") && (player_id == 0)) {
+        static bool warred = false;
+        if (!warred && g->players > 1) { game_mp_diplo_record(PLAYER_0, (player_id_t)1, MP_DIPLO_DECLARE_WAR, 0); warred = true; }
+    }
+    if (getenv("MP_AUTONAP")) {
+        if (player_id == 0) {
+            static bool proposed = false;
+            if (!proposed && g->players > 1) { game_mp_diplo_record(PLAYER_0, (player_id_t)1, MP_DIPLO_PROPOSE_NAP, 0); proposed = true; }
+        }
+        /* any player auto-accepts a pending human-to-human proposal (simulates the UI) */
+        for (player_id_t j = PLAYER_0; j < g->players; ++j) {
+            if ((j != (player_id_t)player_id) && (g->eto[player_id].diplo_type[j] == MP_DIPLO_PROPOSAL_MARK)) {
+                game_mp_diplo_record((player_id_t)player_id, j, MP_DIPLO_ACCEPT, (uint8_t)g->eto[player_id].diplo_val[j]);
+            }
+        }
+    }
+    if (getenv("MP_AUTOWAR") || getenv("MP_AUTONAP")) {
+        player_id_t other = (player_id == 0) ? 1 : 0;
+        if (other < g->players) { log_message("MP-DBG p%d: treaty[p%d]=%d diplo_type=%d\n", player_id, other, g->eto[player_id].treaty[other], g->eto[player_id].diplo_type[other]); }
+    }
+    return game_mp_write_orders(g, (player_id_t)player_id, buf, buflen);
+}
+
+static int mp_if_setup_game(void *ctx, const struct mp_lobby_s *lobby);
+static int mp_if_run_lobby(void *ctx, int my_id);
+
+static mp_game_iface_t mp_make_iface(void) {
+    mp_game_iface_t gi;
+    gi.ctx = &game;
+    gi.serialize = mp_if_serialize;
+    gi.deserialize = mp_if_deserialize;
+    gi.advance_turn = mp_if_advance;
+    gi.turn_number = mp_if_turn;
+    gi.max_blob_len = mp_if_maxblob;
+    gi.write_orders = mp_if_write_orders;
+    gi.apply_orders = mp_if_apply_orders;
+    gi.on_state_loaded = mp_if_on_state_loaded;
+    gi.get_movement = mp_if_get_movement;
+    gi.play_movement = mp_if_play_movement;
+    gi.on_wait = mp_if_on_wait;
+    gi.handle_decision = mp_if_handle_decision;
+    gi.on_spectate = mp_if_on_spectate;
+    gi.run_lobby = mp_if_run_lobby;   /* client: interactive pre-game lobby */
+    gi.setup_game = mp_if_setup_game; /* server: build the game from the final lobby */
+    return gi;
+}
+
+/* new-game options captured at host start, so the game can be (re)created from the lobby picks */
+static struct game_new_options_s s_mp_opts;
+
+/* server: once the lobby is settled, (re)create the game from it -- player count (humans + AI),
+   galaxy size, and each human's chosen race + banner. */
+static int mp_if_setup_game(void *ctx, const struct mp_lobby_s *lobby) {
+    (void)ctx;
+    int humans = lobby->num_humans;
+    int total = humans + lobby->num_ai;
+    if (total < 1) { total = 1; }
+    if (total > PLAYER_NUM) { total = PLAYER_NUM; }
+    s_mp_opts.players = (uint32_t)total;
+    if (lobby->galaxy_size < GALAXY_SIZE_NUM) { s_mp_opts.galaxy_size = (galaxy_size_t)lobby->galaxy_size; }
+    if (lobby->difficulty < DIFFICULTY_NUM) { s_mp_opts.difficulty = (difficulty_t)lobby->difficulty; }
+    /* humans fill empires 0..humans-1 (mp_server_run maps client i -> empire i) with their picks;
+       the remaining empires are AI keeping the host defaults. */
+    for (int i = 0; i < total; ++i) {
+        bool is_ai = (i >= humans);
+        s_mp_opts.pdata[i].is_ai = is_ai;
+        /* race applies to humans and to any AI slot the host chose (unset AI slots keep the default = random) */
+        if (lobby->slot[i].race < RACE_NUM) { s_mp_opts.pdata[i].race = (race_t)lobby->slot[i].race; }
+        if (!is_ai && (lobby->slot[i].banner < BANNER_NUM)) { s_mp_opts.pdata[i].banner = (banner_t)lobby->slot[i].banner; }
+    }
+    /* give every empire a distinct banner (a human's pick may collide with an AI default). */
+    {
+        bool used[BANNER_NUM]; for (int k = 0; k < BANNER_NUM; ++k) { used[k] = false; }
+        for (int i = 0; i < total; ++i) {
+            int b = s_mp_opts.pdata[i].banner;
+            if (b < 0 || b >= BANNER_NUM || used[b]) {
+                for (int k = 0; k < BANNER_NUM; ++k) { if (!used[k]) { b = k; break; } }
+            }
+            s_mp_opts.pdata[i].banner = (banner_t)b;
+            if (b >= 0 && b < BANNER_NUM) { used[b] = true; }
+        }
+    }
+    game_new(&game, &game_aux, &s_mp_opts);
+    game_aux_start(&game_aux, &game);
+    game_start(&game);
+    /* teams: record each empire's team, and start same-team empires as met + allied (have_met=1 keeps
+       game_turn_update_have_met from resetting the treaty). The team-aware win check reads mp_team. */
+    for (int i = 0; i < total; ++i) { game.mp_team[i] = lobby->slot[i].team; }
+    for (int i = 0; i < total; ++i) {
+        for (int j = i + 1; j < total; ++j) {
+            if ((lobby->slot[i].team != 0) && (lobby->slot[i].team == lobby->slot[j].team)) {
+                game.eto[i].treaty[j] = TREATY_ALLIANCE; game.eto[j].treaty[i] = TREATY_ALLIANCE;
+                game.eto[i].have_met[j] = 1; game.eto[j].have_met[i] = 1;
+                BOOLVEC_SET1(game.eto[i].contact, j); BOOLVEC_SET1(game.eto[j].contact, i);
+            }
+        }
+    }
+    log_message("MP: game ready -- %d empires (%d human, %d AI), %d stars\n", game.players, humans, total - humans, game.galaxy_stars);
+    return 0;
+}
+
+/* client: run the interactive pre-game lobby (loops until the game starts). */
+static int mp_if_run_lobby(void *ctx, int my_id) {
+    (void)ctx;
+    return ui_mp_lobby_run(my_id);
+}
+
+static int game_mp_host(void) {
+    game_mp_is_server = true; /* keep human newtech lists in the synced state (see game_turn.c) */
+    /* honor -new (galaxy size, races, empire count, difficulty); GAME_NEW_OPTS_DEFAULT otherwise */
+    struct game_new_options_s opts = game_opt_new;
+    int humans = opt_mp_humans;
+    if (humans < 1) { humans = 1; }
+    if (humans > PLAYER_NUM) { humans = PLAYER_NUM; }
+    if (opts.players < (uint32_t)humans) { opts.players = (uint32_t)humans; }
+    /* the connecting clients fill the first `humans` empires; the rest are AI.
+       (mp_server_run assigns client i -> empire i, so humans must be contiguous 0..N-1.) */
+    for (int i = 0; i < (int)opts.players; ++i) { opts.pdata[i].is_ai = (i >= humans); }
+    if (getenv("MP_BIGRANGE")) { opts.homeworlds.num_fighters = 4; } /* test: start with warships for quick combat */
+    s_mp_opts = opts; /* keep a copy so the lobby can re-create the game with the chosen races */
+    if (game_aux_init(&game_aux, &game)) { return 1; }
+    /* 1oom-mp: make slider locks actually hold (default-off in vanilla), so a player
+       can pin a slider and the per-turn ECO/waste auto-balance won't override it. */
+    game_num_slider_respects_locks = true;
+    game_new(&game, &game_aux, &opts);
+    /* Empires 0..humans-1 are the human clients; the rest run as AI on the server.
+       At least one human must stay live or game_turn_check_end ends the game. */
+    game_aux_start(&game_aux, &game);
+    game_start(&game);      /* sets game_ai dispatch + per-empire derived values (eco/tech/production) */
+    /* MP_CONTACT keeps everyone in contact by bumping fuel range each turn in mp_if_advance;
+       (the client re-derives fuel range on the first state load, so it takes effect from turn 2). */
+    ui_game_start(&game);
+    /* arm turn-movement playback: snapshot the pre-movement state each turn so the
+       client can animate fleets moving (see mp_premove_capture / mp_if_get_movement). */
+    s_mp_premove_cap = game_save_blob_maxlen(&game);
+    s_mp_premove_buf = (uint8_t *)malloc(s_mp_premove_cap);
+    game_mp_premove_hook = s_mp_premove_buf ? mp_premove_capture : NULL;
+    g_mp_battle_move_hook = mp_battle_move_relay; /* server: relay in-combat ship moves to spectators */
+    log_message("MP: hosting on port %d, %d empires (%d human, %d AI), %d stars\n", opt_mp_host_port, game.players, humans, (int)game.players - humans, game.galaxy_stars);
+    mp_game_iface_t gi = mp_make_iface();
+    int rc = mp_server_run((uint16_t)opt_mp_host_port, humans, 0 /*until disconnect*/, &gi);
+    game_mp_premove_hook = NULL;
+    g_mp_battle_move_hook = NULL;
+    free(s_mp_premove_buf); s_mp_premove_buf = NULL;
+    game_aux_shutdown(&game_aux);
+    return rc ? 1 : 0;
+}
+
+static int game_mp_join(void) {
+    char host[128];
+    uint16_t port = MP_DEFAULT_PORT;
+    ui_mp_active = true; /* enable client-side turn-start prompts (e.g. planet discovery) */
+    const char *colon = strrchr(opt_mp_join, ':');
+    if (colon) {
+        size_t n = (size_t)(colon - opt_mp_join);
+        if (n >= sizeof(host)) { n = sizeof(host) - 1; }
+        memcpy(host, opt_mp_join, n);
+        host[n] = '\0';
+        port = (uint16_t)atoi(colon + 1);
+    } else {
+        size_t n = strlen(opt_mp_join);
+        if (n >= sizeof(host)) { n = sizeof(host) - 1; }
+        memcpy(host, opt_mp_join, n);
+        host[n] = '\0';
+    }
+    if (game_aux_init(&game_aux, &game)) { return 1; }
+    /* 1oom-mp: make slider locks actually hold (default-off in vanilla), so a player
+       can pin a slider and the per-turn ECO/waste auto-balance won't override it. */
+    game_num_slider_respects_locks = true;
+    log_message("MP: joining %s:%u\n", host, (unsigned)port);
+    mp_game_iface_t gi = mp_make_iface();
+    gi.advance_turn = NULL; /* the client does not resolve turns */
+    int rc = mp_client_run(host, port, 0 /*until game over*/, &gi);
+    game_aux_shutdown(&game_aux);
+    return rc ? 1 : 0;
+}
+
 int main_do(void)
 {
     struct game_end_s game_end = game_opt_end;
     if (ui_late_init()) {
         return 1;
     }
+    if (opt_mp_host_port > 0) { return game_mp_host(); }
+    if (opt_mp_join) { return game_mp_join(); }
     game_aux_init(&game_aux, &game);
     game_save_check_saves(game_aux.savenamebuf, game_aux.savenamebuflen);
     if ((game_opt_end.type != GAME_END_NONE) && (game_opt_end.varnum == 2)) {

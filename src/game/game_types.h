@@ -90,6 +90,8 @@ typedef enum {
     GALAXY_SIZE_MEDIUM, /*1*/
     GALAXY_SIZE_LARGE, /*2*/
     GALAXY_SIZE_HUGE, /*3*/
+    GALAXY_SIZE_ENORMOUS, /*4*/
+    GALAXY_SIZE_GALACTIC, /*5*/
     GALAXY_SIZE_NUM
 } galaxy_size_t;
 
@@ -200,6 +202,6 @@ typedef uint32_t shipsum_t;
 
 #define TRANSPORT_MAX   100
 
-#define PLANETS_MAX 108
+#define PLANETS_MAX 512
 
 #endif

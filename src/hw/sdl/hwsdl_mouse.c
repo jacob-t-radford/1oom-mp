@@ -22,13 +22,28 @@ static int hw_mouse_sy = 1;
 
 bool hw_mouse_enabled = false;
 
+/* 1oom-mp: a transparent hardware cursor used to hide the pointer.
+   On macOS, SDL_ShowCursor(SDL_DISABLE) reaches Cocoa's
+   [NSCursor invisibleCursor], which crashes in ImageIO on some OS
+   versions. Setting a fully transparent cursor (and leaving the cursor
+   "shown") hides the pointer without ever building the invisible cursor. */
+static SDL_Cursor *hw_blank_cursor = NULL;
+
 /* -------------------------------------------------------------------------- */
 
 void hw_mouse_grab(void)
 {
     if (!hw_mouse_enabled) {
         hw_mouse_enabled = true;
-        SDL_ShowCursor(SDL_DISABLE);
+        if (!hw_blank_cursor) {
+            static const Uint8 zero[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+            hw_blank_cursor = SDL_CreateCursor(zero, zero, 8, 8, 0, 0);
+        }
+        if (hw_blank_cursor) {
+            SDL_SetCursor(hw_blank_cursor);
+        } else {
+            SDL_ShowCursor(SDL_DISABLE);
+        }
         hw_video_input_grab(true);
     }
 }
@@ -37,6 +52,7 @@ void hw_mouse_ungrab(void)
 {
     if (hw_mouse_enabled) {
         hw_mouse_enabled = false;
+        SDL_SetCursor(SDL_GetDefaultCursor());
         SDL_ShowCursor(SDL_ENABLE);
         hw_video_input_grab(false);
     }

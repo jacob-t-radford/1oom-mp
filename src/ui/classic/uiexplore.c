@@ -30,7 +30,7 @@
 struct explore_data_s {
     struct game_s *g;
     player_id_t api;
-    uint8_t planet;
+    planet_id_t planet;
     bool by_scanner;
     bool colony_ship;
     uint8_t *gfx_explobac;
@@ -57,7 +57,7 @@ static void explore_free_data(struct explore_data_s *d)
     lbxfile_item_release(LBXFILE_COLONIES, d->gfx_colony);
 }
 
-static void explore_draw_planetinfo(const struct game_s *g, uint8_t planet)
+static void explore_draw_planetinfo(const struct game_s *g, planet_id_t planet)
 {
     const planet_t *p = &(g->planet[planet]);
     int y = 0;
@@ -144,7 +144,7 @@ static void explore_draw_cb(void *vptr)
 
 /* -------------------------------------------------------------------------- */
 
-bool ui_explore(struct game_s *g, int pi, uint8_t planet_i, bool by_scanner, bool flag_colony_ship)
+bool ui_explore(struct game_s *g, int pi, planet_id_t planet_i, bool by_scanner, bool flag_colony_ship)
 {
     struct explore_data_s d;
     int16_t oi_cont, oi_y, oi_n;

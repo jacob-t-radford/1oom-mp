@@ -449,6 +449,16 @@ static void game_generate_galaxy(struct game_s *g, struct game_new_options_s *op
                 w = 12;
                 h = 9;
                 break;
+            case GALAXY_SIZE_ENORMOUS:
+                a = rnd_1_n(4, &g->seed) + 1;
+                w = 15;
+                h = 10;
+                break;
+            case GALAXY_SIZE_GALACTIC:
+                a = rnd_1_n(5, &g->seed) + 2;
+                w = 30;
+                h = 17;
+                break;
         }
 
         g->nebula_num = opts->nebulae ? a : 0;
@@ -511,15 +521,26 @@ static void game_generate_galaxy(struct game_s *g, struct game_new_options_s *op
 
 static void game_generate_planet_names(struct game_s *g)
 {
-    BOOLVEC_DECLARE(in_use, PLANETS_MAX);
-    BOOLVEC_CLEAR(in_use, PLANETS_MAX);
+    /* 1oom-mp: the name table has PLANET_NAMES_MAX entries. For the first that
+       many stars draw unique random names (as MOO1 did); for any beyond that
+       (large galaxies), synthesize unique names "<base> <n>" so naming never
+       overflows the table or loops forever. */
+    BOOLVEC_DECLARE(in_use, PLANET_NAMES_MAX);
+    BOOLVEC_CLEAR(in_use, PLANET_NAMES_MAX);
     for (int i = 0; i < g->galaxy_stars; ++i) {
-        uint16_t j;
-        do {
-            j = rnd_0_nm1(PLANETS_MAX, &g->seed);
-        } while (BOOLVEC_IS1(in_use, j));
-        BOOLVEC_SET1(in_use, j);
-        lib_strcpy(g->planet[i].name, game_str_tbl_planet_names[j], PLANET_NAME_LEN);
+        if (i < PLANET_NAMES_MAX) {
+            uint16_t j;
+            do {
+                j = rnd_0_nm1(PLANET_NAMES_MAX, &g->seed);
+            } while (BOOLVEC_IS1(in_use, j));
+            BOOLVEC_SET1(in_use, j);
+            lib_strcpy(g->planet[i].name, game_str_tbl_planet_names[j], PLANET_NAME_LEN);
+        } else {
+            int k = i - PLANET_NAMES_MAX;
+            int base = k % PLANET_NAMES_MAX;
+            int suffix = (k / PLANET_NAMES_MAX) + 2;
+            lib_sprintf(g->planet[i].name, PLANET_NAME_LEN, "%s %i", game_str_tbl_planet_names[base], suffix);
+        }
     }
     lib_strcpy(g->planet[g->evn.planet_orion_i].name, game_str_planet_name_orion, PLANET_NAME_LEN);
 }
@@ -590,13 +611,13 @@ static void game_generate_race_banner(struct game_s *g)
     }
 }
 
-static bool game_generate_home_improved_do_i(struct game_s *g, struct game_new_options_s *opts, uint8_t tblhome[], player_id_t i)
+static bool game_generate_home_improved_do_i(struct game_s *g, struct game_new_options_s *opts, planet_id_t tblhome[], player_id_t i)
 {   //NOTE: Bottleneck for SMALL galaxy and 6 PLAYERS
     static const int mindist = 80;
     uint8_t ok_home_i[PLANETS_MAX];
     uint16_t ok_home_count = 0;
     int safe_mindist = (g->galaxy_size > GALAXY_SIZE_SMALL || g->players < 6) ? mindist : mindist - 10;
-    for (uint8_t pi = 0; pi < g->galaxy_stars; ++pi) {
+    for (planet_id_t pi = 0; pi < g->galaxy_stars; ++pi) {
         int x = g->planet[pi].x;
         int y = g->planet[pi].y;
         {
@@ -657,7 +678,7 @@ static bool game_generate_home_improved_do_i(struct game_s *g, struct game_new_o
 
 static bool game_generate_home_improved_do(struct game_s *g, struct game_new_options_s *opts, uint16_t tblhome[])
 {
-    uint8_t homes[PLAYER_NUM] = { PLANET_NONE , PLANET_NONE , PLANET_NONE , PLANET_NONE , PLANET_NONE , PLANET_NONE };
+    planet_id_t homes[PLAYER_NUM] = { PLANET_NONE , PLANET_NONE , PLANET_NONE , PLANET_NONE , PLANET_NONE , PLANET_NONE };
     game_generate_race_banner(g);
     bool result = game_generate_home_improved_do_i(g, opts, homes, PLAYER_0);
     for (int i = 0; i < PLAYER_NUM; ++i) {

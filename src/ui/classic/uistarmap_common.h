@@ -65,7 +65,7 @@ struct starmap_data_s {
     int16_t oi_tbl_enroute[FLEET_ENROUTE_MAX];
     int16_t oi_tbl_transport[TRANSPORT_MAX];
     int16_t oi_tbl_pl_stars[PLAYER_NUM][PLANETS_MAX];
-    uint8_t from;
+    planet_id_t from;
     bool planet_draw_name;
     union {
         struct {
@@ -97,7 +97,7 @@ struct starmap_data_s {
         } oe;   /* orbit_en */
         struct {
             struct shipnon0_s sn0;
-            uint8_t pon;
+            planet_id_t pon;
         } en;   /* enroute */
     };
 };
@@ -174,6 +174,7 @@ extern void ui_starmap_add_oi_misc(struct starmap_data_s *d);
 extern bool ui_starmap_handle_oi_misc(struct starmap_data_s *d, int16_t oi);
 extern void ui_starmap_handle_oi_ctrl(struct starmap_data_s *d, int16_t oi);
 extern void ui_starmap_handle_scrollkeys(struct starmap_data_s *d, int16_t oi);
+extern void ui_starmap_clamp_xy(const struct game_s *g, int *x, int *y);
 extern void ui_starmap_draw_basic(struct starmap_data_s *d);
 extern void ui_starmap_draw_starmap(struct starmap_data_s *d);
 extern void ui_starmap_draw_button_text(struct starmap_data_s *d, bool highlight);

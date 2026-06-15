@@ -282,6 +282,8 @@ static bool ui_new_game(struct game_new_options_s *newopts)
         { 1, "2", NULL, game_str_tbl_gsize[1] },
         { 2, "3", NULL, game_str_tbl_gsize[2] },
         { 3, "4", NULL, game_str_tbl_gsize[3] },
+        { 4, "5", NULL, game_str_tbl_gsize[4] },
+        { 5, "6", NULL, game_str_tbl_gsize[5] },
         { -1, "Q", NULL, "(quit)" },
         { 0, NULL, NULL, NULL },
     };

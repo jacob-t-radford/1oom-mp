@@ -51,6 +51,64 @@ struct game_end_s;
 extern void ui_game_start(struct game_s *g);
 extern void ui_game_end(struct game_s *g);
 
+/* 1oom-mp: present a "waiting" frame while the client is blocked on the network,
+   pumping input so the window stays responsive. reason: 0 = lobby/waiting to start,
+   nonzero = waiting for other players to finish their simultaneous turn. */
+extern void ui_mp_wait(int reason);
+
+/* 1oom-mp: render a battle for a non-acting (spectating) player, with a banner. */
+struct battle_s;
+extern void ui_mp_battle_spectate(const struct battle_s *bt);
+
+/* 1oom-mp battle-spectate event kinds. A spectate message that is exactly sizeof(battle_s) is a
+   full state snapshot; anything smaller is one of these attack-animation events ([u8 kind] followed
+   by int16 args) that the server's null UI emits and the spectator replays on its current battle,
+   so the watcher sees the beam/bomb/etc. fire rather than just the before/after states. */
+enum ui_mp_spec_e {
+    UI_MP_SPEC_BEAM = 1,    /* args: attacker_i, target_i, wpni */
+    UI_MP_SPEC_BOMB,        /* args: attacker_i, target_i, bombtype */
+    UI_MP_SPEC_STASIS,      /* args: attacker_i, target_i */
+    UI_MP_SPEC_STREAM1,     /* args: attacker_i, target_i */
+    UI_MP_SPEC_STREAM2,     /* args: attacker_i, target_i */
+    UI_MP_SPEC_BLACKHOLE,   /* args: attacker_i, target_i */
+    UI_MP_SPEC_TECHNULL,    /* args: attacker_i, target_i */
+    UI_MP_SPEC_REPULSE,     /* args: attacker_i, target_i, sx, sy */
+    UI_MP_SPEC_RETREAT,     /* args: cur_item (the retreating ship) */
+    UI_MP_SPEC_MOVE,        /* args: itemi, dest_sx, dest_sy — glide the ship to the destination */
+    UI_MP_SPEC_DAMAGE,      /* args: target_i, target_x, target_y, dmg_lo, dmg_hi — hit/explosion */
+};
+
+/* 1oom-mp: glide a ship from its current hex to (sx,sy) on the spectator's battle screen (replays
+   the move the server resolved). Self-paced (classic UI). No-op in the headless/cmdline UIs. */
+extern void ui_mp_battle_glide(struct battle_s *bt, int itemi, int sx, int sy);
+
+/* 1oom-mp soft-ready turn model. Set by the MP client adapter (game.c) only while a
+   networked turn is being played; all NULL in single-player and for the legacy immediate-
+   submit path. When ui_mp_turn_active() is true the starmap "Next Turn" button locks in your
+   orders (submit + mark ready) instead of ending the turn: you keep browsing the map, editing
+   any order clears the lock, and the turn resolves once every player is ready. */
+extern bool (*ui_mp_turn_active)(void);          /* is a soft-ready MP turn in progress? */
+extern void (*ui_mp_turn_set_ready)(int ready);  /* submit current orders + set/clear my ready */
+extern bool (*ui_mp_turn_is_ready)(void);        /* am I currently locked in (for the banner)? */
+extern bool (*ui_mp_turn_poll)(void);            /* pump the net once; true once the turn resolved */
+
+/* 1oom-mp interactive pre-game lobby: pick race/color, ready up, and (host = slot 0) set the AI
+   count and galaxy size. Loops until the game starts, pumping the shared state via g_mp_cl_lobby_*.
+   my_id = this player's slot. Returns 0 once the game starts (state loaded), <0 if the player quit. */
+extern int ui_mp_lobby_run(int my_id);
+
+/* 1oom-mp live human-to-human diplomacy (classic UI). _pump is called each starmap frame: it drains
+   the diplo inbox and returns true when an incoming audience request should be surfaced, at which
+   point the main loop runs _handle (the responder side: receive-now/decline, then the live session).
+   The proposer side runs inline from the AUDIENCE action. NULL transport (single-player) is a no-op. */
+extern bool ui_mp_diplo_pump(int pi);
+extern void ui_mp_diplo_handle(struct game_s *g, int pi);
+
+/* 1oom-mp: true when this classic UI is running as a networked client (set by game.c's
+   game_mp_join). Used to enable client-side turn-start prompts that the headless server
+   resolves silently (e.g. the planet-discovery notification). False in single-player. */
+extern bool ui_mp_active;
+
 extern void ui_sound_play_sfx(int sfxi);
 
 typedef enum {
@@ -145,16 +203,16 @@ typedef enum {
     UI_SABOTAGE_NONE /*-1*/
 } ui_sabotage_t;
 
-extern ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, uint8_t *planetptr);
-extern int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, uint8_t planet, int snum);
+extern ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_id_t *planetptr);
+extern int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum);
 
 extern void ui_newtech(struct game_s *g, int pi);
 
-extern bool ui_explore(struct game_s *g, int pi, uint8_t planet_i, bool by_scanner, bool flag_colony_ship);
-extern void ui_landing(struct game_s *g, int pi, uint8_t planet_i);
+extern bool ui_explore(struct game_s *g, int pi, planet_id_t planet_i, bool by_scanner, bool flag_colony_ship);
+extern void ui_landing(struct game_s *g, int pi, planet_id_t planet_i);
 
-extern bool ui_bomb_ask(struct game_s *g, int pi, uint8_t planet_i, int pop_inbound);
-extern void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, uint8_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other);
+extern bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound);
+extern void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, planet_id_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other);
 
 extern void ui_turn_pre(const struct game_s *g);
 extern void ui_turn_msg(struct game_s *g, int pi, const char *str);

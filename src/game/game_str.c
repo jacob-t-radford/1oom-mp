@@ -12,7 +12,7 @@ const char *game_str_mm_quit = "Quit to OS";
 const char *game_str_tbl_race[RACE_NUM + 1] = { "Human", "Mrrshan", "Silicoid", "Sakkra", "Psilon", "Alkari", "Klackon", "Bulrathi", "Meklar", "Darlok", "Random" };
 const char *game_str_tbl_races[RACE_NUM] = { "Humans", "Mrrshans", "Silicoids", "Sakkras", "Psilons", "Alkaris", "Klackons", "Bulrathis", "Meklars", "Darloks" };
 const char *game_str_tbl_banner[BANNER_NUM + 1] = { "Blue", "Green", "Purple", "Red", "White", "Yellow", "Random" };
-const char *game_str_tbl_gsize[GALAXY_SIZE_NUM] = { "Small", "Medium", "Large", "Huge" };
+const char *game_str_tbl_gsize[GALAXY_SIZE_NUM] = { "Small", "Medium", "Large", "Huge", "Enormous", "Galactic" };
 const char *game_str_tbl_diffic[DIFFICULTY_NUM] = { "Simple", "Easy", "Average", "Hard", "Impossible" };
 const char *game_str_tbl_oppon[5] = { "One", "Two", "Three", "Four", "Five" };
 
@@ -59,7 +59,12 @@ const char *game_str_tbl_planet_names[PLANET_NAMES_MAX] = {
     "Anraq", "Gienah", "Rotan", "Proxima", "Mobas", "Iranha", "Celtsi", "Dunatis", "Morrig", "Primodius",
     "Nyarl", "Ukko", "Crius", "Hyades", "Kronos", "Guradas", "Rayden", "Kakata", "Misha", "Xendalla",
     "Artemis", "Aurora", "Proteus", "Esper", "Darrian", "Trax", "Xengara", "Nitzer", "Simius", "Bootis",
-    "Pollus", "Cygni", "Aquilae", "Volantis", "Tauri", "Regulus", "Klystron", "Lyae", "Capella", "Alcor"
+    "Pollus", "Cygni", "Aquilae", "Volantis", "Tauri", "Regulus", "Klystron", "Lyae", "Capella", "Alcor",
+    "Altair", "Deneb", "Sirius", "Procyon", "Mizar", "Castor", "Pollux", "Achernar", "Canopus", "Arcturus",
+    "Aldebaran", "Bellatrix", "Polaris", "Algol", "Mirach", "Hamal", "Menkar", "Diphda", "Acrux", "Gacrux",
+    "Mimosa", "Atria", "Avior", "Suhail", "Naos", "Adhara", "Wezen", "Mirzam", "Saiph", "Alnilam",
+    "Alnitak", "Mintaka", "Hadar", "Nunki", "Ascella", "Skat", "Enif", "Markab", "Scheat", "Algenib",
+    "Caph", "Schedar", "Ruchbah", "Segin", "Tarazed", "Vexa", "Korrin", "Drennok", "Sylix", "Nexaris"
 };
 
 const char *game_str_tbl_home_names[RACE_NUM + 1] = {

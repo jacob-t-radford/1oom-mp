@@ -20,7 +20,7 @@
 
 /* -------------------------------------------------------------------------- */
 
-static uint8_t get_fleet_planet_on(const struct game_s *g, const fleet_enroute_t *r)
+static planet_id_t get_fleet_planet_on(const struct game_s *g, const fleet_enroute_t *r)
 {
     for (int i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p;
@@ -32,7 +32,7 @@ static uint8_t get_fleet_planet_on(const struct game_s *g, const fleet_enroute_t
     return PLANET_NONE;
 }
 
-static void ui_fleet_print_fleet_orbit(const struct game_s *g, int api, uint8_t planet_i, int pi)
+static void ui_fleet_print_fleet_orbit(const struct game_s *g, int api, planet_id_t planet_i, int pi)
 {
     const fleet_orbit_t *r = &(g->eto[pi].orbit[planet_i]);
     if (BOOLVEC_IS1(r->visible, api)) {
@@ -54,7 +54,7 @@ static void ui_fleet_print_fleet_orbit(const struct game_s *g, int api, uint8_t 
 
 /* -------------------------------------------------------------------------- */
 
-void ui_fleet_print_fleets_orbit(const struct game_s *g, int api, uint8_t planet_i, bool show_my, bool show_opp)
+void ui_fleet_print_fleets_orbit(const struct game_s *g, int api, planet_id_t planet_i, bool show_my, bool show_opp)
 {
     if (show_my) {
         ui_fleet_print_fleet_orbit(g, api, planet_i, api);
@@ -70,7 +70,7 @@ void ui_fleet_print_fleets_orbit(const struct game_s *g, int api, uint8_t planet
     }
 }
 
-void ui_fleet_print_fleet_enroute(const struct game_s *g, int api, const fleet_enroute_t *r, uint8_t pon)
+void ui_fleet_print_fleet_enroute(const struct game_s *g, int api, const fleet_enroute_t *r, planet_id_t pon)
 {
     char buf[80];
     char pname[20];
@@ -140,7 +140,7 @@ int ui_cmd_fleet_redir(struct game_s *g, int api, struct input_token_s *param, i
             if (r->owner == api) {
                 for (int j = 0; j < sd_num; ++j) {
                     if (r->ships[j] != 0) {
-                        uint8_t pon;
+                        planet_id_t pon;
                         pon = get_fleet_planet_on(g, r);
                         if (e->have_hyperspace_comm || (pon != PLANET_NONE)) {
                             ui_fleet_print_fleet_enroute(g, api, r, pon);
@@ -163,7 +163,7 @@ int ui_cmd_fleet_redir(struct game_s *g, int api, struct input_token_s *param, i
     } else {
         bool is_fleet;
         int dist, n = -1;
-        uint8_t dest;
+        planet_id_t dest;
         const planet_t *p;
         if (param->str[0] != '#') {
             return -1;
@@ -192,7 +192,7 @@ int ui_cmd_fleet_redir(struct game_s *g, int api, struct input_token_s *param, i
         dist = game_get_min_dist(g, api, dest);
         if (is_fleet) {
             fleet_enroute_t *r = &(g->enroute[n]);
-            uint8_t pon;
+            planet_id_t pon;
             bool in_range;
             if (r->owner != api) {
                 return -1;

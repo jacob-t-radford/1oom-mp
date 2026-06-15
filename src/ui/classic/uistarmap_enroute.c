@@ -34,7 +34,7 @@ static inline bool ui_starmap_enroute_in_frange(struct starmap_data_s *d)
     return ((p->within_frange[d->api] == 1) || ((p->within_frange[d->api] == 2) && d->en.sn0.have_reserve_fuel));
 }
 
-static inline bool ui_starmap_enroute_locked_by_retreat(struct starmap_data_s *d, uint8_t planet_i)
+static inline bool ui_starmap_enroute_locked_by_retreat(struct starmap_data_s *d, planet_id_t planet_i)
 {
     const fleet_enroute_t *r = &(d->g->enroute[ui_data.starmap.fleet_selected]);
     return (game_num_retreat_redir_fix && r->retreat && !d->g->eto[d->api].have_hyperspace_comm && (planet_i == d->en.pon));
@@ -46,7 +46,7 @@ static void ui_starmap_enroute_draw_cb(void *vptr)
     const struct game_s *g = d->g;
     const fleet_enroute_t *r = &(g->enroute[ui_data.starmap.fleet_selected]);
     const empiretechorbit_t *e = &(g->eto[r->owner]);
-    uint8_t pto = g->planet_focus_i[d->api];
+    planet_id_t pto = g->planet_focus_i[d->api];
     const planet_t *pt = &g->planet[pto];
     char buf[0x80];
     STARMAP_LIM_INIT();

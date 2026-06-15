@@ -1846,6 +1846,8 @@ bool game_battle_attack(struct battle_s *bt, int attacker_i, int target_i, bool 
     return destroyed;
 }
 
+void (*g_mp_battle_move_hook)(struct battle_s *bt, int itemi, int sx, int sy) = NULL;
+
 void game_battle_item_move(struct battle_s *bt, int itemi, int sx, int sy)
 {
     struct battle_item_s *b = &(bt->item[itemi]);
@@ -1859,6 +1861,7 @@ void game_battle_item_move(struct battle_s *bt, int itemi, int sx, int sy)
         b->actman = 0;
         b->subspace = 2;
     } else {
+        if (g_mp_battle_move_hook) { g_mp_battle_move_hook(bt, itemi, sx, sy); } /* MP: relay the glide to spectators */
         bool flag_quick = bt->s[SIDE_L].flag_auto && bt->s[SIDE_R].flag_auto;
         int x, y, stepdiv = flag_quick ? 2 : 8;
         uint8_t route[BATTLE_ROUTE_LEN];

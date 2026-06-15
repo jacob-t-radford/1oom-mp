@@ -52,6 +52,7 @@ typedef enum {
     UI_MAIN_LOOP_SCRAP_BASES, /*16*/
     UI_MAIN_LOOP_SPIES_CAUGHT, /*17*/
     UI_MAIN_LOOP_PLANET_SHIPS,
+    UI_MAIN_LOOP_MP_DIPLO, /* 1oom-mp: live human-to-human audience (responder side) */
     UI_MAIN_LOOP_NUM
 } ui_main_loop_action_t;
 
@@ -305,6 +306,7 @@ extern bool ui_illogical_hotkey_fix;
 extern bool ui_load_opts_extra;
 extern bool ui_space_combat_autoresolve;
 extern bool ui_sm_ships_enabled;
+extern bool ui_autohelp_enabled; /* the auto "Master's notes" tutorial popups (HELP.LBX) */
 extern bool ui_sm_expanded_scroll;
 extern bool ui_sm_no_question_mark_cursor;
 extern bool ui_sm_explicit_cursor_context;

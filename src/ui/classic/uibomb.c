@@ -31,7 +31,7 @@ struct bomb_data_s {
     struct game_s *g;
     player_id_t api;
     player_id_t owner;
-    uint8_t planet;
+    planet_id_t planet;
     bool hide_other;
     int pop_inbound;
     int popdmg;
@@ -182,7 +182,7 @@ static void bomb_show_draw_cb(void *vptr)
 
 /* -------------------------------------------------------------------------- */
 
-bool ui_bomb_ask(struct game_s *g, int pi, uint8_t planet_i, int pop_inbound)
+bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound)
 {
     struct bomb_data_s d;
     int16_t oi_y, oi_n;
@@ -223,7 +223,7 @@ bool ui_bomb_ask(struct game_s *g, int pi, uint8_t planet_i, int pop_inbound)
     return flag_do_bomb;
 }
 
-void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, uint8_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other)
+void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, planet_id_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other)
 {
     struct bomb_data_s d;
     bool flag_done = false;

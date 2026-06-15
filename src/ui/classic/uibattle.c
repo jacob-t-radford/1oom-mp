@@ -1227,6 +1227,114 @@ void ui_battle_draw_basic_copy(const struct battle_s *bt)
     ui_draw_copy_buf();
 }
 
+/* 1oom-mp: render the battle for a watching (non-acting) player, with a banner so
+   they know they're spectating the other side's turn. */
+/* 1oom-mp: which battle item (a ship, or the planet at index 0) occupies a hex — used by
+   the spectator's read-only examine. Returns the item index, or -1 if nothing examinable. */
+static int ui_mp_spectate_item_at(const struct battle_s *bt, int sx, int sy)
+{
+    for (int i = 1; i <= bt->items_num; ++i) {
+        const struct battle_item_s *it = &(bt->item[i]);
+        if ((it->side != SIDE_NONE) && (it->num > 0) && (it->sx == sx) && (it->sy == sy)) {
+            return i;
+        }
+    }
+    if ((bt->item[0].sx >= 0) && (bt->item[0].sx == sx) && (bt->item[0].sy == sy)) {
+        return 0; /* the planet */
+    }
+    return -1;
+}
+
+/* 1oom-mp: glide a ship from its current hex to (tsx,tsy), replaying the move the server resolved
+   so the spectator (and the acting player) sees the ship slide rather than teleport. Display-only
+   (no combat logic); straight-line, self-paced like the real battle move loop. */
+void ui_mp_battle_glide(struct battle_s *bt, int itemi, int tsx, int tsy)
+{
+    struct battle_item_s *b;
+    int x, y, x1, y1, dist, steps;
+    if ((itemi < 0) || (itemi > bt->items_num)) { return; }
+    b = &(bt->item[itemi]);
+    dist = abs(tsx - b->sx) + abs(tsy - b->sy);
+    if (dist < 1) { return; }
+    x = b->sx * 32; y = b->sy * 24;
+    x1 = tsx * 32; y1 = tsy * 24;
+    steps = 8 * dist;
+    bt->cur_item = itemi;
+    for (int f = 1; f <= steps; ++f) {
+        int cx = x + (x1 - x) * f / steps;
+        int cy = y + (y1 - y) * f / steps;
+        ui_delay_prepare();
+        ui_battle_draw_arena(bt, itemi, 2);
+        ui_battle_draw_bottom(bt);
+        b->selected = 2/*moving*/;
+        ui_battle_draw_item(bt, itemi, cx, cy);
+        b->selected = 1;
+        ui_battle_draw_finish(bt);
+        ui_delay_ticks_or_click(1);
+    }
+    b->sx = tsx; b->sy = tsy;
+}
+
+/* 1oom-mp: one interactive frame for the player watching the OTHER side's battle turn.
+   They can't move or fire — the cursor is the examine icon over any ship/planet (click to
+   inspect it) and the red stop icon everywhere else — so the paused screen stays alive. */
+void ui_mp_battle_spectate(const struct battle_s *bt)
+{
+    struct ui_battle_data_s *d = bt->uictx;
+    int16_t oi_hex[BATTLE_AREA_H][BATTLE_AREA_W];
+    int16_t oi;
+    ui_battle_draw_arena(bt, 0, 0);
+    ui_battle_draw_bottom_no_ois(bt);
+    /* prominent top banner: filled bar + bright text + underline so it can't be missed */
+    ui_draw_filled_rect(0, 0, UI_VGA_W - 1, 11, 0 /*black*/, ui_scale);
+    ui_draw_line1(0, 12, UI_VGA_W - 1, 12, 0xeb, ui_scale);
+    lbxfont_select(2, 0xd /*bright*/, 0, 0);
+    lbxfont_print_str_center(UI_VGA_W / 2, 3, "OPPONENT'S TURN - examine only", UI_SCREEN_W, ui_scale);
+    /* read-only examine: ship/planet hexes get the examine cursor + are clickable; every
+       other hex (and, via cursor[0], the rest of the screen) gets the red stop cursor. */
+    uiobj_table_clear();
+    d->cursor[0].cursor_i = 2 /*stop*/;
+    d->cursor[0].mouseoff = 0;
+    d->cursor[0].cursor_scale_mode = UI_CURSOR_SCALE_MODE_NORMAL;
+    d->cursor[0].x0 = 0; d->cursor[0].y0 = 0;
+    d->cursor[0].x1 = UI_SCREEN_W - 1; d->cursor[0].y1 = UI_SCREEN_H - 1;
+    for (int sy = 0; sy < BATTLE_AREA_H; ++sy) {
+        for (int sx = 0; sx < BATTLE_AREA_W; ++sx) {
+            ui_cursor_area_t *cr = &(d->cursor[1 + sy * BATTLE_AREA_W + sx]);
+            int x0 = sx * 32, y0 = sy * 24, x1 = x0 + 31, y1 = y0 + 23;
+            int it = ui_mp_spectate_item_at(bt, sx, sy);
+            cr->x0 = x0 * ui_scale; cr->y0 = y0 * ui_scale;
+            cr->x1 = x1 * ui_scale + ui_scale - 1; cr->y1 = y1 * ui_scale + ui_scale - 1;
+            cr->cursor_i = (it >= 0) ? 5 /*examine*/ : 2 /*stop*/;
+            cr->mouseoff = 0;
+            oi_hex[sy][sx] = (it >= 0) ? uiobj_add_mousearea(x0, y0, x1, y1, MOO_KEY_UNKNOWN) : UIOBJI_INVALID;
+        }
+    }
+    ui_cursor_setup_area(1 + BATTLE_AREA_W * BATTLE_AREA_H, &(d->cursor[0]));
+    uiobj_finish_frame();
+    /* one input cycle: finish_frame above re-picked the cursor from the mouse pos; now catch
+       a click on a ship/planet and show its scan/info (blocks until clicked away). */
+    ui_delay_prepare();
+    oi = uiobj_handle_input_cond();
+    if (oi > 0) {
+        for (int sy = 0; sy < BATTLE_AREA_H; ++sy) {
+            for (int sx = 0; sx < BATTLE_AREA_W; ++sx) {
+                if (oi == oi_hex[sy][sx]) {
+                    int it = ui_mp_spectate_item_at(bt, sx, sy);
+                    if (it == 0) {
+                        ui_battle_draw_planetinfo(bt, bt->planet_side == SIDE_R);
+                    } else if (it > 0) {
+                        ui_battle_draw_scan(bt, bt->item[it].side == SIDE_R);
+                    }
+                    goto examined;
+                }
+            }
+        }
+    }
+examined:
+    ui_delay_ticks_or_click(1); /* pace ~one tick + follow the mouse smoothly */
+}
+
 void ui_battle_draw_finish(const struct battle_s *bt)
 {
     uiobj_finish_frame();
@@ -1878,9 +1986,10 @@ void ui_battle_area_setup(const struct battle_s *bt)
     struct ui_battle_data_s *d = bt->uictx;
     const struct battle_item_s *b = &(bt->item[bt->cur_item]);
     bool is_auto = bt->s[b->side].flag_auto;
-    if (is_auto) {
-        d->cursor[0].cursor_i = 1;
-    }
+    /* pointer for the bottom command panel / non-hex areas. Set it unconditionally: the MP
+       spectator examine view repurposes cursor[0] as the red "stop" cursor, and that uictx is
+       shared with the acting player's combat, so otherwise the bottom menu keeps showing stop. */
+    d->cursor[0].cursor_i = 1;
     for (int sy = 0; sy < BATTLE_AREA_H; ++sy) {
         for (int sx = 0; sx < BATTLE_AREA_W; ++sx) {
             ui_cursor_area_t *cr = &(d->cursor[1 + sy * BATTLE_AREA_W + sx]);

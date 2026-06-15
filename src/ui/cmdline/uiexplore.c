@@ -12,7 +12,7 @@
 
 /* -------------------------------------------------------------------------- */
 
-bool ui_explore(struct game_s *g, int pi, uint8_t planet_i, bool by_scanner, bool flag_colony_ship)
+bool ui_explore(struct game_s *g, int pi, planet_id_t planet_i, bool by_scanner, bool flag_colony_ship)
 {
     ui_switch_1(g, pi);
     if (!flag_colony_ship) {

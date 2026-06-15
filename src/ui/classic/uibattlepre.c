@@ -32,7 +32,7 @@ struct ui_battle_pre_data_s {
     int party_u;
     int party_d;
     int party_winner;
-    uint8_t planet_i;
+    planet_id_t planet_i;
     bool flag_human_att;
     bool hide_other;
     shipsum_t force[2][SHIP_HULL_NUM];

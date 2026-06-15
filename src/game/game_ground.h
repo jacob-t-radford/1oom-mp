@@ -21,7 +21,7 @@ struct ground_side_s {
 
 struct ground_s {
     uint32_t seed;
-    uint8_t planet_i;
+    planet_id_t planet_i;
     bool flag_swap;
     bool flag_rebel;
     int inbound;

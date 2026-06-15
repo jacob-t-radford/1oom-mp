@@ -37,7 +37,7 @@
 
 /* -------------------------------------------------------------------------- */
 
-static void game_ai_classic_new_game_init(struct game_s *g, player_id_t player, uint8_t home)
+static void game_ai_classic_new_game_init(struct game_s *g, player_id_t player, planet_id_t home)
 {
     int n = 0;
     planet_t *p = &g->planet[home];
@@ -127,8 +127,8 @@ struct ai_turn_p1_s {
     int planet_own_num;
     int tbl_planet_own_w[PLANETS_MAX];
     int tbl_planet_en_w[PLANETS_MAX];
-    uint8_t tbl_planet_own_i[PLANETS_MAX];
-    uint8_t tbl_planet_en_i[PLANETS_MAX];
+    planet_id_t tbl_planet_own_i[PLANETS_MAX];
+    planet_id_t tbl_planet_en_i[PLANETS_MAX];
 };
 
 struct ai_turn_p2_s {
@@ -154,7 +154,7 @@ static void game_ai_classic_turn_p1_send_scout(struct game_s *g, struct ai_turn_
 {
     empiretechorbit_t *e = &(g->eto[pi]);
     BOOLVEC_DECLARE(tbl_planet_ignore, PLANETS_MAX);
-    uint8_t tbl_planet_scout[PLANETS_MAX];
+    planet_id_t tbl_planet_scout[PLANETS_MAX];
     shipsum_t tbl_ownorbit[PLANETS_MAX];
     int num_to_scout = 0;
 
@@ -214,7 +214,7 @@ static void game_ai_classic_turn_p1_send_scout(struct game_s *g, struct ai_turn_
         tbl_ownorbit[i] = ships;
     }
     for (int i = 0; i < num_to_scout; ++i) {
-        uint8_t mini, pli;
+        planet_id_t mini, pli;
         int mindist;
         const planet_t *p;
         mindist = 10000;
@@ -277,7 +277,7 @@ static void game_ai_classic_turn_p1_send_scout(struct game_s *g, struct ai_turn_
 static uint8_t game_ai_classic_turn_p1_front_find_planet(struct game_s *g, struct ai_turn_p1_s *ait, player_id_t pi, int x, int y)
 {
     empiretechorbit_t *e = &(g->eto[pi]);
-    uint8_t mini = 0;
+    planet_id_t mini = 0;
     int mindist = 10000;
     for (int i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p = &(g->planet[i]);
@@ -467,7 +467,7 @@ static bool game_ai_classic_turn_p1_have_colony_ship(struct game_s *g, struct ai
     return true;
 }
 
-static void game_turn_fleet_send(struct game_s *g, struct ai_turn_p1_s *ait, player_id_t pi, uint8_t from, uint8_t dest)
+static void game_turn_fleet_send(struct game_s *g, struct ai_turn_p1_s *ait, player_id_t pi, planet_id_t from, planet_id_t dest)
 {
     empiretechorbit_t *e = &(g->eto[pi]);
     fleet_enroute_t *r;
@@ -589,7 +589,7 @@ static void game_ai_classic_turn_p1_send_colony_ships(struct game_s *g, struct a
     }
     for (int i = 0; i < num_planet_colonize; ++i) {
         const planet_t *p;
-        uint8_t pli, mini;
+        planet_id_t pli, mini;
         int mindist;
         pli = tbl_planet_colonize[i];
         p = &(g->planet[pli]);
@@ -686,7 +686,7 @@ static void game_ai_classic_turn_p1_send_attack(struct game_s *g, struct ai_turn
     empiretechorbit_t *e = &(g->eto[pi]);
     int range = e->fuel_range * 15;
     for (int i = 0; i < ait->num_fronts; ++i) {
-        uint8_t pfrom, pto, pto2;
+        planet_id_t pfrom, pto, pto2;
         pto2 = PLANET_NONE;
         pfrom = ait->tbl_front_planet[i];
         for (int j = 0; (j < ait->planet_en_num) && (pto2 == PLANET_NONE); ++j) {
@@ -749,13 +749,13 @@ static void game_ai_classic_turn_p1_send_attack(struct game_s *g, struct ai_turn
             }
         }
     }
-    for (uint8_t pfrom = 0; pfrom < g->galaxy_stars; ++pfrom) {
+    for (planet_id_t pfrom = 0; pfrom < g->galaxy_stars; ++pfrom) {
         const planet_t *p = &(g->planet[pfrom]);
         if ((p->owner != PLAYER_NONE) && (p->owner != pi) && (ait->tbl_force_own[pfrom] != 0)) {
             for (int j = 0; j < ait->planet_en_num; ++j) {
                 if (ait->tbl_planet_en_w[j] > -1000) {
                     const planet_t *pt;
-                    uint8_t pto;
+                    planet_id_t pto;
                     pto = ait->tbl_planet_en_i[j];
                     pt = &(g->planet[pto]);
                     if (1
@@ -843,7 +843,7 @@ static void game_ai_classic_turn_p1_send_defend(struct game_s *g, struct ai_turn
     for (int i = 0; i < g->galaxy_stars; ++i) {
         if ((ait->tbl_force_own[i] > 0) && (tbl_planet_threat[i] == 0)) {
             const planet_t *pf;
-            uint8_t pto;
+            planet_id_t pto;
             pto = PLANET_NONE;
             pf = &(g->planet[i]);
             for (int j = 0; (j < num_defend) && (pto == PLANET_NONE); ++j) {
@@ -886,7 +886,7 @@ static void game_ai_classic_turn_p1_send_idle(struct game_s *g, struct ai_turn_p
     }
     for (int i = 0; i < g->galaxy_stars; ++i) {
         if (ait->tbl_force_own[i] > 0) {
-            uint8_t pto;
+            planet_id_t pto;
             const planet_t *pf;
             int minv;
             pf = &(g->planet[i]);
@@ -951,7 +951,7 @@ static void game_ai_classic_turn_p1_trans_en(struct game_s *g, struct ai_turn_p1
         if (BOOLVEC_IS1(tbl_trans_to, i)) {
             const planet_t *pt;
             planet_t *pf;
-            uint8_t pfrom;
+            planet_id_t pfrom;
             int mindist, dist;
             mindist = 10000;
             pfrom = PLANET_NONE;
@@ -1003,7 +1003,7 @@ static void game_ai_classic_turn_p1_trans_own(struct game_s *g, struct ai_turn_p
         if (BOOLVEC_IS1(tbl_trans_to, i)) {
             const planet_t *pt;
             planet_t *pf;
-            uint8_t pfrom;
+            planet_id_t pfrom;
             pfrom = PLANET_NONE;
             pt = &(g->planet[i]);
             for (int j = 0; (j < g->galaxy_stars) && (pfrom == PLANET_NONE); ++j) {
@@ -3239,7 +3239,7 @@ static uint8_t game_ai_classic_tech_next(struct game_s *g, player_id_t player, t
 
 /* -------------------------------------------------------------------------- */
 
-static bool game_ai_classic_bomb(struct game_s *g, player_id_t player, uint8_t planet, int pop_inbound)
+static bool game_ai_classic_bomb(struct game_s *g, player_id_t player, planet_id_t planet, int pop_inbound)
 {
     bool flag_do_bomb;
     const planet_t *p = &(g->planet[planet]);
@@ -3260,7 +3260,7 @@ static bool game_ai_classic_bomb(struct game_s *g, player_id_t player, uint8_t p
 
 /* -------------------------------------------------------------------------- */
 
-static void game_ai_classic_ground(struct game_s *g, player_id_t def, player_id_t att, uint8_t planet, int pop_killed, bool owner_changed)
+static void game_ai_classic_ground(struct game_s *g, player_id_t def, player_id_t att, planet_id_t planet, int pop_killed, bool owner_changed)
 {
     if (IS_HUMAN(g, def)) {
         return;
@@ -3294,7 +3294,7 @@ static void game_ai_classic_add_reserve(struct game_s *g, planet_t *p)
     p->reserve += v;
 }
 
-static void game_ai_classic_crank_tech(struct game_s *g, uint8_t planet)
+static void game_ai_classic_crank_tech(struct game_s *g, planet_id_t planet)
 {
     planet_t *p = &(g->planet[planet]);
     int v;
@@ -3311,7 +3311,7 @@ static void game_ai_classic_crank_tech(struct game_s *g, uint8_t planet)
     game_ai_classic_add_reserve(g, p);
 }
 
-static void game_ai_classic_crank_ship(struct game_s *g, uint8_t planet)
+static void game_ai_classic_crank_ship(struct game_s *g, planet_id_t planet)
 {
     planet_t *p = &(g->planet[planet]);
     int v;

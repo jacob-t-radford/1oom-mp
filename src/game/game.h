@@ -12,7 +12,7 @@ typedef struct fleet_enroute_s {
     player_id_t owner;
     uint16_t x;
     uint16_t y;
-    uint8_t dest;   /* planet index */
+    planet_id_t dest;   /* planet index */
     uint8_t speed;
     bool retreat;
     BOOLVEC_DECLARE(visible, PLAYER_NUM);
@@ -23,7 +23,7 @@ typedef struct transport_s {
     player_id_t owner;
     uint16_t x;
     uint16_t y;
-    uint8_t dest;   /* planet index */
+    planet_id_t dest;   /* planet index */
     uint8_t speed;
     BOOLVEC_DECLARE(visible, PLAYER_NUM);
     uint16_t pop;
@@ -162,7 +162,7 @@ typedef struct monster_s {
     int16_t x;
     int16_t y;
     player_id_t killer; /* MOO1: 0 or id+1 */
-    uint8_t dest;
+    planet_id_t dest;
     int8_t counter;
     int8_t nuked;   /* planets destroyed */
 } monster_t;
@@ -171,7 +171,7 @@ typedef struct newtech_s {
     tech_field_t field;
     uint8_t tech;
     techsource_t source;
-    int8_t v06;    /* 4: race_t giver  2: NEWTECH_V06_ORION or planet_i ruins or -(planet_i+1) artifact */
+    int16_t v06;    /* 4: race_t giver  2: NEWTECH_V06_ORION or planet_i ruins or -(planet_i+1) artifact */
     player_id_t stolen_from;
     bool frame;
     player_id_t other1;
@@ -200,19 +200,19 @@ typedef struct gameevents_s {
     int8_t diplo_msg_subtype; /* -1..13 */
     uint8_t have_plague;    /* 0..3 */
     player_id_t plague_player;
-    uint8_t plague_planet_i;
+    planet_id_t plague_planet_i;
     int plague_val;
     bool have_quake;
     player_id_t quake_player;
-    uint8_t quake_planet_i;
+    planet_id_t quake_planet_i;
     uint8_t have_nova;  /* 0..3 */
     player_id_t nova_player;
-    uint8_t nova_planet_i;
+    planet_id_t nova_planet_i;
     int8_t nova_years;
     int nova_val;
     uint8_t have_accident;  /* 0..2 */
     player_id_t accident_player;
-    uint8_t accident_planet_i;
+    planet_id_t accident_planet_i;
     bool have_assassin;
     player_id_t assassin_player;
     player_id_t assassin_player2;
@@ -221,29 +221,29 @@ typedef struct gameevents_s {
     tech_field_t virus_field;
     uint8_t have_comet; /* 0..3 */
     player_id_t comet_player;
-    uint8_t comet_planet_i;
+    planet_id_t comet_planet_i;
     uint8_t comet_years;
     uint16_t comet_hp;
     uint16_t comet_dmg;
     uint8_t have_pirates;   /* 0..3 */
-    uint8_t pirates_planet_i;
+    planet_id_t pirates_planet_i;
     uint16_t pirates_hp;
     bool have_derelict;
     player_id_t derelict_player;
     monster_t crystal;
     monster_t amoeba;
     bool have_enviro;
-    uint8_t enviro_planet_i;
+    planet_id_t enviro_planet_i;
     bool have_rich;
-    uint8_t rich_planet_i;
+    planet_id_t rich_planet_i;
     bool have_support;
     player_id_t support_player;
     bool have_poor;
-    uint8_t poor_planet_i;
-    uint8_t have_orion_conquer; /* 0, pi+1 */
-    uint8_t planet_orion_i;
+    planet_id_t poor_planet_i;
+    planet_id_t have_orion_conquer; /* 0, pi+1 */
+    planet_id_t planet_orion_i;
     bool have_guardian;
-    uint8_t home[PLAYER_NUM];   /* home planet index or PLANET_NONE if dead */
+    planet_id_t home[PLAYER_NUM];   /* home planet index or PLANET_NONE if dead */
     uint8_t report_stars;
     BOOLVEC_DECLARE(coup, PLAYER_NUM);
     newtechs_t newtech[PLAYER_NUM];
@@ -255,7 +255,7 @@ typedef struct gameevents_s {
     uint8_t stolen_tech[PLAYER_NUM][PLAYER_NUM]; /* [victim][spy] */
     player_id_t stolen_spy[PLAYER_NUM][PLAYER_NUM]; /* [victim][spy] */
     bool sabotage_is_bases[PLAYER_NUM][PLAYER_NUM]; /* [victim][spy] */
-    uint8_t sabotage_planet[PLAYER_NUM][PLAYER_NUM]; /* [victim][spy] */
+    planet_id_t sabotage_planet[PLAYER_NUM][PLAYER_NUM]; /* [victim][spy] */
     uint16_t sabotage_num[PLAYER_NUM][PLAYER_NUM]; /* [victim][spy] */
     player_id_t sabotage_spy[PLAYER_NUM][PLAYER_NUM]; /* [victim][spy] */
     int16_t ceasefire[PLAYER_NUM][PLAYER_NUM]; /* [human][ai] */
@@ -293,17 +293,18 @@ struct game_s {
     galaxy_size_t galaxy_size;
     uint8_t galaxy_w;  /* 6 8 a c */
     uint8_t galaxy_h;  /* 4 6 7 9 */
-    uint8_t galaxy_stars;  /* w*h */
+    uint16_t galaxy_stars;  /* w*h */
     uint16_t galaxy_maxx;
     uint16_t galaxy_maxy;
     uint32_t seed;   /* current random seed */
     uint32_t galaxy_seed; /* seed of generated galaxy */
     game_end_type_t end;
     player_id_t winner;
+    uint8_t mp_team[PLAYER_NUM]; /* 1oom-mp: per-empire team (0 = none/FFA); set on the server in setup_game, used by the team-aware win check */
     player_id_t guardian_killer;
     bool election_held;
     BOOLVEC_DECLARE(refuse, PLAYER_NUM);
-    uint8_t planet_focus_i[PLAYER_NUM];
+    planet_id_t planet_focus_i[PLAYER_NUM];
     uint8_t nebula_num;        /* 0..4 */
     uint8_t nebula_type[NEBULA_MAX];    /* 0..9 */
     uint16_t nebula_x[NEBULA_MAX];
@@ -347,6 +348,7 @@ static inline bool IS_ALIVE(const struct game_s *g, player_id_t i)
 #define IS_AI(_g_, _i_) BOOLVEC_IS1((_g_)->is_ai, (_i_))
 
 extern bool game_opt_skip_intro_always;
+extern bool game_mp_is_server; /* 1oom-mp: this process is the headless MP server */
 extern bool game_opt_message_filter[FINISHED_NUM];
 extern struct game_new_options_s game_opt_custom;
 

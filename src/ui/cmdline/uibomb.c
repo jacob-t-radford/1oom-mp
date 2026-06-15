@@ -14,7 +14,7 @@
 
 /* -------------------------------------------------------------------------- */
 
-bool ui_bomb_ask(struct game_s *g, int pi, uint8_t planet_i, int pop_inbound)
+bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound)
 {
     const planet_t *p = &(g->planet[planet_i]);
     const empiretechorbit_t *e = &(g->eto[p->owner]);
@@ -31,7 +31,7 @@ bool ui_bomb_ask(struct game_s *g, int pi, uint8_t planet_i, int pop_inbound)
     return (v == 1);
 }
 
-void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, uint8_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other)
+void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, planet_id_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other)
 {
     const planet_t *p = &(g->planet[planet_i]);
     ui_switch_2(g, attacker_i, owner_i);

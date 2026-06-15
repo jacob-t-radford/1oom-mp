@@ -27,7 +27,7 @@ static void tenths_2str(struct strbuild_s *str, int num)
 
 /* -------------------------------------------------------------------------- */
 
-void game_planet_destroy(struct game_s *g, uint8_t planet_i, player_id_t attacker)
+void game_planet_destroy(struct game_s *g, planet_id_t planet_i, player_id_t attacker)
 {
     planet_t *p = &(g->planet[planet_i]);
     player_id_t owner = p->owner;
@@ -84,7 +84,7 @@ void game_planet_destroy(struct game_s *g, uint8_t planet_i, player_id_t attacke
     }
 }
 
-uint8_t game_planet_get_random(struct game_s *g, player_id_t owner)
+planet_id_t game_planet_get_random(struct game_s *g, player_id_t owner)
 {
     uint8_t tbl[PLANETS_MAX];
     int num = 0;
@@ -100,7 +100,7 @@ uint8_t game_planet_get_random(struct game_s *g, player_id_t owner)
     }
 }
 
-void game_planet_adjust_percent2(struct game_s *g, uint8_t planet_i, planet_slider_i_t si, uint8_t percent, bool respect_locks)
+void game_planet_adjust_percent2(struct game_s *g, planet_id_t planet_i, planet_slider_i_t si, uint8_t percent, bool respect_locks)
 {
     planet_t *p = &(g->planet[planet_i]);
     if (respect_locks && p->slider_lock[si]) return;

@@ -58,6 +58,10 @@ util_sources = \
     main.h \
     menu.c \
     menu.h \
+    mp.c \
+    mp.h \
+    net.c \
+    net.h \
     options.c \
     options.h \
     os.h \
@@ -124,6 +128,13 @@ hwnop_lib = $(top_builddir)/src/hw/nop/libhwnop.a
 1oom_cmdline_SOURCES = $(util_sources)
 1oom_cmdline_LDADD = $(1oom_cmdline_libs) @READLINE_LIBS@
 1oom_cmdline_DEPENDENCIES = $(1oom_cmdline_libs)
+
+# 1oom-mp: headless multiplayer server (null UI, runs game_turn_process server-side)
+bin_PROGRAMS += 1oom_server
+1oom_server_libs = $(gamemain_lib) $(game_lib) $(uinop_lib) $(game_lib) $(hwnop_lib) $(common_libs)
+1oom_server_SOURCES = $(util_sources)
+1oom_server_LDADD = $(1oom_server_libs)
+1oom_server_DEPENDENCIES = $(1oom_server_libs)
 
 uiclassic_lib = $(top_builddir)/src/ui/classic/libuiclassic.a
 hwsdl1_lib = $(top_builddir)/src/hw/sdl/1/libhwsdl1.a

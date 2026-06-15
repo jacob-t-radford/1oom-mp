@@ -105,7 +105,7 @@ struct battle_side_s {
 struct battle_s {
     struct game_s *g;
     void *uictx;
-    uint8_t planet_i;
+    planet_id_t planet_i;
     battle_side_i_t planet_side;
     int16_t pop;
     uint16_t fact;
@@ -148,7 +148,7 @@ struct battle_s {
     int8_t area[BATTLE_AREA_H][BATTLE_AREA_W];
 };
 
-extern void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, uint8_t planet_i);
+extern void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_id_t planet_i);
 extern void game_battle_finish(struct battle_s *bt);
 extern void game_battle_handle_all(struct game_s *g);
 extern void game_battle_count_hulls(const struct battle_s *bt, shipsum_t force[2][SHIP_HULL_NUM]);

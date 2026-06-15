@@ -440,6 +440,7 @@ static void main_menu_make_options_addons_page(struct main_menu_data_s *d)
     menu_make_bool(menu_allocate_item(), "UI Extra", &ui_extra_enabled, MOO_KEY_e);
     menu_make_bool(menu_allocate_item(), "Combat Autoresolve", &ui_space_combat_autoresolve, MOO_KEY_v);
     menu_make_bool(menu_allocate_item(), "UI SM Ships", &ui_sm_ships_enabled, MOO_KEY_s);
+    menu_make_bool(menu_allocate_item(), "Tutorial Notes", &ui_autohelp_enabled, MOO_KEY_n);
     menu_make_bool(menu_allocate_item(), "Load Options Extra", &ui_load_opts_extra, MOO_KEY_o);
     menu_make_page(menu_allocate_item(), "Message Filter", MAIN_MENU_PAGE_OPTIONS_ADDONS_MESSAGE_FILTER, MOO_KEY_m);
     menu_make_back(menu_allocate_item());

@@ -570,12 +570,18 @@ static void game_turn_build_ship(struct game_s *g)
             } else {
                 shipdesign_t *sd = &(srd->design[si]);
                 int cost, shipnum;
-                uint8_t dest;
+                planet_id_t dest;
                 cost = sd->cost;
                 shipnum = 0;
-                while (prod >= cost) {
-                    ++shipnum;
-                    prod -= cost;
+                /* guard: a planet set to build an empty/invalid design slot (cost <= 0) would
+                   spin this loop forever (prod never drops below 0). Build nothing instead. */
+                if (cost > 0) {
+                    while (prod >= cost) {
+                        ++shipnum;
+                        prod -= cost;
+                    }
+                } else {
+                    log_message("game_turn_build_ship: planet %d owner %d buildship=%d cost=%d -- skipping (would hang)\n", i, (int)owner, si, cost);
                 }
                 if ((shipnum + srd->shipcount[si]) > game_num_limit_ships_all) {
                     shipnum = game_num_limit_ships_all - srd->shipcount[si];
@@ -746,7 +752,62 @@ static void game_turn_build_ind(struct game_s *g)
     }
 }
 
-static void game_turn_move_ships(struct game_s *g)
+void (*game_mp_premove_hook)(struct game_s *g) = NULL;
+
+/* 1oom-mp colonization (mirrors the explore/colonize logic in game_turn_explore):
+   find the best colony-ship design pi has in orbit at pli that can colonize it. */
+int mp_colony_ship_for(const struct game_s *g, player_id_t pi, planet_id_t pli)
+{
+    const empiretechorbit_t *e = &(g->eto[pi]);
+    const planet_t *p = &(g->planet[pli]);
+    int best_colonize = 200, best_slot = -1;
+    for (int j = 0; j < e->shipdesigns_num; ++j) {
+        const shipdesign_t *sd = &(g->srd[pi].design[j]);
+        int can_colonize = 200;
+        for (int k = 0; k < SPECIAL_SLOT_NUM; ++k) {
+            ship_special_t s = sd->special[k];
+            if ((s >= SHIP_SPECIAL_STANDARD_COLONY_BASE) && (s <= SHIP_SPECIAL_RADIATED_COLONY_BASE)) {
+                can_colonize = PLANET_TYPE_MINIMAL - (s - SHIP_SPECIAL_STANDARD_COLONY_BASE);
+            }
+        }
+        if ((can_colonize < 200) && (e->orbit[pli].ships[j] > 0)) {
+            if (can_colonize < best_colonize) { best_colonize = can_colonize; best_slot = j; }
+            if (e->race == RACE_SILICOID) { best_colonize = PLANET_TYPE_RADIATED; }
+        }
+    }
+    if ((best_colonize == 200) || (p->owner != PLAYER_NONE)
+        || (p->type == PLANET_TYPE_NOT_HABITABLE) || (p->type < best_colonize)) {
+        return -1;
+    }
+    return best_slot;
+}
+
+bool game_planet_can_colonize_with_ship(const struct game_s *g, player_id_t pi, planet_id_t pli)
+{
+    return mp_colony_ship_for(g, pi, pli) >= 0;
+}
+
+/* 1oom-mp: establish pi's colony on pli. The colony ship is consumed on the CLIENT the moment
+   the player accepts the colonize prompt (so it can't be accidentally moved away, which would
+   strand the colony) -- that consume is carried in the synced orbit, so here we just claim the
+   planet. Still unowned => first claim wins a contested planet; must be habitable. */
+bool game_planet_colonize_with_ship(struct game_s *g, player_id_t pi, planet_id_t pli)
+{
+    planet_t *p = &(g->planet[pli]);
+    if ((p->owner != PLAYER_NONE) || (p->type == PLANET_TYPE_NOT_HABITABLE)) { return false; }
+    p->owner = pi;
+    p->pop = 2;
+    if (game_num_colonized_factories_fix && (p->prev_owner != PLAYER_NONE) && (p->prev_owner != pi)) {
+        p->pop_oper_fact = (p->factories != 0) ? 1 : 2;
+        p->bc_to_refit = 0;
+    }
+    if ((pli == g->evn.planet_orion_i) && game_num_news_orion) {
+        g->evn.have_orion_conquer = pi + 1;
+    }
+    return true;
+}
+
+void game_turn_move_ships(struct game_s *g)
 {
     void *ctx;
     bool local_multiplayer = g->gaux->local_players > 1, move_back = false;
@@ -1021,7 +1082,7 @@ static void game_turn_explore(struct game_s *g)
     }
 }
 
-static int game_turn_transport_shoot(struct game_s *g, uint8_t planet_i, player_id_t rowner, uint16_t num_transports, uint8_t speed, player_id_t attacker, int bases, weapon_t basewpnt)
+static int game_turn_transport_shoot(struct game_s *g, planet_id_t planet_i, player_id_t rowner, uint16_t num_transports, uint8_t speed, player_id_t attacker, int bases, weapon_t basewpnt)
 {
     const planet_t *p = &(g->planet[planet_i]);
     const empiretechorbit_t *ea = &(g->eto[attacker]);
@@ -1141,7 +1202,7 @@ static void game_turn_transport(struct game_s *g)
     for (int i = 0; i < g->transport_num; ++i) {
         transport_t *r = &(g->transport[i]);
         planet_t *p;
-        uint8_t dest;
+        planet_id_t dest;
         dest = r->dest;
         p = &(g->planet[dest]);
         if ((r->x == p->x) && (r->y == p->y)) {
@@ -1359,8 +1420,8 @@ static bool game_turn_check_end(struct game_s *g, struct game_end_s *ge)
             if (num_planets[i] > 0) {
                 if (pi1 == PLAYER_NONE) {
                     pi1 = i;
-                } else if (pi2 == PLAYER_NONE) {
-                    pi2 = i;
+                } else if ((pi2 == PLAYER_NONE) && !((g->mp_team[i] != 0) && (g->mp_team[i] == g->mp_team[pi1]))) {
+                    pi2 = i; /* 1oom-mp teams: a teammate of pi1 isn't a separate survivor -> one team left still wins */
                 }
                 if (IS_HUMAN(g, i) && (good_planets[i] > 0) && IS_ALIVE(g, i)) {
                     human_alive = true;
@@ -1457,7 +1518,7 @@ static void game_turn_contact_broken(struct game_s *g, player_id_t pi, const BOO
 static void game_turn_update_seen(struct game_s *g)
 {
     game_update_visibility(g);
-    for (uint8_t i = 0; i < g->galaxy_stars; ++i) {
+    for (planet_id_t i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p = &(g->planet[i]);
         for (player_id_t pi = PLAYER_0; pi < g->players; ++pi) {
             bool can_see;
@@ -1485,7 +1546,7 @@ static void game_turn_update_seen(struct game_s *g)
 
 static void game_turn_finished_slider(struct game_s *g)
 {
-    for (uint8_t pli = 0; pli < g->galaxy_stars; ++pli) {
+    for (planet_id_t pli = 0; pli < g->galaxy_stars; ++pli) {
         planet_t *p = &(g->planet[pli]);
         player_id_t pi;
         empiretechorbit_t *e;
@@ -1565,7 +1626,7 @@ static void game_turn_finished_slider(struct game_s *g)
 
 static void game_turn_claim(struct game_s *g)
 {
-    for (uint8_t pli = 0; pli < g->galaxy_stars; ++pli) {
+    for (planet_id_t pli = 0; pli < g->galaxy_stars; ++pli) {
         planet_t *p = &(g->planet[pli]);
         player_id_t pi;
         pi = p->owner;
@@ -1722,7 +1783,12 @@ struct game_end_s game_turn_process(struct game_s *g)
             game_tech_finish_new(g, i);
             ui_newtech(g, i);
         }
-        g->evn.newtech[i].num = 0;
+        /* 1oom-mp: on the headless server the null-UI ui_newtech above shows nothing, so KEEP a
+           human's newtech list -- it then survives in the synced state and the client replays
+           ui_newtech at turn start. It's cleared next turn (before research re-populates it). */
+        if (!(game_mp_is_server && IS_HUMAN(g, i))) {
+            g->evn.newtech[i].num = 0;
+        }
     }
     game_turn_update_have_met(g);
     game_ai->turn_diplo_p1(g);

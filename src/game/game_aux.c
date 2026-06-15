@@ -12,7 +12,7 @@
 
 /* -------------------------------------------------------------------------- */
 
-static void init_star_dist(struct game_aux_s *gaux, struct game_s *g)
+void game_aux_init_star_dist(struct game_aux_s *gaux, struct game_s *g)
 {
     int stars = g->galaxy_stars;
     for (int i = 0; i < stars; ++i) {
@@ -173,7 +173,7 @@ void game_aux_start(struct game_aux_s *gaux, struct game_s *g)
 {
     int n = 0;
     g->gaux = gaux;
-    init_star_dist(gaux, g);
+    game_aux_init_star_dist(gaux, g);
     for (int i = 0; i < g->players; ++i) {
         if (BOOLVEC_IS0(g->is_ai, i)) {
             ++n;

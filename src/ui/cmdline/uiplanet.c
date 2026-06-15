@@ -17,7 +17,7 @@
 
 /* -------------------------------------------------------------------------- */
 
-static void ui_planet_print_orbit_if_visible(const struct game_s *g, player_id_t api, uint8_t planet_i, player_id_t owner)
+static void ui_planet_print_orbit_if_visible(const struct game_s *g, player_id_t api, planet_id_t planet_i, player_id_t owner)
 {
     const empiretechorbit_t *e = &(g->eto[owner]);
     const fleet_orbit_t *o = &(e->orbit[planet_i]);
@@ -39,7 +39,7 @@ static void ui_planet_print_orbit_if_visible(const struct game_s *g, player_id_t
     }
 }
 
-static void ui_planet_print_visible_fleets(const struct game_s *g, player_id_t api, uint8_t planet_i)
+static void ui_planet_print_visible_fleets(const struct game_s *g, player_id_t api, planet_id_t planet_i)
 {
     const empiretechorbit_t *e = &(g->eto[api]);
     const planet_t *p = &(g->planet[planet_i]);
@@ -55,7 +55,7 @@ static void ui_planet_print_visible_fleets(const struct game_s *g, player_id_t a
     }
 }
 
-static void ui_planet_print_visible_transports(const struct game_s *g, player_id_t api, uint8_t planet_i)
+static void ui_planet_print_visible_transports(const struct game_s *g, player_id_t api, planet_id_t planet_i)
 {
     const empiretechorbit_t *e = &(g->eto[api]);
     const planet_t *p = &(g->planet[planet_i]);
@@ -81,7 +81,7 @@ planet_slider_i_t ui_planet_slider_from_param(struct input_token_s *param)
 
 /* -------------------------------------------------------------------------- */
 
-const char *ui_planet_str(const struct game_s *g, int api, uint8_t planet_i, char *buf, size_t bufsize)
+const char *ui_planet_str(const struct game_s *g, int api, planet_id_t planet_i, char *buf, size_t bufsize)
 {
     const planet_t *p = &(g->planet[planet_i]);
     if (BOOLVEC_IS1(p->explored, api)) {
@@ -98,7 +98,7 @@ const char *ui_planet_str(const struct game_s *g, int api, uint8_t planet_i, cha
     }
 }
 
-uint8_t ui_planet_from_param(struct game_s *g, int api, struct input_token_s *param)
+planet_id_t ui_planet_from_param(struct game_s *g, int api, struct input_token_s *param)
 {
     int n = PLANET_NONE;
     if (param->type == INPUT_TOKEN_NUMBER) {
@@ -149,7 +149,7 @@ uint8_t ui_planet_from_param(struct game_s *g, int api, struct input_token_s *pa
     return PLANET_NONE;
 }
 
-void ui_planet_look(const struct game_s *g, int api, uint8_t planet_i, bool show_full)
+void ui_planet_look(const struct game_s *g, int api, planet_id_t planet_i, bool show_full)
 {
     const planet_t *p = &(g->planet[planet_i]);
     const empiretechorbit_t *e = &(g->eto[api]);
@@ -303,7 +303,7 @@ int ui_cmd_planet_look(struct game_s *g, int api, struct input_token_s *param, i
 
 int ui_cmd_planet_go(struct game_s *g, int api, struct input_token_s *param, int num_param, void *var)
 {
-    uint8_t planet_i = ui_planet_from_param(g, api, param);
+    planet_id_t planet_i = ui_planet_from_param(g, api, param);
     if (planet_i != PLANET_NONE) {
         g->planet_focus_i[api] = planet_i;
         return 0;

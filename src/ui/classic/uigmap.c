@@ -36,7 +36,7 @@
 
 struct gmap_blink_data_s {
     struct game_s *g;
-    uint8_t planet_i;
+    planet_id_t planet_i;
     int countdown;
 };
 
@@ -615,7 +615,7 @@ void ui_gmap_basic_finish_frame(void *ctx, int pi)
     ui_delay_ticks_or_click(2);
 }
 
-void ui_gmap_draw_planet_border(const struct game_s *g, uint8_t planet_i)
+void ui_gmap_draw_planet_border(const struct game_s *g, planet_id_t planet_i)
 {
     const planet_t *p = &(g->planet[planet_i]);
     int x, y;

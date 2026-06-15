@@ -6,9 +6,9 @@
 struct game_s;
 struct input_token_s;
 
-extern const char *ui_planet_str(const struct game_s *g, int api, uint8_t planet_i, char *buf, size_t bufsize);
-extern uint8_t ui_planet_from_param(struct game_s *g, int api, struct input_token_s *param);
-extern void ui_planet_look(const struct game_s *g, int api, uint8_t planet_i, bool show_full);
+extern const char *ui_planet_str(const struct game_s *g, int api, planet_id_t planet_i, char *buf, size_t bufsize);
+extern planet_id_t ui_planet_from_param(struct game_s *g, int api, struct input_token_s *param);
+extern void ui_planet_look(const struct game_s *g, int api, planet_id_t planet_i, bool show_full);
 
 extern int ui_cmd_planet_look(struct game_s *g, int api, struct input_token_s *param, int num_param, void *var);
 extern int ui_cmd_planet_go(struct game_s *g, int api, struct input_token_s *param, int num_param, void *var);

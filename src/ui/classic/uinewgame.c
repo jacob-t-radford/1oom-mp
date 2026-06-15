@@ -515,7 +515,7 @@ bool ui_new_game(struct game_new_options_s *newopts)
             if (++diffic >= 5) { diffic = 0; }
         }
         if ((oi == oi_gsize) || (oi == oi_g)) {
-            if (++gsize >= 4) { gsize = 0; }
+            if (++gsize >= GALAXY_SIZE_NUM) { gsize = 0; }
         }
         if ((oi == oi_oppon) || (oi == oi_o)) {
             if (++oppon >= 5) { oppon = 0; }

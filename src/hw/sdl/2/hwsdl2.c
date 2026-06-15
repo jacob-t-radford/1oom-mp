@@ -375,6 +375,22 @@ int hw_event_handle(void)
                     hw_mouse_scroll((e.wheel.y > 0) ? -1 : 1);
                 }
                 break;
+            case SDL_MULTIGESTURE:
+                /* 1oom-mp: trackpad pinch -> map zoom, translated into scroll
+                   steps so it reuses the existing zoom path (works when the
+                   cursor is over the galaxy map). Fingers apart = zoom in. */
+                {
+                    static float pinch_acc = 0.0f;
+                    pinch_acc += e.mgesture.dDist;
+                    if (pinch_acc >= 0.010f) {
+                        hw_mouse_scroll(-1);
+                        pinch_acc = 0.0f;
+                    } else if (pinch_acc <= -0.010f) {
+                        hw_mouse_scroll(1);
+                        pinch_acc = 0.0f;
+                    }
+                }
+                break;
             case SDL_QUIT:
                 hw_audio_shutdown_pre();
                 exit(EXIT_SUCCESS);

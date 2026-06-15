@@ -92,6 +92,7 @@ const struct cfg_items_s ui_cfg_items[] = {
     CFG_ITEM_BOOL("load_opts_extra", &ui_load_opts_extra),
     CFG_ITEM_BOOL("space_combat_autoresolve", &ui_space_combat_autoresolve),
     CFG_ITEM_BOOL("ui_sm_ships_enabled", &ui_sm_ships_enabled),
+    CFG_ITEM_BOOL("autohelp", &ui_autohelp_enabled),
     CFG_ITEM_BOOL("sm_expanded_scroll", &ui_sm_expanded_scroll),
     CFG_ITEM_BOOL("sm_explicit_cursor_context", &ui_sm_explicit_cursor_context),
     CFG_ITEM_BOOL("mouse_lmb_fix", &ui_mouse_lmb_fix),
@@ -179,6 +180,7 @@ bool ui_illogical_hotkey_fix = false;
 bool ui_load_opts_extra = false;
 bool ui_space_combat_autoresolve = false;
 bool ui_sm_ships_enabled = false;
+bool ui_autohelp_enabled = true; /* vanilla shows the tutorial popups; set autohelp=false to mute */
 bool ui_sm_expanded_scroll = false;
 bool ui_sm_no_question_mark_cursor = false;
 bool ui_sm_explicit_cursor_context = false;
@@ -496,10 +498,15 @@ int ui_late_init(void)
     }
     ui_fix_1_3a();
     if (ui_scale_hint == 0) {
-        ui_scale_hint = 1;
+        /* 1oom-mp: default to a 4x internal render so the UI is crisp and the
+           galaxy map has room to zoom (zoom range is [1, ui_scale]). The
+           window size is independent of this, so the window does not grow. */
+        ui_scale_hint = 4;
     }
     ui_scale = ui_scale_hint;
-    starmap_scale = ui_scale_hint;
+    /* 1oom-mp: start at mid zoom so the map can zoom both in and out. */
+    starmap_scale = (ui_scale_hint + 1) / 2;
+    SETMAX(starmap_scale, 1);
     ui_screen_w = UI_VGA_W * ui_scale;
     ui_screen_h = UI_VGA_H * ui_scale;
     ui_cursor_init(ui_scale);

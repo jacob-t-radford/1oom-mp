@@ -35,7 +35,7 @@ const uint8_t colortbl_line_red[5] = { 0x44, 0x43, 0x42, 0x41, 0x40 };
 const uint8_t colortbl_line_reloc[5] = { 0x14, 0x15, 0x16, 0x17, 0x18 };
 const uint8_t colortbl_line_green[5] = { 0xb0, 0xb1, 0xb2, 0xb3, 0xb4 };
 
-static uint8_t ui_starmap_cursor_on_star(const struct starmap_data_s *d, int16_t oi)
+static planet_id_t ui_starmap_cursor_on_star(const struct starmap_data_s *d, int16_t oi)
 {
     if (oi == 0) {
         return PLANET_NONE;
@@ -50,7 +50,7 @@ static uint8_t ui_starmap_cursor_on_star(const struct starmap_data_s *d, int16_t
 
 /* -------------------------------------------------------------------------- */
 
-static void ui_starmap_draw_planetinfo_do(const struct game_s *g, player_id_t api, uint8_t planet_i, bool explored, bool show_plus, bool draw_name)
+static void ui_starmap_draw_planetinfo_do(const struct game_s *g, player_id_t api, planet_id_t planet_i, bool explored, bool show_plus, bool draw_name)
 {
     const planet_t *p = &g->planet[planet_i];
     if (explored || (ui_extra_enabled && g->gaux->flag_cheat_stars)) {
@@ -668,7 +668,7 @@ void ui_starmap_draw_button_text(struct starmap_data_s *d, bool highlight)
     lbxfont_print_str_normal(263, 184, game_str_sm_next_turn, UI_SCREEN_W, ui_scale);
 }
 
-static void ui_starmap_clamp_xy(const struct game_s *g, int *x, int *y)
+void ui_starmap_clamp_xy(const struct game_s *g, int *x, int *y)
 {
     if (!ui_sm_expanded_scroll) {
         SETRANGE(*x, 0, g->galaxy_maxx - ((108 * ui_scale) / starmap_scale));
@@ -696,7 +696,7 @@ void ui_starmap_set_pos(const struct game_s *g, int x, int y)
     ui_data.starmap.y2 = y;
 }
 
-static void ui_starmap_select_target(struct starmap_data_s *d, uint8_t planet_i)
+static void ui_starmap_select_target(struct starmap_data_s *d, planet_id_t planet_i)
 {
     if (!d->controllable || (planet_i == PLANET_NONE)) {
         return;

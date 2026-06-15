@@ -3,7 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <unistd.h>
+
 #include "ui.h"
+#include "mp.h"
 #include "game.h"
 #include "game_save.h"
 #include "game_shipdesign.h"
@@ -126,4 +129,35 @@ void ui_game_start(struct game_s *g)
 
 void ui_game_end(struct game_s *g)
 {
+}
+
+void ui_mp_wait(int reason)
+{
+    (void)reason; /* headless: no waiting screen (mp.c paces the wait) */
+}
+
+void ui_mp_battle_spectate(const struct battle_s *bt)
+{
+    (void)bt; /* headless: no battle render */
+}
+
+void ui_mp_battle_glide(struct battle_s *bt, int itemi, int sx, int sy)
+{
+    (void)bt; (void)itemi; (void)sx; (void)sy; /* cmdline: no battle render */
+}
+
+int ui_mp_lobby_run(int my_id)
+{
+    /* cmdline client: no interactive lobby UI -- auto-pick a race by slot, ready up, and wait. */
+    struct mp_lobby_s lob;
+    if (g_mp_cl_lobby_set) {
+        g_mp_cl_lobby_set(MP_LOBBY_F_RACE, my_id % RACE_NUM);
+        g_mp_cl_lobby_set(MP_LOBBY_F_READY, 1);
+    }
+    while (g_mp_cl_lobby_poll) {
+        int p = g_mp_cl_lobby_poll(&lob);
+        if (p != 0) { return (p > 0) ? 0 : -1; }
+        usleep(20000);
+    }
+    return 0;
 }

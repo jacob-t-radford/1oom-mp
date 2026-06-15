@@ -41,6 +41,8 @@ libgame_a_SOURCES = \
     game_ground.h \
     game_misc.c \
     game_misc.h \
+    game_mp_orders.c \
+    game_mp_orders.h \
     game_nebula.c \
     game_nebula.h \
     game_new.c \

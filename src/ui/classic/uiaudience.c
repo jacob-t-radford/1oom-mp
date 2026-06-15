@@ -248,6 +248,10 @@ void ui_audience_start(struct audience_s *au)
     ui_switch_2(au->g, au->ph, au->pa);
     d.au = au;
     au->uictx = &d;
+    /* 1oom-mp: the audience screen inherits the caller's cursor; in MP it's entered from injected
+       paths (turn-start prompts, the live-diplomacy breakout) that leave the starmap's cursor set,
+       so force the normal pointer here -- matches the single-player races-screen entry. */
+    ui_cursor_setup_area(1, &ui_cursor_area_tbl[0]);
     d.delay = 0;
     d.music_i = -1;
     d.gfxi = 0xff;

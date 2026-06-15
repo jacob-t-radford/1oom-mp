@@ -15,7 +15,7 @@
 
 /* -------------------------------------------------------------------------- */
 
-static bool game_send_fleet_do(struct game_s *g, player_id_t owner, uint8_t from, uint8_t dest, const shipcount_t ships[NUM_SHIPDESIGNS], const uint8_t shiptypes[NUM_SHIPDESIGNS], uint8_t numtypes, bool retreat)
+static bool game_send_fleet_do(struct game_s *g, player_id_t owner, planet_id_t from, planet_id_t dest, const shipcount_t ships[NUM_SHIPDESIGNS], const uint8_t shiptypes[NUM_SHIPDESIGNS], uint8_t numtypes, bool retreat)
 {
     fleet_enroute_t *r;
     const planet_t *pf, *pt;
@@ -88,7 +88,7 @@ static bool game_send_fleet_do(struct game_s *g, player_id_t owner, uint8_t from
     return true;
 }
 
-static bool game_send_fleet_from_orbit_do(struct game_s *g, player_id_t owner, uint8_t from, uint8_t dest, const shipcount_t ships[NUM_SHIPDESIGNS], const uint8_t shiptypes[NUM_SHIPDESIGNS], uint8_t numtypes, bool retreat)
+static bool game_send_fleet_from_orbit_do(struct game_s *g, player_id_t owner, planet_id_t from, planet_id_t dest, const shipcount_t ships[NUM_SHIPDESIGNS], const uint8_t shiptypes[NUM_SHIPDESIGNS], uint8_t numtypes, bool retreat)
 {
     if (!game_send_fleet_do(g, owner, from, dest, ships, shiptypes, numtypes, retreat)) {
         return false;
@@ -114,7 +114,7 @@ static bool game_send_fleet_from_orbit_do(struct game_s *g, player_id_t owner, u
 
 /* -------------------------------------------------------------------------- */
 
-bool game_send_fleet_from_orbit(struct game_s *g, player_id_t owner, uint8_t from, uint8_t dest, const shipcount_t ships[NUM_SHIPDESIGNS], const uint8_t shiptypes[NUM_SHIPDESIGNS], uint8_t numtypes)
+bool game_send_fleet_from_orbit(struct game_s *g, player_id_t owner, planet_id_t from, planet_id_t dest, const shipcount_t ships[NUM_SHIPDESIGNS], const uint8_t shiptypes[NUM_SHIPDESIGNS], uint8_t numtypes)
 {
     if (dest == from) {
         return false;
@@ -122,12 +122,12 @@ bool game_send_fleet_from_orbit(struct game_s *g, player_id_t owner, uint8_t fro
     return game_send_fleet_from_orbit_do(g, owner, from, dest, ships, shiptypes, numtypes, false);
 }
 
-bool game_send_fleet_retreat(struct game_s *g, player_id_t owner, uint8_t from, uint8_t dest, const shipcount_t ships[NUM_SHIPDESIGNS], const uint8_t shiptypes[NUM_SHIPDESIGNS], uint8_t numtypes)
+bool game_send_fleet_retreat(struct game_s *g, player_id_t owner, planet_id_t from, planet_id_t dest, const shipcount_t ships[NUM_SHIPDESIGNS], const uint8_t shiptypes[NUM_SHIPDESIGNS], uint8_t numtypes)
 {
     return game_send_fleet_from_orbit_do(g, owner, from, dest, ships, shiptypes, numtypes, true);
 }
 
-bool game_send_fleet_reloc(struct game_s *g, player_id_t owner, uint8_t from, uint8_t dest, uint8_t si, shipcount_t shipnum)
+bool game_send_fleet_reloc(struct game_s *g, player_id_t owner, planet_id_t from, planet_id_t dest, uint8_t si, shipcount_t shipnum)
 {
     shipcount_t ships[NUM_SHIPDESIGNS];
     uint8_t shiptypes[NUM_SHIPDESIGNS];
@@ -236,7 +236,7 @@ void game_fleet_unrefuel(struct game_s *g)
     for (player_id_t pi = PLAYER_0; pi < g->players; ++pi) {
         const shipresearch_t *srd = &(g->srd[pi]);
         empiretechorbit_t *e = &(g->eto[pi]);
-        for (uint8_t pli = 0; pli < g->galaxy_stars; ++pli) {
+        for (planet_id_t pli = 0; pli < g->galaxy_stars; ++pli) {
             planet_t *p = &(g->planet[pli]);
             uint8_t wr;
             wr = p->within_frange[pi];
@@ -261,7 +261,7 @@ void game_fleet_unrefuel(struct game_s *g)
     }
 }
 
-uint8_t game_fleet_get_speed(const struct game_s *g, const struct fleet_enroute_s *r, uint8_t pfrom, uint8_t pto)
+uint8_t game_fleet_get_speed(const struct game_s *g, const struct fleet_enroute_s *r, planet_id_t pfrom, planet_id_t pto)
 {
     if (game_num_stargate_redir_fix && ((r->speed == FLEET_SPEED_STARGATE) || (pfrom != PLANET_NONE))) {
         player_id_t owner = r->owner;
@@ -289,7 +289,7 @@ uint8_t game_fleet_get_speed(const struct game_s *g, const struct fleet_enroute_
     }
 }
 
-void game_fleet_redirect(struct game_s *g, struct fleet_enroute_s *r, uint8_t pfrom, uint8_t pto)
+void game_fleet_redirect(struct game_s *g, struct fleet_enroute_s *r, planet_id_t pfrom, planet_id_t pto)
 {
     if ((pfrom != PLANET_NONE) && (pfrom == pto)) {
         shipcount_t *os;

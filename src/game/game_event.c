@@ -85,7 +85,7 @@ static player_id_t game_event_new_get_trader(const struct game_s *g, player_id_t
 static void game_monster_set_start(struct game_s *g, monster_t *m)
 {
     int x, y, v;
-    uint8_t dest;
+    planet_id_t dest;
     switch (rnd_0_nm1(4, &g->seed)) {
         case 0:
             v = rnd_0_nm1(g->galaxy_h, &g->seed);
@@ -164,7 +164,7 @@ void game_event_new(struct game_s *g)
     int chance;
     player_id_t player;
     const empiretechorbit_t *e;
-    uint8_t planet;
+    planet_id_t planet;
     planet_t *p;
     if (g->gaux->flag_cheat_events || (game_num_event_roll == 0)) {
         g->evn.have_plague = 0;

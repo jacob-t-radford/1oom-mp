@@ -27,4 +27,9 @@ extern int game_save_do_save_i(int savei/*0..NUM_ALL_SAVES-1*/, const char *save
 extern int game_save_do_load_year(int year, char *savename, struct game_s *g);
 extern int game_save_do_save_year(const char *savename, const struct game_s *g);
 
+/* 1oom-mp: memory-blob (no file/header) state sync for networking. */
+extern int game_save_blob_save(const struct game_s *g, uint8_t *buf, int buflen);
+extern int game_save_blob_load(struct game_s *g, const uint8_t *buf, int buflen);
+extern int game_save_blob_maxlen(const struct game_s *g);
+
 #endif
