@@ -57,6 +57,8 @@ enum mp_decision_e {
     MP_DEC_BATTLE_TURN   = 8, /* one ship-action (resp: 1 byte ui_battle_action_t) */
     MP_DEC_BATTLE_INIT   = 9, /* battle start: autoresolve prompt + UI setup (resp: 1 byte mode) */
     MP_DEC_BATTLE_END    = 10, /* battle end: tear down the battle UI */
+    MP_DEC_GROUND        = 11, /* ground-invasion result + animation (req: struct ground_s; shown to both human sides; resp: 1 byte ack) */
+    MP_DEC_BOMB_SHOW     = 12, /* orbital-bombing result (req: attacker/owner/planet + pop/fact damage; shown to both human sides; resp: 1 byte ack) */
 };
 
 /* AUDIENCE relay subtypes: which ui_audience_* call the server is running on the human's behalf.
@@ -199,5 +201,8 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
    apply the rebroadcast state. (Phase A submits immediately; real client submits
    after the human plays.) Returns 0 ok. */
 int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_iface_t *gi);
+
+/* the local client's player id (valid during an MP client session). */
+extern int mp_cl_player_id(void);
 
 #endif /* INC_1OOM_MP_H */

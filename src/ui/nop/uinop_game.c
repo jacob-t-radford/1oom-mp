@@ -4,10 +4,12 @@
 #include "config.h"
 #include "ui.h"
 #include "types.h"
+#include "game.h"
 #include "game_planet.h"
 #include "game_audience.h"
 #include "game_battle.h"
 #include "game_election.h"
+#include "game_ground.h"
 #include "game_turn.h"
 #include "mp.h"
 #include <stdio.h>
@@ -421,6 +423,32 @@ bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound
 
 void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, planet_id_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other)
 {
+    /* 1oom-mp: the server resolves the bombing on this null UI, so relay the result (pop killed /
+       factories destroyed) to the human attacker AND the human owner, who each render it. */
+    (void)pi;
+    if (g_mp_decision_hook_multi) {
+        int players[2], n = 0;
+        int cand[2]; cand[0] = attacker_i; cand[1] = owner_i;
+        for (int k = 0; k < 2; ++k) {
+            int p = cand[k];
+            if ((p < 0) || (p >= (int)g->players) || !IS_HUMAN(g, p)) { continue; }
+            bool dup = false;
+            for (int j = 0; j < n; ++j) { if (players[j] == p) { dup = true; break; } }
+            if (!dup) { players[n++] = p; }
+        }
+        if (n > 0) {
+            uint8_t req[16], resp[2] = {0, 0};
+            int q = 0;
+            req[q++] = (uint8_t)(attacker_i >> 8); req[q++] = (uint8_t)attacker_i;
+            req[q++] = (uint8_t)(owner_i >> 8);    req[q++] = (uint8_t)owner_i;
+            req[q++] = (uint8_t)(planet_i >> 8);   req[q++] = (uint8_t)planet_i;
+            req[q++] = (uint8_t)(popdmg >> 24); req[q++] = (uint8_t)(popdmg >> 16); req[q++] = (uint8_t)(popdmg >> 8); req[q++] = (uint8_t)popdmg;
+            req[q++] = (uint8_t)(factdmg >> 24); req[q++] = (uint8_t)(factdmg >> 16); req[q++] = (uint8_t)(factdmg >> 8); req[q++] = (uint8_t)factdmg;
+            req[q++] = play_music ? 1 : 0;
+            req[q++] = hide_other ? 1 : 0;
+            g_mp_decision_hook_multi(players, n, MP_DEC_BOMB_SHOW, req, q, resp, 1);
+        }
+    }
 }
 
 void ui_turn_pre(const struct game_s *g)
@@ -433,6 +461,22 @@ void ui_turn_msg(struct game_s *g, int pi, const char *str)
 
 void ui_ground(struct game_s *g, struct ground_s *gr)
 {
+    /* 1oom-mp: the server resolves the invasion on this null UI, so relay the result + animation to
+       the human attacker AND the human defender so both watch it (ground_s is pointer-free). */
+    if (g_mp_decision_hook_multi) {
+        int players[2], n = 0;
+        for (int side = 0; side < 2; ++side) {
+            int p = gr->s[side].player;
+            if ((p < 0) || (p >= (int)g->players) || !IS_HUMAN(g, p)) { continue; }
+            bool dup = false;
+            for (int j = 0; j < n; ++j) { if (players[j] == p) { dup = true; break; } }
+            if (!dup) { players[n++] = p; }
+        }
+        if (n > 0) {
+            uint8_t resp[2] = {0, 0};
+            g_mp_decision_hook_multi(players, n, MP_DEC_GROUND, gr, (int)sizeof(*gr), resp, 1);
+        }
+    }
 }
 
 void ui_news_start(void)

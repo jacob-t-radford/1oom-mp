@@ -631,6 +631,8 @@ done:
 
 /* -------------------------------------------------------------------------- */
 
+int mp_cl_player_id(void) { return s_cl_pid; }
+
 int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_iface_t *gi) {
     net_conn_t *c = net_connect(host, port);
     if (!c) { return -1; }
