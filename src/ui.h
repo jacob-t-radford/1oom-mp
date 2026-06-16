@@ -232,6 +232,9 @@ extern void ui_election_delay(struct election_s *el, int delay);
 extern int ui_election_vote(struct election_s *el, int player_i);
 extern bool ui_election_accept(struct election_s *el, int player_i);
 extern void ui_election_end(struct election_s *el);
+/* 1oom-mp: build/free the election gfx context for a relayed (uictx=NULL) election decision */
+extern void ui_election_ctx_load(struct election_s *el);
+extern void ui_election_ctx_free(struct election_s *el);
 
 struct audience_s;
 extern void ui_audience_start(struct audience_s *au);

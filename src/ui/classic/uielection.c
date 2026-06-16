@@ -72,6 +72,28 @@ static void election_free_data(struct election_data_s *d)
     lbxfile_item_release_file(LBXFILE_COUNCIL);
 }
 
+/* 1oom-mp: a relayed election decision (MP_DEC_ELECTION_*) reaches the client with uictx=NULL,
+   because the normal ui_election_start path that builds the gfx context isn't run here. Build it
+   (and free it) around the relayed vote/accept so the council screens can draw instead of
+   dereferencing a NULL election_data_s. */
+void ui_election_ctx_load(struct election_s *el)
+{
+    static struct election_data_s d;
+    el->uictx = &d;
+    d.el = el;
+    d.flag_countdown = false;
+    d.count = 0;
+    election_load_data(&d);
+}
+
+void ui_election_ctx_free(struct election_s *el)
+{
+    if (el->uictx) {
+        election_free_data((struct election_data_s *)el->uictx);
+        el->uictx = NULL;
+    }
+}
+
 static void ui_election_draw_cb(void *vptr)
 {
     struct election_data_s *d = vptr;

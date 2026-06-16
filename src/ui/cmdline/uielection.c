@@ -71,3 +71,11 @@ void ui_election_end(struct election_s *el)
 {
     ui_switch_wait(el->g);
 }
+
+void ui_election_ctx_load(struct election_s *el)
+{
+}
+
+void ui_election_ctx_free(struct election_s *el)
+{
+}

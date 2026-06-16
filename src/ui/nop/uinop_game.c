@@ -540,6 +540,14 @@ void ui_election_end(struct election_s *el)
 {
 }
 
+void ui_election_ctx_load(struct election_s *el)
+{
+}
+
+void ui_election_ctx_free(struct election_s *el)
+{
+}
+
 /* 1oom-mp: the AI's diplomacy with a human runs through game_audience on this headless server;
    relay each ui_audience_* call to the human's client (au->ph) so they actually see the audience
    and answer. If au->ph isn't a connected human, the decision hook returns <0 and we fall back to

@@ -995,7 +995,9 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(&el, req, sizeof(el));
             memcpy(&pi32, req + sizeof(el), 4);
             el.g = g; el.uictx = NULL; el.buf = ebuf; el.str = NULL;
+            ui_election_ctx_load(&el); /* relayed election has no gfx context (uictx=NULL) -- build it */
             vote = ui_election_vote(&el, pi32);
+            ui_election_ctx_free(&el);
             if (resp_buflen >= (int)sizeof(vote)) { memcpy(resp, &vote, sizeof(vote)); return (int)sizeof(vote); }
             return 0;
         }
@@ -1007,7 +1009,9 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(&el, req, sizeof(el));
             memcpy(&pi32, req + sizeof(el), 4);
             el.g = g; el.uictx = NULL; el.buf = ebuf; el.str = NULL;
+            ui_election_ctx_load(&el); /* relayed election has no gfx context (uictx=NULL) -- build it */
             resp[0] = ui_election_accept(&el, pi32) ? 1 : 0;
+            ui_election_ctx_free(&el);
             return 1;
         }
         case MP_DEC_BATTLE_INIT: { /* set up the battle UI + run the autoresolve prompt */
