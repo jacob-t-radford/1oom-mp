@@ -21,6 +21,8 @@
 #include "game_end.h"
 #include "game_event.h"
 #include "game_save.h"
+#include "lib.h"
+#include "os.h"
 #include "game_save_moo13.h"
 #include "game_strp.h"
 #include "game_turn.h"
@@ -747,6 +749,29 @@ int main_handle_option(const char *argv)
    over the wire is a save blob; advancing a turn is game_turn_process. */
 static int mp_if_serialize(void *ctx, uint8_t *buf, int buflen) { return game_save_blob_save((struct game_s *)ctx, buf, buflen); }
 static int mp_if_deserialize(void *ctx, const uint8_t *buf, int len) { return game_save_blob_load((struct game_s *)ctx, buf, len); }
+/* 1oom-mp: autosave the just-resolved game so a server crash or restart never loses it. Written every
+   turn in the same blob format the GAME_DATA sync uses, so the server can resume from it (-mpload).
+   Path: <user dir>/mp_autosave.blob. Cheap (~one save-sized write per turn). */
+static void game_mp_autosave(struct game_s *g) {
+    static uint8_t *buf = NULL;
+    static int cap = 0;
+    int need, n;
+    char fname[1024];
+    FILE *f;
+    need = game_save_blob_maxlen(g);
+    if (need > cap) {
+        uint8_t *nb = (uint8_t *)realloc(buf, (size_t)need);
+        if (!nb) { return; }
+        buf = nb; cap = need;
+    }
+    n = game_save_blob_save(g, buf, cap);
+    if (n <= 0) { return; }
+    os_make_path_user();
+    lib_sprintf(fname, sizeof(fname), "%s/mp_autosave.blob", os_get_path_user());
+    f = fopen(fname, "wb");
+    if (f) { fwrite(buf, 1, (size_t)n, f); fclose(f); }
+}
+
 static int mp_if_advance(void *ctx) {
     struct game_s *g = (struct game_s *)ctx;
     if (getenv("MP_PINGTEST") && g_mp_decision_hook) {
@@ -785,6 +810,7 @@ static int mp_if_advance(void *ctx) {
     }
     /* apply diplomacy actions AFTER turn processing (it clears queued proposals) */
     game_mp_diplo_apply_pending(g);
+    game_mp_autosave(g); /* persist the resolved turn so a crash/restart can resume it */
     /* return >0 to tell mp_server_run the game has ended (someone won/lost) */
     return ((ge.type == GAME_END_NONE) || (ge.type == GAME_END_FINAL_WAR)) ? 0 : 1;
 }
