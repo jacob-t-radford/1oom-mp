@@ -1827,6 +1827,10 @@ struct game_end_s game_turn_process(struct game_s *g)
     for (player_id_t i = PLAYER_0; i < g->players; ++i) {
         game_turn_contact_broken(g, i, BOOLVEC_TBL_PTRPARAMM(old_contact, i));
     }
+    /* recompute fuel reachability against THIS turn's colonies before culling unrefueled ships --
+       otherwise within_frange is a turn stale (it's next refreshed below), so a ship arriving at a
+       planet that a colony established this turn now refuels would be wrongly cut off. */
+    game_update_within_range(g);
     game_fleet_unrefuel(g);
     game_update_production(g);
     if (copyprot_status == 1) {
