@@ -105,6 +105,19 @@ void ui_election_ctx_free(struct election_s *el)
     ui_draw_finish_mode = 0;
 }
 
+static void ui_election_draw_cb(void *vptr); /* defined below */
+
+/* 1oom-mp: draw one council frame for a spectating (non-voting) player. el->uictx must already be
+   built (ui_election_ctx_load). Pumps events + draws the chamber from the current state + presents. */
+void ui_election_spectate(struct election_s *el)
+{
+    struct election_data_s *d = el->uictx;
+    if (!d) { return; }
+    hw_event_handle();
+    ui_election_draw_cb(d);
+    ui_draw_finish();
+}
+
 static void ui_election_draw_cb(void *vptr)
 {
     struct election_data_s *d = vptr;

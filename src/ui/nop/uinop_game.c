@@ -491,12 +491,34 @@ void ui_news_end(void)
 {
 }
 
+/* 1oom-mp: the council is a plenary event (every empire is present), so stream the chamber state to
+   ALL human players via the spectate channel -- they render it while waiting (shared synchronous
+   view). The vote/accept stay per-human (decision RPC). Pointers are zeroed for transport. */
+static void mp_election_relay(struct election_s *el, int kind)
+{
+    if (!g_mp_spectate_hook || !el || !el->g) { return; }
+    uint8_t buf[1 + sizeof(struct election_s)];
+    int len = 1;
+    buf[0] = (uint8_t)kind;
+    if (kind == UI_MP_SPEC_COUNCIL) {
+        struct election_s e = *el;
+        e.g = NULL; e.uictx = NULL; e.buf = NULL; e.str = NULL;
+        memcpy(buf + 1, &e, sizeof(e));
+        len = 1 + (int)sizeof(e);
+    }
+    for (player_id_t p = PLAYER_0; p < el->g->players; ++p) {
+        if (IS_HUMAN(el->g, p)) { g_mp_spectate_hook(p, buf, len); }
+    }
+}
+
 void ui_election_start(struct election_s *el)
 {
+    mp_election_relay(el, UI_MP_SPEC_COUNCIL);
 }
 
 void ui_election_show(struct election_s *el)
 {
+    mp_election_relay(el, UI_MP_SPEC_COUNCIL);
 }
 
 void ui_election_delay(struct election_s *el, int delay)
@@ -538,6 +560,7 @@ bool ui_election_accept(struct election_s *el, int player_i)
 
 void ui_election_end(struct election_s *el)
 {
+    mp_election_relay(el, UI_MP_SPEC_COUNCIL_END);
 }
 
 void ui_election_ctx_load(struct election_s *el)
@@ -545,6 +568,10 @@ void ui_election_ctx_load(struct election_s *el)
 }
 
 void ui_election_ctx_free(struct election_s *el)
+{
+}
+
+void ui_election_spectate(struct election_s *el)
 {
 }
 

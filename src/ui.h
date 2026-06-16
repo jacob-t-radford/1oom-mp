@@ -76,6 +76,8 @@ enum ui_mp_spec_e {
     UI_MP_SPEC_RETREAT,     /* args: cur_item (the retreating ship) */
     UI_MP_SPEC_MOVE,        /* args: itemi, dest_sx, dest_sy — glide the ship to the destination */
     UI_MP_SPEC_DAMAGE,      /* args: target_i, target_x, target_y, dmg_lo, dmg_hi — hit/explosion */
+    UI_MP_SPEC_COUNCIL,     /* council frame: [kind][struct election_s] — the shared council view, relayed to ALL humans */
+    UI_MP_SPEC_COUNCIL_END, /* council adjourned: [kind] only — tear down the spectator's council view */
 };
 
 /* 1oom-mp: glide a ship from its current hex to (sx,sy) on the spectator's battle screen (replays
@@ -235,6 +237,9 @@ extern void ui_election_end(struct election_s *el);
 /* 1oom-mp: build/free the election gfx context for a relayed (uictx=NULL) election decision */
 extern void ui_election_ctx_load(struct election_s *el);
 extern void ui_election_ctx_free(struct election_s *el);
+/* 1oom-mp: render one frame of the council chamber from a relayed (uictx-set) election -- the
+   shared synchronous council view shown to all non-voting players. */
+extern void ui_election_spectate(struct election_s *el);
 
 struct audience_s;
 extern void ui_audience_start(struct audience_s *au);

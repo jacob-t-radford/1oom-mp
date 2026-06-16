@@ -884,6 +884,27 @@ static struct audience_s s_mp_audience; /* client's working copy of the relayed 
    re-establish g + sprite pointers (read directly each draw) after every memcpy. */
 static struct battle_s s_mp_battle;
 
+/* 1oom-mp: shared synchronous council view. The server streams the council chamber (election_s) to
+   ALL humans (UI_MP_SPEC_COUNCIL), so everyone watches the votes instead of a black/banner screen.
+   The council artwork is a shared resource (LBXFILE_COUNCIL): load it ONCE here and free it ONCE
+   (council-end / turn-advance); the voting client reuses this ctx rather than load/free its own,
+   which would release the shared file out from under the spectate render. */
+static struct election_s s_mp_election;
+static bool s_mp_council_active = false;
+static void *s_mp_election_ctx = NULL;
+
+static void mp_council_ctx_ensure(struct game_s *g) {
+    if (!s_mp_election_ctx) {
+        s_mp_election.g = g;
+        ui_election_ctx_load(&s_mp_election); /* loads council gfx + palette, sets uictx */
+        s_mp_election_ctx = s_mp_election.uictx;
+    }
+}
+static void mp_council_ctx_free(void) {
+    if (s_mp_election_ctx) { ui_election_ctx_free(&s_mp_election); s_mp_election_ctx = NULL; }
+    s_mp_council_active = false;
+}
+
 /* client: pump events while blocked. During a battle, keep the arena on screen
    instead of the black "waiting" frame (the other player's turn would otherwise
    blank our battle view, then flip back). */
@@ -901,7 +922,14 @@ static void mp_if_on_wait(void *ctx, int reason) {
         ui_mp_battle_spectate(&s_mp_battle);
         return;
     }
-    if (reason == MP_WAIT_COUNCIL) { s_mp_combat_hold = 0; } /* the council banner takes priority over a stale combat notice */
+    if (s_mp_council_active && s_mp_election_ctx) {
+        /* a council is in session and we have the streamed chamber state: render it (the shared
+           synchronous council view) rather than a waiting banner. */
+        s_mp_election.uictx = s_mp_election_ctx;
+        ui_election_spectate(&s_mp_election);
+        return;
+    }
+    if (reason == MP_WAIT_COUNCIL) { s_mp_combat_hold = 0; } /* the council banner (fallback if no chamber stream) takes priority over a stale combat notice */
     if (reason == MP_WAIT_COMBAT) { s_mp_combat_hold = 1500; } /* another player just started/continued a battle */
     if (s_mp_combat_hold > 0) {
         --s_mp_combat_hold;
@@ -996,9 +1024,15 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(&el, req, sizeof(el));
             memcpy(&pi32, req + sizeof(el), 4);
             el.g = g; el.uictx = NULL; el.buf = ebuf; el.str = NULL;
-            ui_election_ctx_load(&el); /* relayed election has no gfx context (uictx=NULL) -- build it */
-            vote = ui_election_vote(&el, pi32);
-            ui_election_ctx_free(&el);
+            if (s_mp_council_active && s_mp_election_ctx) {
+                /* shared council: reuse the spectate's loaded chamber ctx (which owns the gfx) */
+                s_mp_election = el; s_mp_election.g = g; s_mp_election.uictx = s_mp_election_ctx;
+                vote = ui_election_vote(&s_mp_election, pi32);
+            } else { /* fallback (no council stream reached us): build + free our own ctx */
+                ui_election_ctx_load(&el);
+                vote = ui_election_vote(&el, pi32);
+                ui_election_ctx_free(&el);
+            }
             if (resp_buflen >= (int)sizeof(vote)) { memcpy(resp, &vote, sizeof(vote)); return (int)sizeof(vote); }
             return 0;
         }
@@ -1010,9 +1044,14 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(&el, req, sizeof(el));
             memcpy(&pi32, req + sizeof(el), 4);
             el.g = g; el.uictx = NULL; el.buf = ebuf; el.str = NULL;
-            ui_election_ctx_load(&el); /* relayed election has no gfx context (uictx=NULL) -- build it */
-            resp[0] = ui_election_accept(&el, pi32) ? 1 : 0;
-            ui_election_ctx_free(&el);
+            if (s_mp_council_active && s_mp_election_ctx) {
+                s_mp_election = el; s_mp_election.g = g; s_mp_election.uictx = s_mp_election_ctx;
+                resp[0] = ui_election_accept(&s_mp_election, pi32) ? 1 : 0;
+            } else {
+                ui_election_ctx_load(&el);
+                resp[0] = ui_election_accept(&el, pi32) ? 1 : 0;
+                ui_election_ctx_free(&el);
+            }
             return 1;
         }
         case MP_DEC_BATTLE_INIT: { /* set up the battle UI + run the autoresolve prompt */
@@ -1139,6 +1178,17 @@ static void mp_battle_move_relay(struct battle_s *bt, int itemi, int sx, int sy)
 
 static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
     struct game_s *g = (struct game_s *)ctx;
+    /* 1oom-mp: shared council frames (relayed to ALL humans, even non-combatants) -- handle before
+       the battle gate, since a council watcher isn't in a battle. */
+    if ((len >= 1) && (data[0] == UI_MP_SPEC_COUNCIL_END)) { mp_council_ctx_free(); return; }
+    if ((len == 1 + (int)sizeof(struct election_s)) && (data[0] == UI_MP_SPEC_COUNCIL)) {
+        memcpy(&s_mp_election, data + 1, sizeof(s_mp_election));
+        s_mp_election.g = g; s_mp_election.buf = NULL; s_mp_election.str = NULL;
+        mp_council_ctx_ensure(g);
+        s_mp_election.uictx = s_mp_election_ctx; /* re-point: the memcpy above zeroed it */
+        s_mp_council_active = true;
+        return;
+    }
     if (!s_mp_battle_uictx) { return; }
     if (len == (int)sizeof(struct battle_s)) {
         /* a full snapshot: refresh the spectator's battle (the wait loop redraws it) */
@@ -1182,6 +1232,7 @@ static int mp_if_apply_orders(void *ctx, int player_id, const uint8_t *buf, int 
    values; one-time UI setup on the first load). */
 static void mp_if_on_state_loaded(void *ctx, int first) {
     struct game_s *g = (struct game_s *)ctx;
+    mp_council_ctx_free(); /* a turn resolved: tear down any council view (safety net if COUNCIL_END was dropped) */
     if (first) {
         /* The client never ran game_aux_start, so the galaxy distance table is empty.
            Build it from the just-loaded star positions BEFORE game_start recomputes
