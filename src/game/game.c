@@ -839,6 +839,14 @@ static void mp_premove_capture(struct game_s *g) {
     if (s_mp_premove_buf) {
         int n = game_save_blob_save(g, s_mp_premove_buf, s_mp_premove_cap);
         s_mp_premove_len = (n > 0) ? n : 0;
+        /* 1oom-mp: stream the movement replay NOW (at movement-start), BEFORE this turn's combat /
+           bomb / ground result screens fire later in resolution, so the client animates fleet
+           movement first and the results follow in logical order. (Falls back to the post-advance
+           get_movement send if no broadcast hook is set, e.g. standalone tests.) */
+        if ((s_mp_premove_len > 0) && g_mp_movement_hook) {
+            g_mp_movement_hook(s_mp_premove_buf, s_mp_premove_len);
+            s_mp_premove_len = 0; /* sent; stop get_movement from re-sending it after advance_turn */
+        }
     }
 }
 

@@ -166,6 +166,11 @@ extern int (*g_mp_decision_hook_multi)(const int *players, int n, int dtype, con
    player not currently acting can watch the battle progress. NULL outside MP. */
 extern void (*g_mp_spectate_hook)(int player_id, const void *data, int len);
 
+/* server -> all clients: broadcast this turn's movement-replay snapshot (MP_MSG_TURN_MOVE) at the
+   moment it is captured (movement-start), so clients animate fleet movement BEFORE the combat / bomb
+   / ground result screens that fire later in resolution. NULL outside an active server. */
+extern void (*g_mp_movement_hook)(const uint8_t *buf, int len);
+
 /* client-side soft-ready primitives, set by mp_client_run only while a soft-ready turn is in
    progress (NULL otherwise). The UI adapter calls these: _send_ready submits the player's
    latest orders + ready flag; _poll services the socket once (non-blocking) and returns 1

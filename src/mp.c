@@ -70,6 +70,7 @@ static int mp_recv_wait(net_conn_t *c, uint16_t want_id, uint8_t *buf, uint32_t 
 int (*g_mp_decision_hook)(int, int, const void *, int, void *, int) = NULL;
 int (*g_mp_decision_hook_multi)(const int *, int, int, const void *, int, void *, int) = NULL;
 void (*g_mp_spectate_hook)(int, const void *, int) = NULL;
+void (*g_mp_movement_hook)(const uint8_t *, int) = NULL;
 static net_conn_t **s_mp_conns = NULL;
 static int s_mp_num_conns = 0;
 
@@ -201,6 +202,16 @@ static void mp_wait_status_bcast(int active) {
     uint8_t b = (uint8_t)(active ? 1 : 0);
     for (int i = 0; i < s_mp_num_conns; ++i) {
         if (s_mp_conns[i]) { mp_send(s_mp_conns[i], MP_MSG_WAIT_STATUS, &b, 1); }
+    }
+}
+
+/* server -> all clients: broadcast this turn's movement-replay snapshot the moment it's captured
+   (movement-start), so clients animate fleet movement BEFORE the combat/bomb/ground result screens
+   that fire later in resolution. Exposed via g_mp_movement_hook (fired from mp_premove_capture). */
+static void mp_movement_send(const uint8_t *buf, int len) {
+    if (len <= 0) { return; }
+    for (int i = 0; i < s_mp_num_conns; ++i) {
+        if (s_mp_conns[i]) { mp_send(s_mp_conns[i], MP_MSG_TURN_MOVE, buf, (uint32_t)len); }
     }
 }
 
@@ -480,6 +491,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
     g_mp_decision_hook = mp_decision_rpc;
     g_mp_decision_hook_multi = mp_decision_rpc_multi;
     g_mp_spectate_hook = mp_spectate_send;
+    g_mp_movement_hook = mp_movement_send;
 
     /* --- assign empires + send initial state --- */
     for (int i = 0; i < num_clients; ++i) {
@@ -618,6 +630,7 @@ done:
     g_mp_decision_hook = NULL;
     g_mp_decision_hook_multi = NULL;
     g_mp_spectate_hook = NULL;
+    g_mp_movement_hook = NULL;
     s_mp_conns = NULL;
     s_mp_num_conns = 0;
     for (int i = 0; i < num_clients; ++i) {
