@@ -68,6 +68,8 @@ static struct game_aux_s game_aux;
 static int opt_mp_host_port = 0;
 static char *opt_mp_join = NULL;
 static int opt_mp_humans = 1; /* host: number of human clients to wait for (empires 0..N-1) */
+static char *opt_mp_load = NULL; /* host: path to an MP autosave to resume instead of starting a new game */
+static int s_mp_humans = 1;      /* host: human-client count, recorded in the autosave header for -mpload */
 #define MP_DEFAULT_PORT 24444
 
 
@@ -454,6 +456,9 @@ const struct cmdline_options_s main_cmdline_options[] = {
     { "-mphumans", 1,
       options_set_int_var, (void *)&opt_mp_humans,
       "N", "Multiplayer (host): number of human players to wait for (default 1; rest of -new empires are AI)" },
+    { "-mpload", 1,
+      options_set_str_var, (void *)&opt_mp_load,
+      "FILE", "Multiplayer (host): resume a saved game from FILE (e.g. the autosave mp_autosave.blob in the user dir) instead of starting a new one" },
     { "-ngn", 2,
       game_opt_set_new_name, 0,
       "PLAYER NAME", "Set new game emperor name for player 1..6" },
@@ -769,7 +774,12 @@ static void game_mp_autosave(struct game_s *g) {
     os_make_path_user();
     lib_sprintf(fname, sizeof(fname), "%s/mp_autosave.blob", os_get_path_user());
     f = fopen(fname, "wb");
-    if (f) { fwrite(buf, 1, (size_t)n, f); fclose(f); }
+    if (f) {
+        int humans = s_mp_humans;
+        fwrite(&humans, sizeof(humans), 1, f); /* header: human-client count, so -mpload knows how many to wait for */
+        fwrite(buf, 1, (size_t)n, f);
+        fclose(f);
+    }
 }
 
 static int mp_if_advance(void *ctx) {
@@ -1351,30 +1361,65 @@ static int mp_if_run_lobby(void *ctx, int my_id) {
     return ui_mp_lobby_run(my_id);
 }
 
-static int game_mp_host(void) {
-    game_mp_is_server = true; /* keep human newtech lists in the synced state (see game_turn.c) */
-    /* honor -new (galaxy size, races, empire count, difficulty); GAME_NEW_OPTS_DEFAULT otherwise */
-    struct game_new_options_s opts = game_opt_new;
-    int humans = opt_mp_humans;
+/* 1oom-mp: load an MP autosave written by game_mp_autosave ([int humans][blob]) into `game`.
+   Caller must have game_aux_init'd; game_aux_start/game_start follow (as for a freshly-created game).
+   Reports the recorded human-client count via *humans_out. */
+static int game_mp_load_autosave(const char *fname, int *humans_out) {
+    FILE *f = fopen(fname, "rb");
+    long fsize;
+    int humans = 0, rc;
+    size_t blen, got;
+    uint8_t *buf;
+    if (!f) { log_error("MP: cannot open save '%s'\n", fname); return 1; }
+    fseek(f, 0, SEEK_END); fsize = ftell(f); fseek(f, 0, SEEK_SET);
+    if (fsize <= (long)sizeof(int)) { fclose(f); log_error("MP: save '%s' too small\n", fname); return 1; }
+    if (fread(&humans, sizeof(int), 1, f) != 1) { fclose(f); log_error("MP: save '%s' header read failed\n", fname); return 1; }
+    blen = (size_t)fsize - sizeof(int);
+    buf = (uint8_t *)malloc(blen);
+    if (!buf) { fclose(f); return 1; }
+    got = fread(buf, 1, blen, f);
+    fclose(f);
+    if (got != blen) { free(buf); log_error("MP: save '%s' body truncated\n", fname); return 1; }
+    rc = game_save_blob_load(&game, buf, (int)blen);
+    free(buf);
+    if (rc != 0) { log_error("MP: save '%s' is corrupt or incompatible\n", fname); return 1; }
     if (humans < 1) { humans = 1; }
     if (humans > PLAYER_NUM) { humans = PLAYER_NUM; }
-    if (opts.players < (uint32_t)humans) { opts.players = (uint32_t)humans; }
-    /* the connecting clients fill the first `humans` empires; the rest are AI.
-       (mp_server_run assigns client i -> empire i, so humans must be contiguous 0..N-1.) */
-    for (int i = 0; i < (int)opts.players; ++i) { opts.pdata[i].is_ai = (i >= humans); }
-    if (getenv("MP_BIGRANGE")) { opts.homeworlds.num_fighters = 4; } /* test: start with warships for quick combat */
-    s_mp_opts = opts; /* keep a copy so the lobby can re-create the game with the chosen races */
+    *humans_out = humans;
+    return 0;
+}
+
+static int game_mp_host(void) {
+    int humans, rc;
+    bool resume = (opt_mp_load != NULL);
+    mp_game_iface_t gi;
+    game_mp_is_server = true; /* keep human newtech lists in the synced state (see game_turn.c) */
     if (game_aux_init(&game_aux, &game)) { return 1; }
     /* 1oom-mp: make slider locks actually hold (default-off in vanilla), so a player
        can pin a slider and the per-turn ECO/waste auto-balance won't override it. */
     game_num_slider_respects_locks = true;
-    game_new(&game, &game_aux, &opts);
+    if (resume) {
+        /* resume a crashed/saved game: the autosave blob takes the place of game_new. */
+        if (game_mp_load_autosave(opt_mp_load, &humans)) { game_aux_shutdown(&game_aux); return 1; }
+    } else {
+        /* honor -new (galaxy size, races, empire count, difficulty); GAME_NEW_OPTS_DEFAULT otherwise */
+        struct game_new_options_s opts = game_opt_new;
+        humans = opt_mp_humans;
+        if (humans < 1) { humans = 1; }
+        if (humans > PLAYER_NUM) { humans = PLAYER_NUM; }
+        if (opts.players < (uint32_t)humans) { opts.players = (uint32_t)humans; }
+        /* the connecting clients fill the first `humans` empires; the rest are AI.
+           (mp_server_run assigns client i -> empire i, so humans must be contiguous 0..N-1.) */
+        for (int i = 0; i < (int)opts.players; ++i) { opts.pdata[i].is_ai = (i >= humans); }
+        if (getenv("MP_BIGRANGE")) { opts.homeworlds.num_fighters = 4; } /* test: start with warships for quick combat */
+        s_mp_opts = opts; /* keep a copy so the lobby can re-create the game with the chosen races */
+        game_new(&game, &game_aux, &opts);
+    }
+    s_mp_humans = humans; /* recorded in each autosave header so a later -mpload waits for the right count */
     /* Empires 0..humans-1 are the human clients; the rest run as AI on the server.
        At least one human must stay live or game_turn_check_end ends the game. */
     game_aux_start(&game_aux, &game);
     game_start(&game);      /* sets game_ai dispatch + per-empire derived values (eco/tech/production) */
-    /* MP_CONTACT keeps everyone in contact by bumping fuel range each turn in mp_if_advance;
-       (the client re-derives fuel range on the first state load, so it takes effect from turn 2). */
     ui_game_start(&game);
     /* arm turn-movement playback: snapshot the pre-movement state each turn so the
        client can animate fleets moving (see mp_premove_capture / mp_if_get_movement). */
@@ -1382,9 +1427,10 @@ static int game_mp_host(void) {
     s_mp_premove_buf = (uint8_t *)malloc(s_mp_premove_cap);
     game_mp_premove_hook = s_mp_premove_buf ? mp_premove_capture : NULL;
     g_mp_battle_move_hook = mp_battle_move_relay; /* server: relay in-combat ship moves to spectators */
-    log_message("MP: hosting on port %d, %d empires (%d human, %d AI), %d stars\n", opt_mp_host_port, game.players, humans, (int)game.players - humans, game.galaxy_stars);
-    mp_game_iface_t gi = mp_make_iface();
-    int rc = mp_server_run((uint16_t)opt_mp_host_port, humans, 0 /*until disconnect*/, &gi);
+    log_message("MP: %s on port %d, %d empires (%d human, %d AI), %d stars\n", resume ? "resumed" : "hosting", opt_mp_host_port, game.players, humans, (int)game.players - humans, game.galaxy_stars);
+    gi = mp_make_iface();
+    if (resume) { gi.setup_game = NULL; } /* skip the lobby; the loaded game IS the initial state sent to clients */
+    rc = mp_server_run((uint16_t)opt_mp_host_port, humans, 0 /*until disconnect*/, &gi);
     game_mp_premove_hook = NULL;
     g_mp_battle_move_hook = NULL;
     free(s_mp_premove_buf); s_mp_premove_buf = NULL;
