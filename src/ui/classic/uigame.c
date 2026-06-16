@@ -1134,9 +1134,12 @@ void ui_mp_wait(int reason)
     else if (reason) { msg = "Waiting for other players to finish their turn..."; }
     else { msg = "Waiting for players..."; }
     ui_draw_erase_buf();
-    /* color 0xd = clearly legible (the old color 6 rendered too dark to see, so the banners looked
-       like a black screen). Matches the visible text color the diplomacy wait modal uses. */
     lbxfont_select(2, 0xd, 0, 0);
     lbxfont_print_str_center(160, 92, msg, UI_SCREEN_W, ui_scale);
-    hw_video_draw_buf();        /* present the frame */
+    /* Present via ui_draw_finish (not hw_video_draw_buf): the low-level draw skips ui_palette_set_n,
+       so the banner was being shown against a stale/unset palette -> invisible (a black screen). The
+       working wait screens (council show, diplomacy modal) all present through this path. */
+    uiobj_table_clear();
+    ui_draw_finish_mode = 0;
+    ui_draw_finish();
 }
