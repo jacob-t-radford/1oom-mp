@@ -1,19 +1,41 @@
-/* 1oom-mp: portable TCP transport with length-prefixed framing. POSIX sockets. */
+/* 1oom-mp: portable TCP transport with length-prefixed framing. POSIX sockets + Winsock. */
 #include "net.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <netdb.h>
+
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  typedef SOCKET sockfd_t;
+  typedef int net_ssize_t;
+  #define NET_BADSOCK     INVALID_SOCKET
+  #define net_closesock   closesocket
+  #define NET_EWOULDBLOCK WSAEWOULDBLOCK
+  #define NET_EAGAIN      WSAEWOULDBLOCK   /* Winsock has no EAGAIN; EWOULDBLOCK covers it */
+  #define NET_EINTR       WSAEINTR
+  #define NET_LASTERR()   WSAGetLastError()
+#else
+  #include <errno.h>
+  #include <unistd.h>
+  #include <fcntl.h>
+  #include <sys/select.h>
+  #include <sys/time.h>
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <netinet/tcp.h>
+  #include <arpa/inet.h>
+  #include <netdb.h>
+  typedef int sockfd_t;
+  typedef ssize_t net_ssize_t;
+  #define NET_BADSOCK     (-1)
+  #define net_closesock   close
+  #define NET_EWOULDBLOCK EWOULDBLOCK
+  #define NET_EAGAIN      EAGAIN
+  #define NET_EINTR       EINTR
+  #define NET_LASTERR()   errno
+#endif
 
 /* Use 1oom's log if building inside the engine, else fall back to stderr so the
    standalone transport test can compile without the rest of the tree. */
@@ -28,12 +50,23 @@
 
 #define NET_HDR_LEN 4 /* u32 length prefix */
 
+/* socket error -> short string (errno on POSIX; Winsock keeps its error elsewhere) */
+static const char *net_errstr(void) {
+#ifdef _WIN32
+    static char b[40];
+    snprintf(b, sizeof(b), "winsock error %d", WSAGetLastError());
+    return b;
+#else
+    return strerror(errno);
+#endif
+}
+
 struct net_listener_s {
-    int fd;
+    sockfd_t fd;
 };
 
 struct net_conn_s {
-    int fd;
+    sockfd_t fd;
     bool open;
     char addr[48];
     /* inbound frame-assembly buffer */
@@ -45,22 +78,47 @@ struct net_conn_s {
 
 /* -------------------------------------------------------------------------- */
 
-int net_init(void) { return 0; }
-void net_shutdown(void) {}
+#ifdef _WIN32
+static bool s_wsa_inited = false;
+#endif
 
-static void set_nonblocking(int fd) {
+/* Winsock must be started before any socket call; lazy + idempotent so it works
+   whether or not the caller invokes net_init(). No-op on POSIX. */
+static void net_wsa_ensure(void) {
+#ifdef _WIN32
+    if (!s_wsa_inited) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) { s_wsa_inited = true; }
+    }
+#endif
+}
+
+int net_init(void) { net_wsa_ensure(); return 0; }
+
+void net_shutdown(void) {
+#ifdef _WIN32
+    if (s_wsa_inited) { WSACleanup(); s_wsa_inited = false; }
+#endif
+}
+
+static void set_nonblocking(sockfd_t fd) {
+#ifdef _WIN32
+    u_long mode = 1;
+    ioctlsocket(fd, FIONBIO, &mode);
+#else
     int fl = fcntl(fd, F_GETFL, 0);
     if (fl >= 0) {
         fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     }
+#endif
 }
 
-static void set_nodelay(int fd) {
+static void set_nodelay(sockfd_t fd) {
     int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
 }
 
-static net_conn_t *conn_new(int fd, const struct sockaddr_in *sa) {
+static net_conn_t *conn_new(sockfd_t fd, const struct sockaddr_in *sa) {
     net_conn_t *c = (net_conn_t *)calloc(1, sizeof(*c));
     if (!c) { return NULL; }
     c->fd = fd;
@@ -70,7 +128,7 @@ static net_conn_t *conn_new(int fd, const struct sockaddr_in *sa) {
     if (!c->rbuf) { free(c); return NULL; }
     if (sa) {
         char ip[INET_ADDRSTRLEN] = {0};
-        inet_ntop(AF_INET, &sa->sin_addr, ip, sizeof(ip));
+        inet_ntop(AF_INET, (void *)&sa->sin_addr, ip, sizeof(ip));
         snprintf(c->addr, sizeof(c->addr), "%s:%u", ip, (unsigned)ntohs(sa->sin_port));
     } else {
         snprintf(c->addr, sizeof(c->addr), "?");
@@ -83,28 +141,29 @@ static net_conn_t *conn_new(int fd, const struct sockaddr_in *sa) {
 /* -------------------------------------------------------------------------- */
 
 net_listener_t *net_listen(uint16_t port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { NET_ERR("socket: %s\n", strerror(errno)); return NULL; }
+    net_wsa_ensure();
+    sockfd_t fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == NET_BADSOCK) { NET_ERR("socket: %s\n", net_errstr()); return NULL; }
     int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_addr.s_addr = htonl(INADDR_ANY);
     sa.sin_port = htons(port);
     if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        NET_ERR("bind(%u): %s\n", (unsigned)port, strerror(errno));
-        close(fd);
+        NET_ERR("bind(%u): %s\n", (unsigned)port, net_errstr());
+        net_closesock(fd);
         return NULL;
     }
     if (listen(fd, 8) < 0) {
-        NET_ERR("listen: %s\n", strerror(errno));
-        close(fd);
+        NET_ERR("listen: %s\n", net_errstr());
+        net_closesock(fd);
         return NULL;
     }
     set_nonblocking(fd);
     net_listener_t *l = (net_listener_t *)calloc(1, sizeof(*l));
-    if (!l) { close(fd); return NULL; }
+    if (!l) { net_closesock(fd); return NULL; }
     l->fd = fd;
     NET_MSG("listening on port %u\n", (unsigned)port);
     return l;
@@ -114,21 +173,22 @@ net_conn_t *net_accept(net_listener_t *l) {
     if (!l) { return NULL; }
     struct sockaddr_in sa;
     socklen_t slen = sizeof(sa);
-    int fd = accept(l->fd, (struct sockaddr *)&sa, &slen);
-    if (fd < 0) {
-        return NULL; /* EAGAIN/EWOULDBLOCK when nothing pending */
+    sockfd_t fd = accept(l->fd, (struct sockaddr *)&sa, &slen);
+    if (fd == NET_BADSOCK) {
+        return NULL; /* would-block when nothing pending */
     }
     net_conn_t *c = conn_new(fd, &sa);
-    if (!c) { close(fd); return NULL; }
+    if (!c) { net_closesock(fd); return NULL; }
     NET_MSG("accepted %s\n", c->addr);
     return c;
 }
 
 void net_listener_close(net_listener_t *l) {
-    if (l) { close(l->fd); free(l); }
+    if (l) { net_closesock(l->fd); free(l); }
 }
 
 net_conn_t *net_connect(const char *host, uint16_t port) {
+    net_wsa_ensure();
     char portstr[16];
     snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
     struct addrinfo hints, *res = NULL, *ai;
@@ -136,22 +196,22 @@ net_conn_t *net_connect(const char *host, uint16_t port) {
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     if (getaddrinfo(host, portstr, &hints, &res) != 0) {
-        NET_ERR("resolve %s: %s\n", host, strerror(errno));
+        NET_ERR("resolve %s: %s\n", host, net_errstr());
         return NULL;
     }
-    int fd = -1;
+    sockfd_t fd = NET_BADSOCK;
     for (ai = res; ai; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) { continue; }
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) { break; }
-        close(fd);
-        fd = -1;
+        if (fd == NET_BADSOCK) { continue; }
+        if (connect(fd, ai->ai_addr, (socklen_t)ai->ai_addrlen) == 0) { break; }
+        net_closesock(fd);
+        fd = NET_BADSOCK;
     }
     net_conn_t *c = NULL;
-    if (fd >= 0) {
+    if (fd != NET_BADSOCK) {
         c = conn_new(fd, (const struct sockaddr_in *)res->ai_addr);
         if (c) { NET_MSG("connected to %s\n", c->addr); }
-        else { close(fd); }
+        else { net_closesock(fd); }
     } else {
         NET_ERR("connect %s:%u failed\n", host, (unsigned)port);
     }
@@ -173,22 +233,25 @@ int net_send(net_conn_t *c, const void *data, uint32_t len) {
     for (int p = 0; p < 2; ++p) {
         uint32_t off = 0;
         while (off < sizes[p]) {
-            ssize_t n = send(c->fd, parts[p] + off, sizes[p] - off, 0);
+            net_ssize_t n = send(c->fd, (const char *)(parts[p] + off), (int)(sizes[p] - off), 0);
             if (n > 0) {
                 off += (uint32_t)n;
-            } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-                /* socket buffer full: wait briefly for writability */
-                fd_set wf; FD_ZERO(&wf); FD_SET(c->fd, &wf);
-                struct timeval tv = { 5, 0 };
-                if (select(c->fd + 1, NULL, &wf, NULL, &tv) <= 0) {
-                    NET_ERR("send timeout/err to %s\n", c->addr);
+            } else {
+                int e = NET_LASTERR();
+                if ((n < 0) && (e == NET_EAGAIN || e == NET_EWOULDBLOCK || e == NET_EINTR)) {
+                    /* socket buffer full: wait briefly for writability */
+                    fd_set wf; FD_ZERO(&wf); FD_SET(c->fd, &wf);
+                    struct timeval tv = { 5, 0 };
+                    if (select((int)(c->fd + 1), NULL, &wf, NULL, &tv) <= 0) {
+                        NET_ERR("send timeout/err to %s\n", c->addr);
+                        c->open = false;
+                        return -1;
+                    }
+                } else {
+                    NET_ERR("send to %s: %s\n", c->addr, net_errstr());
                     c->open = false;
                     return -1;
                 }
-            } else {
-                NET_ERR("send to %s: %s\n", c->addr, strerror(errno));
-                c->open = false;
-                return -1;
             }
         }
     }
@@ -197,7 +260,8 @@ int net_send(net_conn_t *c, const void *data, uint32_t len) {
 
 /* like net_send, but for fire-and-forget streams (spectate): if the kernel send buffer can't hold
    the whole framed message right now, DROP it instead of blocking. Keeps a slow receiver from
-   pacing the sender; the receiver resyncs on the next message. Returns 0 (sent or dropped), <0 err. */
+   pacing the sender; the receiver resyncs on the next message. Returns 0 (sent or dropped), <0 err.
+   (The would-block detection is macOS-only via SO_NWRITE; elsewhere it just sends.) */
 int net_send_besteffort(net_conn_t *c, const void *data, uint32_t len) {
     if (!c || !c->open) { return -1; }
     if (len > NET_MSG_MAX) { return -1; }
@@ -220,7 +284,7 @@ static int rbuf_fill(net_conn_t *c) {
     uint8_t tmp[16384];
     int got_any = 0;
     for (;;) {
-        ssize_t n = recv(c->fd, tmp, sizeof(tmp), 0);
+        net_ssize_t n = recv(c->fd, (char *)tmp, (int)sizeof(tmp), 0);
         if (n > 0) {
             if (c->rlen + (uint32_t)n > c->rcap) {
                 uint32_t ncap = c->rcap;
@@ -242,9 +306,10 @@ static int rbuf_fill(net_conn_t *c) {
             c->open = false; /* peer closed */
             return got_any ? 1 : -1;
         } else {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { return got_any; }
-            if (errno == EINTR) { continue; }
-            NET_ERR("recv from %s: %s\n", c->addr, strerror(errno));
+            int e = NET_LASTERR();
+            if (e == NET_EAGAIN || e == NET_EWOULDBLOCK) { return got_any; }
+            if (e == NET_EINTR) { continue; }
+            NET_ERR("recv from %s: %s\n", c->addr, net_errstr());
             c->open = false;
             return -1;
         }
@@ -275,7 +340,7 @@ int net_recv(net_conn_t *c, void *buf, uint32_t bufsize, uint32_t *out_len) {
 
 void net_conn_close(net_conn_t *c) {
     if (c) {
-        if (c->fd >= 0) { close(c->fd); }
+        if (c->fd != NET_BADSOCK) { net_closesock(c->fd); }
         free(c->rbuf);
         free(c);
     }
