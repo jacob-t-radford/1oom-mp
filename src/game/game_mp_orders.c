@@ -29,21 +29,27 @@
    game_mp_diplo_apply_pending after the turn resolves. (Distinct processes use one
    or the other.) */
 #define MP_DIPLO_ACT_MAX 16
-struct mp_diplo_act_s { player_id_t actor, target; uint8_t verb, arg; };
+struct mp_diplo_act_s { player_id_t actor, target; uint8_t verb, arg; uint8_t p[4]; };
 static struct mp_diplo_act_s s_diplo_act[MP_DIPLO_ACT_MAX];
 static int s_diplo_act_num = 0;
 static struct mp_diplo_act_s s_diplo_pending[MP_DIPLO_ACT_MAX];
 static int s_diplo_pending_num = 0;
 
-bool game_mp_diplo_record(player_id_t actor, player_id_t target, uint8_t verb, uint8_t arg)
+bool game_mp_diplo_record_p(player_id_t actor, player_id_t target, uint8_t verb, uint8_t arg, const uint8_t *p)
 {
     if (s_diplo_act_num >= MP_DIPLO_ACT_MAX) { return false; }
     s_diplo_act[s_diplo_act_num].actor = actor;
     s_diplo_act[s_diplo_act_num].target = target;
     s_diplo_act[s_diplo_act_num].verb = verb;
     s_diplo_act[s_diplo_act_num].arg = arg;
+    for (int k = 0; k < 4; ++k) { s_diplo_act[s_diplo_act_num].p[k] = p ? p[k] : 0; }
     ++s_diplo_act_num;
     return true;
+}
+
+bool game_mp_diplo_record(player_id_t actor, player_id_t target, uint8_t verb, uint8_t arg)
+{
+    return game_mp_diplo_record_p(actor, target, verb, arg, NULL);
 }
 
 /* ---- colonize requests (client records a planet to colonize, server resolves) ---- */
@@ -140,6 +146,7 @@ int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, i
             PUT(&verb, 1);
             PUT(&target, 2);
             PUT(&arg, 1);
+            PUT(s_diplo_act[i].p, 4);
             ++cnt;
         }
         memcpy(buf + cntpos, &cnt, 2);
@@ -290,15 +297,17 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         uint16_t dcnt = 0;
         GET(&dcnt, 2);
         for (int i = 0; i < dcnt; ++i) {
-            uint8_t verb, arg; uint16_t target;
+            uint8_t verb, arg, p[4]; uint16_t target;
             GET(&verb, 1);
             GET(&target, 2);
             GET(&arg, 1);
+            GET(p, 4);
             if ((target < g->players) && ((player_id_t)target != pi) && (s_diplo_pending_num < MP_DIPLO_ACT_MAX)) {
                 s_diplo_pending[s_diplo_pending_num].actor = pi;
                 s_diplo_pending[s_diplo_pending_num].target = (player_id_t)target;
                 s_diplo_pending[s_diplo_pending_num].verb = verb;
                 s_diplo_pending[s_diplo_pending_num].arg = arg;
+                memcpy(s_diplo_pending[s_diplo_pending_num].p, p, 4);
                 ++s_diplo_pending_num;
             }
         }
@@ -341,6 +350,7 @@ void game_mp_diplo_apply_pending(struct game_s *g)
     for (int i = 0; i < s_diplo_pending_num; ++i) {
         player_id_t a = s_diplo_pending[i].actor, t = s_diplo_pending[i].target;
         uint8_t arg = s_diplo_pending[i].arg;
+        const uint8_t *p = s_diplo_pending[i].p;
         if ((a >= g->players) || (t >= g->players) || (a == t)) { continue; }
         switch (s_diplo_pending[i].verb) {
             case MP_DIPLO_DECLARE_WAR:
@@ -357,18 +367,39 @@ void game_mp_diplo_apply_pending(struct game_s *g)
                 g->eto[t].diplo_val[a] = (int16_t)s_diplo_pending[i].verb;
                 break;
             case MP_DIPLO_ACCEPT:
-                /* a accepts t's proposal (arg = the PROPOSE_* verb being accepted) */
+                /* a (responder) accepts t's (proposer's) proposal; arg = the PROPOSE_* verb. */
                 if (arg == MP_DIPLO_PROPOSE_PEACE) {
                     game_diplo_stop_war(g, a, t);
                 } else if (arg == MP_DIPLO_PROPOSE_ALLIANCE) {
                     game_diplo_set_treaty(g, a, t, TREATY_ALLIANCE);
                 } else if (arg == MP_DIPLO_PROPOSE_NAP) {
                     game_diplo_set_treaty(g, a, t, TREATY_NONAGGRESSION);
+                } else if (arg == MP_DIPLO_PROPOSE_TRADE) {
+                    game_diplo_set_trade(g, a, t, (int)(p[0] | (p[1] << 8)));
+                } else if (arg == MP_DIPLO_PROPOSE_TECH) {
+                    /* proposer t wanted {p0,p1} from responder a, and gave {p2,p3} to a */
+                    game_tech_get_new(g, t, (tech_field_t)p[0], p[1], TECHSOURCE_TRADE, a, PLAYER_NONE, false);
+                    game_tech_get_new(g, a, (tech_field_t)p[2], p[3], TECHSOURCE_TRADE, t, PLAYER_NONE, false);
                 }
                 g->eto[a].diplo_type[t] = 0;
                 break;
             case MP_DIPLO_REJECT:
                 g->eto[a].diplo_type[t] = 0;
+                break;
+            case MP_DIPLO_BREAK_TRADE:
+                game_diplo_break_trade(g, a, t);
+                break;
+            case MP_DIPLO_TRIBUTE_BC: {
+                /* unilateral gift: a (giver) -> t (receiver) */
+                int amt = (int)(p[0] | (p[1] << 8));
+                if (amt > (int)g->eto[a].reserve_bc) { amt = (int)g->eto[a].reserve_bc; }
+                g->eto[a].reserve_bc -= (uint32_t)amt;
+                g->eto[t].reserve_bc += (uint32_t)amt;
+                break;
+            }
+            case MP_DIPLO_TRIBUTE_TECH:
+                /* unilateral gift: a (giver) hands tech {p0,p1} to t (receiver) */
+                game_tech_get_new(g, t, (tech_field_t)p[0], p[1], TECHSOURCE_TRADE, a, PLAYER_NONE, false);
                 break;
             default:
                 break;

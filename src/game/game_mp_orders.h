@@ -28,8 +28,13 @@ enum game_mp_diplo_verb_e {
     MP_DIPLO_PROPOSE_NAP,       /* actor proposes; target answers next turn */
     MP_DIPLO_PROPOSE_ALLIANCE,
     MP_DIPLO_PROPOSE_PEACE,
-    MP_DIPLO_ACCEPT,            /* actor accepts target's pending proposal */
+    MP_DIPLO_ACCEPT,            /* actor accepts target's pending proposal (arg = the PROPOSE_* verb) */
     MP_DIPLO_REJECT,            /* actor rejects target's pending proposal */
+    MP_DIPLO_PROPOSE_TRADE,     /* consensual: p[0..1] = BC/yr amount (u16 LE) */
+    MP_DIPLO_PROPOSE_TECH,      /* consensual: p = {want_field, want_tech, give_field, give_tech} (proposer's view) */
+    MP_DIPLO_TRIBUTE_BC,        /* unilateral gift: p[0..1] = BC amount (u16 LE) from actor to target */
+    MP_DIPLO_TRIBUTE_TECH,      /* unilateral gift: p = {field, tech} from actor to target */
+    MP_DIPLO_BREAK_TRADE,       /* unilateral: cancel the trade agreement with target */
 };
 
 /* client: queue a diplomacy action by the local human (drained by write_orders).
@@ -37,6 +42,10 @@ enum game_mp_diplo_verb_e {
    proposal mailbox is cleared by turn processing before the response resolves).
    Returns true if recorded. */
 extern bool game_mp_diplo_record(player_id_t actor, player_id_t target, uint8_t verb, uint8_t arg);
+
+/* like game_mp_diplo_record but also carries up to 4 parameter bytes (trade BC amount, tech
+   field/tech ids). p may be NULL (treated as all-zero). */
+extern bool game_mp_diplo_record_p(player_id_t actor, player_id_t target, uint8_t verb, uint8_t arg, const uint8_t *p);
 
 /* diplo_type[] sentinel marking a pending human-to-human proposal (the proposed
    PROPOSE_* verb is stored alongside in diplo_val[]). Out of range of every value

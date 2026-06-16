@@ -9,6 +9,8 @@
 #include "game_design.h"
 #include "game_aux.h"
 #include "game_misc.h"
+#include "game_num.h"
+#include "game_spy.h"
 #include "game_str.h"
 #include "game_tech.h"
 #include "game_turn.h"
@@ -117,6 +119,14 @@ static void diplo_cl_invite(int from, int to) { uint8_t p[4] = { (uint8_t)(from 
 static void diplo_cl_accept(int from, int to, int acc) { uint8_t p[5] = { (uint8_t)(from >> 8), (uint8_t)from, (uint8_t)(to >> 8), (uint8_t)to, (uint8_t)acc }; diplo_cl_send(MP_MSG_DIPLO_ACCEPT, p, 5); }
 static void diplo_cl_join(void) { diplo_cl_send(MP_MSG_DIPLO_JOIN, NULL, 0); }
 static void diplo_cl_proposal(int sid, int verb) { uint8_t p[3] = { (uint8_t)(sid >> 8), (uint8_t)sid, (uint8_t)verb }; diplo_cl_send(MP_MSG_DIPLO_PROPOSAL, p, 3); }
+/* proposal carrying up to 4 parameter bytes (trade amount / tech ids) after the verb */
+static void diplo_cl_proposal_p(int sid, int verb, const uint8_t *pp, int np) {
+    uint8_t b[3 + 4];
+    b[0] = (uint8_t)(sid >> 8); b[1] = (uint8_t)sid; b[2] = (uint8_t)verb;
+    if (np > 4) { np = 4; }
+    for (int i = 0; i < np; ++i) { b[3 + i] = pp[i]; }
+    diplo_cl_send(MP_MSG_DIPLO_PROPOSAL, b, 3 + np);
+}
 static void diplo_cl_response(int sid, int acc, int verb) { uint8_t p[4] = { (uint8_t)(sid >> 8), (uint8_t)sid, (uint8_t)acc, (uint8_t)verb }; diplo_cl_send(MP_MSG_DIPLO_RESPONSE, p, 4); }
 static void diplo_cl_end(int sid) { uint8_t p[5] = { (uint8_t)(sid >> 8), (uint8_t)sid, 0, 0, 0 }; diplo_cl_send(MP_MSG_DIPLO_SESSION_END, p, 5); }
 
@@ -182,52 +192,184 @@ static void mp_diplo_apply_local(struct game_s *g, player_id_t a, player_id_t b,
         case MP_DIPLO_PROPOSE_PEACE:    game_diplo_stop_war(g, a, b); break;
         case MP_DIPLO_DECLARE_WAR:      game_diplo_start_war(g, a, b); break;
         case MP_DIPLO_BREAK_TREATY:     game_diplo_break_treaty(g, a, b); break;
+        case MP_DIPLO_BREAK_TRADE:      game_diplo_break_trade(g, a, b); break;
         default: break;
     }
 }
 
-static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
+/* relay already sent; block for the responder's live answer. Returns 1 accepted, 0 rejected,
+   -1 if they departed / the link dropped (a "departed" message is shown in that case). */
+static int mp_diplo_await_answer(struct game_s *g, player_id_t pi, player_id_t pa)
 {
-    struct audience_s au = {0};
-    au.g = g; au.ph = pi; au.pa = pa;
-    ui_audience_start(&au);
-    treaty_t tr = g->eto[pi].treaty[pa];
-    const char *opts[AUDIENCE_STR_MAX];
-    uint8_t verbs[AUDIENCE_STR_MAX];
-    int n = 0;
-    if (tr == TREATY_WAR) {
-        opts[n] = "Propose peace treaty"; verbs[n] = MP_DIPLO_PROPOSE_PEACE; ++n;
-    } else {
-        opts[n] = "Declare war"; verbs[n] = MP_DIPLO_DECLARE_WAR; ++n;
-        if (tr == TREATY_NONE) { opts[n] = "Propose non-aggression pact"; verbs[n] = MP_DIPLO_PROPOSE_NAP; ++n; }
-        if ((tr == TREATY_NONE) || (tr == TREATY_NONAGGRESSION)) { opts[n] = "Propose alliance"; verbs[n] = MP_DIPLO_PROPOSE_ALLIANCE; ++n; }
-        if ((tr == TREATY_NONAGGRESSION) || (tr == TREATY_ALLIANCE)) { opts[n] = "Break treaty"; verbs[n] = MP_DIPLO_BREAK_TREATY; ++n; }
-    }
-    opts[n] = "Forget it"; verbs[n] = MP_DIPLO_NONE; ++n;
-    for (int i = 0; i < n; ++i) { au.strtbl[i] = opts[i]; }
-    au.strtbl[n] = NULL;
-    au.buf = "What is your will?";
-    int16_t sel = ui_audience_ask4(&au);
-    uint8_t verb = ((sel >= 0) && (sel < n)) ? verbs[sel] : MP_DIPLO_NONE;
-    if (verb == MP_DIPLO_NONE) { ui_audience_end(&au); return; }
-    if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY)) {
-        game_mp_diplo_record(pi, pa, verb, 0); /* unilateral: applies at resolution */
-        mp_diplo_apply_local(g, pi, pa, verb); /* and immediately, locally */
-        au.buf = "It is done.";
-        ui_audience_show1(&au);
-        ui_audience_end(&au);
-        return;
-    }
-    ui_audience_end(&au);
-    diplo_cl_proposal(sid, verb); /* relay the offer; the responder answers live */
     uint8_t buf[MP_DIPLO_CL_MSGMAX]; int len = sizeof(buf);
     int id = ui_mp_diplo_wait("Awaiting their decision...", buf, &len);
-    if (id == MP_MSG_DIPLO_RESPONSE) {
-        int acc = (len >= 3) ? buf[2] : 0;
-        if (acc) { mp_diplo_apply_local(g, pi, pa, verb); } /* show the new treaty at once (server confirms at resolution) */
-        ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. So it is agreed." : "They refuse our offer.");
-    } else if (id == MP_MSG_DIPLO_CANCEL || id == MP_MSG_DIPLO_SESSION_END) {
+    if (id == MP_MSG_DIPLO_RESPONSE) { return ((len >= 3) && buf[2]) ? 1 : 0; }
+    if (id == MP_MSG_DIPLO_CANCEL || id == MP_MSG_DIPLO_SESSION_END) {
         ui_mp_diplo_msgbox(g, pi, pa, "They have departed.");
+    }
+    return -1;
+}
+
+/* "Form Trade Agreement": offer a BC/year amount (scaled to the smaller economy, exactly like the
+   AI audience menu), relay it, and on a live accept set the trade locally (server confirms at
+   resolution from the responder's ACCEPT record). */
+static void mp_diplo_propose_trade(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
+{
+    int cur = (int)g->eto[pi].trade_bc[pa];
+    int prod = (int)((g->eto[pi].total_production_bc < g->eto[pa].total_production_bc) ? g->eto[pi].total_production_bc : g->eto[pa].total_production_bc);
+    int want, num = 0;
+    uint16_t bctbl[AUDIENCE_BC_MAX];
+    char strbuf[AUDIENCE_BC_MAX][32];
+    struct audience_s au = {0};
+    prod /= 4; if (prod > 32000) { prod = 32000; }
+    want = (prod / 25) * 25 - cur;
+    if (want <= 0) { ui_mp_diplo_msgbox(g, pi, pa, "There is no room for a larger trade agreement."); return; }
+    if (want < 125) {
+        num = want / 25;
+        for (int i = 0; i < num; ++i) { bctbl[i] = (uint16_t)(cur + 25 * (i + 1)); }
+    } else {
+        num = AUDIENCE_BC_MAX;
+        bctbl[0] = (uint16_t)(want / 5 + cur);
+        bctbl[1] = (uint16_t)((((want * 2) / 5) / 25) * 25 + cur);
+        bctbl[2] = (uint16_t)((((want * 3) / 5) / 25) * 25 + cur);
+        bctbl[3] = (uint16_t)((((want * 4) / 5) / 25) * 25 + cur);
+        bctbl[4] = (uint16_t)(want + cur);
+    }
+    if (num < 1) { return; }
+    au.g = g; au.ph = pi; au.pa = pa;
+    ui_audience_start(&au);
+    for (int i = 0; i < num; ++i) {
+        lib_sprintf(strbuf[i], sizeof(strbuf[i]), "%s %u %s", game_str_au_bull, bctbl[i], game_str_au_bcpery);
+        au.strtbl[i] = strbuf[i];
+    }
+    au.strtbl[num] = "Forget it";
+    au.strtbl[num + 1] = NULL;
+    au.buf = "Propose a trade agreement of:";
+    int16_t sel = ui_audience_ask4(&au);
+    ui_audience_end(&au);
+    if ((sel < 0) || (sel >= num)) { return; }
+    {
+        uint16_t amt = bctbl[sel];
+        uint8_t pp[2] = { (uint8_t)(amt & 0xff), (uint8_t)(amt >> 8) };
+        diplo_cl_proposal_p(sid, MP_DIPLO_PROPOSE_TRADE, pp, 2);
+        int acc = mp_diplo_await_answer(g, pi, pa);
+        if (acc >= 0) {
+            if (acc) { game_diplo_set_trade(g, pi, pa, (int)amt); }
+            ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. So it is agreed." : "They refuse our offer.");
+        }
+    }
+}
+
+/* "Exchange Technology": pick a tech to receive (one they have, we lack) and one to give in
+   return (one we have, they lack), relay the swap, and on accept the techs transfer at the next
+   state sync (granted server-side from the responder's ACCEPT record). */
+static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
+{
+    struct spy_esp_s s[1];
+    struct audience_s au = {0};
+    tech_field_t want_f[TECH_SPY_MAX], give_f[TECH_SPY_MAX];
+    uint8_t want_t[TECH_SPY_MAX], give_t[TECH_SPY_MAX];
+    char namebuf[TECH_SPY_MAX][48];
+    int want_num = 0, give_num = 0;
+    s->spy = pi; s->target = pa; /* techs pa has that pi lacks = what we can RECEIVE */
+    if (game_spy_esp_sub1(g, s, 0, 1) > 0) {
+        want_num = (s->tnum < (AUDIENCE_STR_MAX - 2)) ? s->tnum : (AUDIENCE_STR_MAX - 2); /* leave room for "Forget it" + NULL */
+        for (int i = 0; i < want_num; ++i) { want_f[i] = s->tbl_field[i]; want_t[i] = s->tbl_tech2[i]; }
+    }
+    s->spy = pa; s->target = pi; /* techs pi has that pa lacks = what we can GIVE */
+    if (game_spy_esp_sub1(g, s, 0, 0) > 0) {
+        give_num = (s->tnum < (AUDIENCE_STR_MAX - 2)) ? s->tnum : (AUDIENCE_STR_MAX - 2); /* leave room for "Forget it" + NULL */
+        for (int i = 0; i < give_num; ++i) { give_f[i] = s->tbl_field[i]; give_t[i] = s->tbl_tech2[i]; }
+    }
+    if (want_num == 0) { ui_mp_diplo_msgbox(g, pi, pa, "They have no technology we lack."); return; }
+    if (give_num == 0) { ui_mp_diplo_msgbox(g, pi, pa, "We have no technology they lack."); return; }
+    au.g = g; au.ph = pi; au.pa = pa;
+    ui_audience_start(&au);
+    for (int i = 0; i < want_num; ++i) { au.strtbl[i] = game_tech_get_name(g->gaux, want_f[i], want_t[i], namebuf[i], sizeof(namebuf[i])); }
+    au.strtbl[want_num] = "Forget it";
+    au.strtbl[want_num + 1] = NULL;
+    au.buf = "Which of their technologies do you desire?";
+    int16_t selw = ui_audience_ask4(&au);
+    if ((selw < 0) || (selw >= want_num)) { ui_audience_end(&au); return; }
+    for (int i = 0; i < give_num; ++i) { au.strtbl[i] = game_tech_get_name(g->gaux, give_f[i], give_t[i], namebuf[i], sizeof(namebuf[i])); }
+    au.strtbl[give_num] = "Forget it";
+    au.strtbl[give_num + 1] = NULL;
+    au.buf = "Which of ours will you give in exchange?";
+    int16_t selg = ui_audience_ask4(&au);
+    ui_audience_end(&au);
+    if ((selg < 0) || (selg >= give_num)) { return; }
+    {
+        uint8_t pp[4] = { (uint8_t)want_f[selw], want_t[selw], (uint8_t)give_f[selg], give_t[selg] };
+        diplo_cl_proposal_p(sid, MP_DIPLO_PROPOSE_TECH, pp, 4);
+        int acc = mp_diplo_await_answer(g, pi, pa);
+        if (acc >= 0) { ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. The exchange is agreed." : "They refuse our offer."); }
+    }
+}
+
+/* proposer side of an open session: a top-level menu mirroring the AI audience (propose treaty /
+   form trade / exchange technology / break treaty or trade), one action per session. Consensual
+   deals are relayed and applied by the responder's ACCEPT record; unilateral acts are recorded here. */
+static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
+{
+    treaty_t tr = g->eto[pi].treaty[pa];
+    struct audience_s au = {0};
+    const char *mopts[6]; int mcat[6]; int mn = 0;
+    au.g = g; au.ph = pi; au.pa = pa;
+    ui_audience_start(&au);
+    mopts[mn] = "Propose treaty"; mcat[mn] = 0; ++mn;
+    mopts[mn] = "Form trade agreement"; mcat[mn] = 1; ++mn;
+    mopts[mn] = "Exchange technology"; mcat[mn] = 2; ++mn;
+    mopts[mn] = "Break treaty or trade"; mcat[mn] = 3; ++mn;
+    mopts[mn] = "Forget it"; mcat[mn] = 4; ++mn;
+    for (int i = 0; i < mn; ++i) { au.strtbl[i] = mopts[i]; }
+    au.strtbl[mn] = NULL;
+    au.buf = "What is your will?";
+    int16_t msel = ui_audience_ask4(&au);
+    int cat = ((msel >= 0) && (msel < mn)) ? mcat[msel] : 4;
+    if (cat == 1) { ui_audience_end(&au); mp_diplo_propose_trade(g, pi, pa, sid); return; }
+    if (cat == 2) { ui_audience_end(&au); mp_diplo_propose_tech(g, pi, pa, sid); return; }
+    if (cat == 4) { ui_audience_end(&au); return; }
+    {
+        const char *opts[AUDIENCE_STR_MAX];
+        uint8_t verbs[AUDIENCE_STR_MAX];
+        int n = 0;
+        if (cat == 0) { /* propose a treaty (consensual) */
+            if (tr == TREATY_WAR) { opts[n] = "Propose peace treaty"; verbs[n] = MP_DIPLO_PROPOSE_PEACE; ++n; }
+            else {
+                if (tr == TREATY_NONE) { opts[n] = "Non-aggression pact"; verbs[n] = MP_DIPLO_PROPOSE_NAP; ++n; }
+                if ((tr == TREATY_NONE) || (tr == TREATY_NONAGGRESSION)) { opts[n] = "Alliance"; verbs[n] = MP_DIPLO_PROPOSE_ALLIANCE; ++n; }
+            }
+        } else { /* cat == 3: break / declare (unilateral) */
+            if (tr != TREATY_WAR) { opts[n] = "Declare war"; verbs[n] = MP_DIPLO_DECLARE_WAR; ++n; }
+            if ((tr == TREATY_NONAGGRESSION) || (tr == TREATY_ALLIANCE)) { opts[n] = "Break treaty"; verbs[n] = MP_DIPLO_BREAK_TREATY; ++n; }
+            if (g->eto[pi].trade_bc[pa] != 0) { opts[n] = "Break trade agreement"; verbs[n] = MP_DIPLO_BREAK_TRADE; ++n; }
+        }
+        if (n == 0) { au.buf = "There is nothing to propose."; ui_audience_show1(&au); ui_audience_end(&au); return; }
+        opts[n] = "Forget it"; verbs[n] = MP_DIPLO_NONE; ++n;
+        for (int i = 0; i < n; ++i) { au.strtbl[i] = opts[i]; }
+        au.strtbl[n] = NULL;
+        au.buf = "What is your will?";
+        int16_t sel = ui_audience_ask4(&au);
+        uint8_t verb = ((sel >= 0) && (sel < n)) ? verbs[sel] : MP_DIPLO_NONE;
+        if (verb == MP_DIPLO_NONE) { ui_audience_end(&au); return; }
+        if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY) || (verb == MP_DIPLO_BREAK_TRADE)) {
+            game_mp_diplo_record(pi, pa, verb, 0); /* unilateral: applies at resolution */
+            mp_diplo_apply_local(g, pi, pa, verb); /* and immediately, locally */
+            au.buf = "It is done.";
+            ui_audience_show1(&au);
+            ui_audience_end(&au);
+            return;
+        }
+        /* consensual treaty proposal: relay + await the live answer */
+        ui_audience_end(&au);
+        diplo_cl_proposal(sid, verb);
+        {
+            int acc = mp_diplo_await_answer(g, pi, pa);
+            if (acc >= 0) {
+                if (acc) { mp_diplo_apply_local(g, pi, pa, verb); }
+                ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. So it is agreed." : "They refuse our offer.");
+            }
+        }
     }
 }
 
@@ -239,19 +381,41 @@ static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player
     int id = ui_mp_diplo_wait("Receiving their envoy...", buf, &len);
     if (id != MP_MSG_DIPLO_PROPOSAL) { return; } /* session ended / cancelled without an offer */
     uint8_t verb = (len >= 3) ? buf[2] : MP_DIPLO_NONE;
+    uint8_t pp[4] = { 0, 0, 0, 0 };
+    int pn = len - 3;
+    if (pn < 0) { pn = 0; } if (pn > 4) { pn = 4; }
+    for (int i = 0; i < pn; ++i) { pp[i] = buf[3 + i]; }
     struct audience_s au = {0};
+    char msg[200];
     au.g = g; au.ph = pi; au.pa = pa;
     ui_audience_start(&au);
-    au.buf = (verb == MP_DIPLO_PROPOSE_PEACE) ? "They propose a peace treaty. Do you accept?"
-           : (verb == MP_DIPLO_PROPOSE_ALLIANCE) ? "They propose an alliance. Do you accept?"
-           : "They propose a non-aggression pact. Do you accept?";
+    if (verb == MP_DIPLO_PROPOSE_TRADE) {
+        lib_sprintf(msg, sizeof(msg), "They propose a trade agreement of %d %s. Do you accept?", pp[0] | (pp[1] << 8), game_str_au_bcpery);
+        au.buf = msg;
+    } else if (verb == MP_DIPLO_PROPOSE_TECH) {
+        char wn[48], gn[48];
+        game_tech_get_name(g->gaux, (tech_field_t)pp[0], pp[1], wn, sizeof(wn)); /* the tech they want from us */
+        game_tech_get_name(g->gaux, (tech_field_t)pp[2], pp[3], gn, sizeof(gn)); /* the tech they offer us */
+        lib_sprintf(msg, sizeof(msg), "They offer %s in exchange for your %s. Do you accept?", gn, wn);
+        au.buf = msg;
+    } else {
+        au.buf = (verb == MP_DIPLO_PROPOSE_PEACE) ? "They propose a peace treaty. Do you accept?"
+               : (verb == MP_DIPLO_PROPOSE_ALLIANCE) ? "They propose an alliance. Do you accept?"
+               : "They propose a non-aggression pact. Do you accept?";
+    }
     au.strtbl[0] = "Accept"; au.strtbl[1] = "Reject"; au.strtbl[2] = NULL;
     int16_t sel = ui_audience_ask4(&au);
     int acc = (sel == 0) ? 1 : 0;
     diplo_cl_response(sid, acc, verb);
     if (acc) {
-        game_mp_diplo_record(pi, pa, MP_DIPLO_ACCEPT, verb); /* authoritative at resolution */
-        mp_diplo_apply_local(g, pi, pa, verb);               /* and immediately, locally */
+        if ((verb == MP_DIPLO_PROPOSE_TRADE) || (verb == MP_DIPLO_PROPOSE_TECH)) {
+            game_mp_diplo_record_p(pi, pa, MP_DIPLO_ACCEPT, verb, pp); /* authoritative at resolution */
+            if (verb == MP_DIPLO_PROPOSE_TRADE) { game_diplo_set_trade(g, pi, pa, pp[0] | (pp[1] << 8)); } /* optimistic */
+            /* traded techs arrive with the next authoritative state sync (granted server-side) */
+        } else {
+            game_mp_diplo_record(pi, pa, MP_DIPLO_ACCEPT, verb); /* authoritative at resolution */
+            mp_diplo_apply_local(g, pi, pa, verb);               /* and immediately, locally */
+        }
     }
     au.buf = acc ? "Excellent. So it is agreed." : "A pity.";
     ui_audience_show1(&au);
