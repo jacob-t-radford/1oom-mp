@@ -83,6 +83,12 @@ void ui_election_ctx_load(struct election_s *el)
     d.el = el;
     d.flag_countdown = false;
     d.count = 0;
+    /* select the council palette + build colortables, exactly as ui_election_start does. Without
+       this the council gfx render against the game palette = washed-out / near-white. */
+    lbxpal_select(10, -1, 0);
+    lbxpal_set_update_range(0, 255);
+    lbxpal_build_colortables();
+    ui_draw_finish_mode = 2; /* stop ui_election_draw_cb fading the palette out every frame */
     election_load_data(&d);
 }
 
@@ -92,6 +98,11 @@ void ui_election_ctx_free(struct election_s *el)
         election_free_data((struct election_data_s *)el->uictx);
         el->uictx = NULL;
     }
+    /* restore the default game palette (mirrors ui_election_end) so the post-vote wait/redraw looks right */
+    lbxpal_select(0, -1, 0);
+    lbxpal_set_update_range(0, 255);
+    lbxpal_build_colortables();
+    ui_draw_finish_mode = 0;
 }
 
 static void ui_election_draw_cb(void *vptr)
