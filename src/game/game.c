@@ -901,6 +901,7 @@ static void mp_if_on_wait(void *ctx, int reason) {
         ui_mp_battle_spectate(&s_mp_battle);
         return;
     }
+    if (reason == MP_WAIT_COUNCIL) { s_mp_combat_hold = 0; } /* the council banner takes priority over a stale combat notice */
     if (reason == MP_WAIT_COMBAT) { s_mp_combat_hold = 1500; } /* another player just started/continued a battle */
     if (s_mp_combat_hold > 0) {
         --s_mp_combat_hold;

@@ -83,7 +83,7 @@ static uint8_t *s_cl_blob = NULL;          /* shared recv buffer (borrowed from 
 static int s_cl_blobcap = 0;
 static bool s_cl_resolving = false;        /* set when RESOLVE_START arrives -> end planning */
 static bool s_cl_game_over = false;        /* set if the link dropped / game ended during planning */
-static bool s_cl_combat_wait = false;      /* set while another player is resolving a battle (so waiting clients can say so) */
+static int s_cl_wait_kind = 0;             /* 0=none, 1=another player in combat, 2=galactic council in session (from MP_MSG_WAIT_STATUS) */
 
 /* client: serialize+send a READY (latest orders + ready flag). Called by the UI adapter. */
 static void cl_send_ready_impl(int ready, const uint8_t *orders, int olen) {
@@ -199,7 +199,7 @@ static void mp_spectate_send(int player_id, const void *data, int len) {
 /* server -> all clients: a battle just started (active=1) / finished (active=0). A client only waiting
    on the turn can then say "another player is in combat" instead of showing a generic wait screen. */
 static void mp_wait_status_bcast(int active) {
-    uint8_t b = (uint8_t)(active ? 1 : 0);
+    uint8_t b = (uint8_t)active; /* 0=clear, 1=combat, 2=council */
     for (int i = 0; i < s_mp_num_conns; ++i) {
         if (s_mp_conns[i]) { mp_send(s_mp_conns[i], MP_MSG_WAIT_STATUS, &b, 1); }
     }
@@ -220,6 +220,7 @@ static int mp_decision_rpc(int player_id, int dtype, const void *req, int req_le
     net_conn_t *c = s_mp_conns[player_id];
     if (dtype == MP_DEC_BATTLE_INIT) { mp_wait_status_bcast(1); } /* tell idle clients a battle is running */
     else if (dtype == MP_DEC_BATTLE_END) { mp_wait_status_bcast(0); }
+    else if (dtype == MP_DEC_ELECTION_VOTE || dtype == MP_DEC_ELECTION_ACCEPT) { mp_wait_status_bcast(2); } /* galactic council in session */
     if (req_len < 0) { req_len = 0; }
     {   /* DECISION_REQ: [u16 dtype][req] */
         uint8_t *m = (uint8_t *)malloc(2 + req_len);
@@ -254,6 +255,7 @@ static int mp_decision_rpc_multi(const int *players, int n, int dtype, const voi
     }
     if (dtype == MP_DEC_BATTLE_INIT) { mp_wait_status_bcast(1); } /* tell idle clients a battle is running */
     else if (dtype == MP_DEC_BATTLE_END) { mp_wait_status_bcast(0); }
+    else if (dtype == MP_DEC_ELECTION_VOTE || dtype == MP_DEC_ELECTION_ACCEPT) { mp_wait_status_bcast(2); } /* galactic council in session */
     {   /* send every request first -> the prompts pop simultaneously */
         uint8_t *m = (uint8_t *)malloc(2 + req_len);
         if (!m) { return -1; }
@@ -718,7 +720,7 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
             if (mp_send(c, MP_MSG_TURN_INPUT, blob, 2 + (uint32_t)olen) != 0) { rc = -1; goto done; }
         }
         /* wait for next state (ignore GAME_OVER -> stop) */
-        s_cl_combat_wait = false; /* re-driven by the server's battle-status broadcasts below */
+        s_cl_wait_kind = 0; /* re-driven by the server's wait-status broadcasts below */
         uint16_t id;
         bool got = false;
         while (!got) {
@@ -751,10 +753,10 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
                     MP_MSG("client: game over\n");
                     goto done;
                 } else if (id == MP_MSG_WAIT_STATUS) {
-                    s_cl_combat_wait = (dl >= 1) && (blob[0] != 0);
+                    s_cl_wait_kind = (dl >= 1) ? blob[0] : 0;
                 }
             } else {
-                if (gi->on_wait) { gi->on_wait(gi->ctx, s_cl_combat_wait ? MP_WAIT_COMBAT : MP_WAIT_TURN); }
+                if (gi->on_wait) { gi->on_wait(gi->ctx, (s_cl_wait_kind == 2) ? MP_WAIT_COUNCIL : ((s_cl_wait_kind == 1) ? MP_WAIT_COMBAT : MP_WAIT_TURN)); }
                 usleep(1000);
             }
         }

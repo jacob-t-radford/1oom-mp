@@ -196,6 +196,7 @@ extern void (*g_mp_cl_diplo_send)(uint16_t id, const uint8_t *data, int len);
 #define MP_WAIT_TURN   1 /* waiting for other players to finish their simultaneous turn */
 #define MP_WAIT_COMBAT 3 /* waiting while another player resolves an interactive battle */
 #define MP_WAIT_BATTLE 2 /* waiting during a battle (the other side's turn) — keep the arena, just pump */
+#define MP_WAIT_COUNCIL 4 /* waiting while the Galactic Council is in session (another emperor voting) */
 
 /* Run the authoritative server: accept num_clients, assign empires, broadcast
    state, then loop the simultaneous-turn barrier (wait all END_TURN, advance,

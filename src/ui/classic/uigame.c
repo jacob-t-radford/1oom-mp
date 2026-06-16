@@ -1129,11 +1129,14 @@ void ui_mp_wait(int reason)
     if (!s_mp_ui_ready) { return; }
     if (reason == 2 /* MP_WAIT_BATTLE */) { return; } /* in a battle: just pumped events, keep the arena */
     const char *msg;
-    if (reason == 3 /* MP_WAIT_COMBAT */) { msg = "Waiting for another player to finish combat..."; }
+    if (reason == 4 /* MP_WAIT_COUNCIL */) { msg = "The Galactic Council is in session..."; }
+    else if (reason == 3 /* MP_WAIT_COMBAT */) { msg = "Waiting for another player to finish combat..."; }
     else if (reason) { msg = "Waiting for other players to finish their turn..."; }
     else { msg = "Waiting for players..."; }
     ui_draw_erase_buf();
-    lbxfont_select(2, 6, 0, 0);
+    /* color 0xd = clearly legible (the old color 6 rendered too dark to see, so the banners looked
+       like a black screen). Matches the visible text color the diplomacy wait modal uses. */
+    lbxfont_select(2, 0xd, 0, 0);
     lbxfont_print_str_center(160, 92, msg, UI_SCREEN_W, ui_scale);
     hw_video_draw_buf();        /* present the frame */
 }
