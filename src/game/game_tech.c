@@ -157,6 +157,20 @@ static void game_tech_add_newtech(struct game_s *g, player_id_t player, tech_fie
     }
 }
 
+/* A planetology controlled-environment colonization tech (tiers 3,6,9,12,15,18) is pointless to offer
+   if the empire can already colonize that planet type -- notably Silicoid, which colonizes everything
+   natively (have_colony_for == RADIATED), but also any race that has already researched a better one.
+   have_colony_for is the worst colonizable type = PLANET_TYPE_BARREN - n; a tech granting that same or
+   a less-harsh type is redundant. (Matches MOO1, which doesn't offer Silicoid these.) */
+static bool game_tech_colony_redundant(const struct game_s *g, player_id_t player, tech_field_t field, uint8_t t)
+{
+    int granted;
+    if (field != TECH_FIELD_PLANETOLOGY) { return false; }
+    if ((t < 3) || (t > 18) || ((t % 3) != 0)) { return false; } /* not a controlled-env tier */
+    granted = PLANET_TYPE_BARREN - (t - 3) / 3;
+    return (granted >= (int)g->eto[player].have_colony_for);
+}
+
 static uint8_t game_tech_get_next_techs(const struct game_s *g, player_id_t player, tech_field_t field, uint8_t *tbl)
 {
     const uint8_t *rc = g->srd[player].researchcompleted[field];
@@ -188,7 +202,7 @@ static uint8_t game_tech_get_next_techs(const struct game_s *g, player_id_t play
                         break;
                     }
                 }
-                if ((!have) && (num < TECH_NEXT_MAX)) {
+                if ((!have) && (num < TECH_NEXT_MAX) && !game_tech_colony_redundant(g, player, field, t)) {
                     tbl[num++] = t;
                 }
             }
