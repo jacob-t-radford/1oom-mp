@@ -14,6 +14,7 @@
 #include "mp.h"
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 bool ui_use_audio = false;
 
@@ -365,6 +366,14 @@ int ui_spy_steal(struct game_s *g, int spy, int target, uint8_t flags_field)
 
 void ui_spy_stolen(struct game_s *g, int pi, int spy, int field, uint8_t tech)
 {
+    /* 1oom-mp: tell the human victim which tech was stolen (self-contained; no game state needed) */
+    if (g_mp_decision_hook && !IS_AI(g, pi)) {
+        struct { int32_t spy, field; uint8_t tech; } rq;
+        uint8_t ack = 0;
+        memset(&rq, 0, sizeof(rq));
+        rq.spy = spy; rq.field = field; rq.tech = tech;
+        g_mp_decision_hook(pi, MP_DEC_SPY_STOLEN, &rq, (int)sizeof(rq), &ack, 1);
+    }
 }
 
 ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_id_t *planetptr)
@@ -386,7 +395,22 @@ ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_
 
 int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
 {
-    return 0;
+    /* 1oom-mp: show the sabotage result on the human's client. The screen reads the *post*-sabotage
+       planet state (factories/rebels/unrest), which the client's game copy won't have yet, so ship a
+       snapshot of just that planet along with the params. Returns the framed-empire id (when the
+       saboteur is caught and gets to pin the blame -- handled interactively on the client). */
+    if (g_mp_decision_hook && !IS_AI(g, pi) && (planet < g->galaxy_stars)) {
+        struct { int32_t spy, target, act, other1, other2, snum, planet; planet_t psnap; } rq;
+        int32_t other = PLAYER_NONE;
+        memset(&rq, 0, sizeof(rq));
+        rq.spy = spy; rq.target = target; rq.act = (int32_t)act;
+        rq.other1 = other1; rq.other2 = other2; rq.snum = snum; rq.planet = (int32_t)planet;
+        rq.psnap = g->planet[planet];
+        BOOLVEC_SET1(rq.psnap.within_srange, pi); /* force "in range" so the client shows the current (post-sabotage) numbers */
+        int r = g_mp_decision_hook(pi, MP_DEC_SPY_RESULT, &rq, (int)sizeof(rq), &other, (int)sizeof(other));
+        if (r >= (int)sizeof(other)) { return (int)other; }
+    }
+    return PLAYER_NONE;
 }
 
 void ui_newtech(struct game_s *g, int pi)
@@ -519,10 +543,14 @@ void ui_election_start(struct election_s *el)
 void ui_election_show(struct election_s *el)
 {
     mp_election_relay(el, UI_MP_SPEC_COUNCIL);
+    /* the council runs headless here with no pacing, so spectators would only ever see the latest
+       frame before the next one / the tear-down. Hold each step so they can actually read it. */
+    if (g_mp_spectate_hook) { usleep(900000); }
 }
 
 void ui_election_delay(struct election_s *el, int delay)
 {
+    if (g_mp_spectate_hook && (delay > 0)) { usleep((useconds_t)delay * 120000); }
 }
 
 /* 1oom-mp: the galactic-council vote + accept happen during resolution; ship the
@@ -560,6 +588,9 @@ bool ui_election_accept(struct election_s *el, int player_i)
 
 void ui_election_end(struct election_s *el)
 {
+    /* hold the final result on every spectator's screen before tearing the council down, otherwise
+       the next turn's state load wipes it instantly and players never see who won. */
+    if (g_mp_spectate_hook) { sleep(3); }
     mp_election_relay(el, UI_MP_SPEC_COUNCIL_END);
 }
 

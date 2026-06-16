@@ -1016,6 +1016,27 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(resp, &rs, sizeof(rs));
             return (int)sizeof(rs);
         }
+        case MP_DEC_SPY_RESULT: { /* show the sabotage result; patch in the post-sabotage planet snapshot */
+            struct { int32_t spy, target, act, other1, other2, snum, planet; planet_t psnap; } q;
+            if ((req_len < (int)sizeof(q)) || (resp_buflen < (int)sizeof(int32_t))) { return 0; }
+            memcpy(&q, req, sizeof(q));
+            planet_id_t pl = (planet_id_t)q.planet;
+            if (pl >= g->galaxy_stars) { return 0; }
+            planet_t saved = g->planet[pl];
+            g->planet[pl] = q.psnap; /* the next GAME_DATA re-syncs this; we restore below regardless */
+            int32_t other = (int32_t)ui_spy_sabotage_done(g, mp_cl_player_id(), q.spy, q.target, (ui_sabotage_t)q.act, q.other1, q.other2, pl, q.snum);
+            g->planet[pl] = saved;
+            memcpy(resp, &other, sizeof(other));
+            return (int)sizeof(other);
+        }
+        case MP_DEC_SPY_STOLEN: { /* notify the human victim which tech was stolen */
+            struct { int32_t spy, field; uint8_t tech; } q;
+            if (req_len < (int)sizeof(q)) { return 0; }
+            memcpy(&q, req, sizeof(q));
+            ui_spy_stolen(g, mp_cl_player_id(), q.spy, q.field, (uint8_t)q.tech);
+            if (resp_buflen >= 1) { resp[0] = 1; }
+            return 1;
+        }
         case MP_DEC_ELECTION_VOTE: { /* galactic council: who to vote for */
             static char ebuf[256];
             struct election_s el;
