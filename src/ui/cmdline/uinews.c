@@ -36,3 +36,8 @@ void ui_news(struct game_s *g, struct news_s *ns)
 void ui_news_end(void)
 {
 }
+
+void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s *reps, int n)
+{
+    (void)g; (void)pi; (void)reps; (void)n;
+}

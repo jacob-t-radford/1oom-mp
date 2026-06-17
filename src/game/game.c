@@ -906,6 +906,10 @@ struct mp_bomb_item_s { int32_t attacker, owner, planet, popdmg, factdmg; uint8_
 static struct mp_bomb_item_s s_mp_bomb[16];
 static int s_mp_bomb_n = 0;
 
+/* 1oom-mp: auto-resolved space-battle results, shown as one consolidated combat report at state load */
+static struct ui_combat_report_s s_mp_report[16];
+static int s_mp_report_n = 0;
+
 /* 1oom-mp: shared synchronous council view. The server streams the council chamber (election_s) to
    ALL humans (UI_MP_SPEC_COUNCIL), so everyone watches the votes instead of a black/banner screen.
    The council artwork is a shared resource (LBXFILE_COUNCIL): load it ONCE here and free it ONCE
@@ -1051,6 +1055,14 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (req_len < (int)sizeof(q)) { return 0; }
             memcpy(&q, req, sizeof(q));
             ui_spy_stolen(g, mp_cl_player_id(), q.spy, q.field, (uint8_t)q.tech);
+            if (resp_buflen >= 1) { resp[0] = 1; }
+            return 1;
+        }
+        case MP_DEC_COMBAT_REPORT: { /* buffer one auto-resolved battle's result; shown in the consolidated report at state load */
+            if (req_len < (int)sizeof(struct ui_combat_report_s)) { return 0; }
+            if (s_mp_report_n < (int)(sizeof(s_mp_report) / sizeof(s_mp_report[0]))) {
+                memcpy(&s_mp_report[s_mp_report_n++], req, sizeof(struct ui_combat_report_s));
+            }
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
@@ -1300,6 +1312,10 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
         game_update_within_range(g);
         game_update_visibility(g);
         game_update_have_reserve_fuel(g);
+        if (s_mp_report_n > 0) { /* consolidated space-combat report for auto-resolved battles, before the bomb/ground recaps */
+            ui_combat_report(g, mp_cl_player_id(), s_mp_report, s_mp_report_n);
+            s_mp_report_n = 0;
+        }
         if (s_mp_bomb_n > 0) { /* replay this client's orbital bombings (before ground -- bomb then invade); concurrent across players */
             for (int i = 0; i < s_mp_bomb_n; ++i) {
                 struct mp_bomb_item_s *b = &s_mp_bomb[i];

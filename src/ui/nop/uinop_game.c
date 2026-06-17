@@ -120,8 +120,36 @@ uint8_t * ui_gfx_get_rock(int look)
     return 0;
 }
 
+/* 1oom-mp: each side's ship stacks captured at battle start, diffed at shutdown into per-design
+   losses for the end-of-turn combat report. One battle resolves at a time, so one static suffices. */
+struct mp_shipsnap_s { uint8_t side, look, hull; uint16_t num; };
+static struct mp_shipsnap_s s_battle_snap[BATTLE_ITEM_MAX];
+static int s_battle_snap_n = 0;
+
+static uint16_t mp_battle_item_num(const struct battle_s *bt, int side, int look, int hull)
+{
+    uint16_t total = 0;
+    for (int i = 1; (i <= (int)bt->items_num) && (i < BATTLE_ITEM_MAX); ++i) {
+        const struct battle_item_s *it = &bt->item[i];
+        if (((int)it->side == side) && ((int)it->look == look) && ((int)it->hull == hull)) { total += it->num; }
+    }
+    return total;
+}
+
 ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
 {
+    /* snapshot the initial ship stacks (item[0] is the planet, so start at 1) for the loss diff */
+    s_battle_snap_n = 0;
+    for (int i = 1; (i <= (int)bt->items_num) && (i < BATTLE_ITEM_MAX); ++i) {
+        const struct battle_item_s *it = &bt->item[i];
+        if ((((int)it->side == SIDE_L) || ((int)it->side == SIDE_R)) && (it->num > 0) && (s_battle_snap_n < BATTLE_ITEM_MAX)) {
+            s_battle_snap[s_battle_snap_n].side = (uint8_t)it->side;
+            s_battle_snap[s_battle_snap_n].look = (uint8_t)it->look;
+            s_battle_snap[s_battle_snap_n].hull = (uint8_t)it->hull;
+            s_battle_snap[s_battle_snap_n].num = (uint16_t)it->num;
+            s_battle_snap_n++;
+        }
+    }
     /* 1oom-mp: init EVERY human side's client IN PARALLEL (each runs the autoresolve
        prompt + sets up its battle UI at the same time). Battle goes interactive if any
        human picks Continue. Default AUTO outside MP. */
@@ -165,6 +193,27 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
             buf[sizeof(struct battle_s)] = colony_destroyed ? 1 : 0;
             memcpy(buf + sizeof(struct battle_s) + 1, &w, 4);
             g_mp_decision_hook_multi(players, n, MP_DEC_BATTLE_END, buf, (int)sizeof(struct battle_s) + 5, resp, 1);
+            if (bt->autoresolve) {
+                /* auto-resolved: send each involved human the per-design losses for both sides, for the
+                   consolidated end-of-turn combat report (the per-battle result screen is suppressed). */
+                struct ui_combat_report_s rep;
+                memset(&rep, 0, sizeof(rep));
+                rep.planet_i = (uint16_t)bt->planet_i;
+                rep.winner_party = ((winner == SIDE_L) || (winner == SIDE_R)) ? (int16_t)bt->s[winner].party : -1;
+                rep.party[0] = (uint8_t)bt->s[SIDE_L].party;
+                rep.party[1] = (uint8_t)bt->s[SIDE_R].party;
+                for (int k = 0; k < s_battle_snap_n; ++k) {
+                    int side = s_battle_snap[k].side;
+                    int loss = (int)s_battle_snap[k].num - (int)mp_battle_item_num(bt, side, s_battle_snap[k].look, s_battle_snap[k].hull);
+                    if ((loss > 0) && (side >= 0) && (side < 2) && (rep.nlost[side] < NUM_SHIPDESIGNS)) {
+                        rep.lost[side][rep.nlost[side]].look = s_battle_snap[k].look;
+                        rep.lost[side][rep.nlost[side]].hull = s_battle_snap[k].hull;
+                        rep.lost[side][rep.nlost[side]].count = (uint16_t)loss;
+                        rep.nlost[side]++;
+                    }
+                }
+                g_mp_decision_hook_multi(players, n, MP_DEC_COMBAT_REPORT, &rep, (int)sizeof(rep), resp, 1);
+            }
         }
     }
 }
@@ -560,6 +609,11 @@ void ui_news(struct game_s *g, struct news_s *ns)
 
 void ui_news_end(void)
 {
+}
+
+void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s *reps, int n)
+{
+    (void)g; (void)pi; (void)reps; (void)n; /* headless server never renders the report */
 }
 
 /* 1oom-mp: the council is a plenary event (every empire is present), so stream the chamber state to

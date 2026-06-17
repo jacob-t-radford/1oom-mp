@@ -164,6 +164,19 @@ typedef enum {
 extern ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt);
 extern void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner);
 
+/* 1oom-mp: end-of-turn consolidated combat report. One record per auto-resolved space battle, carrying
+   both sides' per-design ship losses (by sprite `look`) so each client renders it from its own side.
+   Replayed concurrently at state load in place of the per-battle result screens. */
+struct ui_combat_loss_s { uint8_t look; uint8_t hull; uint16_t count; };
+struct ui_combat_report_s {
+    uint16_t planet_i;       /* >= galaxy_stars -> deep space */
+    int16_t winner_party;    /* winning party id, or -1 */
+    uint8_t party[2];        /* s[SIDE_L].party, s[SIDE_R].party */
+    uint8_t nlost[2];        /* distinct designs lost, per side */
+    struct ui_combat_loss_s lost[2][6]; /* NUM_SHIPDESIGNS */
+};
+extern void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s *reps, int n);
+
 extern void ui_battle_draw_misshield(const struct battle_s *bt, int target_i, int target_x, int target_y, int missile_i);
 extern void ui_battle_draw_damage(const struct battle_s *bt, int target_i, int target_x, int target_y, uint32_t damage);
 extern void ui_battle_draw_explos_small(const struct battle_s *bt, int x, int y);

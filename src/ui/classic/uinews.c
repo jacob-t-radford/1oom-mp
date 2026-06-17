@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "ui.h"
+#include "game.h"
 #include "game_news.h"
 #include "game_str.h"
 #include "hw.h"
@@ -369,4 +370,88 @@ void ui_news_end(void)
         ui_palette_fadeout_a_f_1();
         ui_draw_finish_mode = 2;
     }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 1oom-mp: end-of-turn consolidated combat report for auto-resolved space battles. Drawn from each
+   client's own perspective (pi = the local player). First draft -- layout/colours to be refined. */
+
+struct combat_report_d_s {
+    struct game_s *g;
+    int pi;
+    const struct ui_combat_report_s *reps;
+    int n;
+};
+
+static void ui_combat_report_draw_cb(void *vptr)
+{
+    struct combat_report_d_s *d = vptr;
+    const struct game_s *g = d->g;
+    char buf[128];
+    int y = 16;
+    ui_draw_erase_buf();
+    lbxfont_select(2, 0xd, 0, 0);
+    lbxfont_print_str_center(160, 5, "COMBAT REPORT", UI_SCREEN_W, ui_scale);
+    for (int i = 0; (i < d->n) && (y < 174); ++i) {
+        const struct ui_combat_report_s *r = &d->reps[i];
+        int myside = (r->party[1] == d->pi) ? 1 : 0;
+        int eparty = r->party[1 - myside];
+        const char *erace = ((eparty >= 0) && (eparty < g->players)) ? game_str_tbl_races[g->eto[eparty].race] : "Unknown";
+        const char *loc = (r->planet_i < g->galaxy_stars) ? g->planet[r->planet_i].name : "Deep Space";
+        const char *outcome = (r->winner_party < 0) ? "DRAW" : ((r->winner_party == d->pi) ? "VICTORY" : "DEFEAT");
+        lib_sprintf(buf, sizeof(buf), "%s vs %s -- %s", loc, erace, outcome);
+        lbxfont_select(0, 0xd, 0, 0);
+        lbxfont_print_str_normal(16, y, buf, UI_SCREEN_W, ui_scale);
+        y += 11;
+        if (r->nlost[myside] == 0) {
+            lbxfont_print_str_normal(26, y, "no ships lost", UI_SCREEN_W, ui_scale);
+            y += 13;
+        } else {
+            int x = 26;
+            for (int k = 0; (k < r->nlost[myside]) && (x < 286); ++k) {
+                uint8_t look = r->lost[myside][k].look;
+                if ((look < 0xd8) && ui_data.gfx.ships[look]) {
+                    lbxgfx_draw_frame(x, y, ui_data.gfx.ships[look], UI_SCREEN_W, ui_scale);
+                }
+                lib_sprintf(buf, sizeof(buf), "x%i", r->lost[myside][k].count);
+                lbxfont_print_str_normal(x + 2, y + 17, buf, UI_SCREEN_W, ui_scale);
+                x += 42;
+            }
+            y += 30;
+        }
+    }
+    lbxfont_select(0, 0xd, 0, 0);
+    lbxfont_print_str_center(160, 190, "click to continue", UI_SCREEN_W, ui_scale);
+}
+
+void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s *reps, int n)
+{
+    struct combat_report_d_s d;
+    bool flag_done = false;
+    if (n <= 0) { return; }
+    d.g = g; d.pi = pi; d.reps = reps; d.n = n;
+    ui_switch_all(g);
+    lbxpal_select(0, -1, 0);
+    lbxpal_set_update_range(0, 0xff);
+    lbxpal_build_colortables();
+    ui_draw_finish_mode = 0;
+    uiobj_table_clear();
+    uiobj_add_mousearea_all(MOO_KEY_SPACE);
+    uiobj_set_downcount(1);
+    uiobj_set_callback_and_delay(ui_combat_report_draw_cb, &d, 3);
+    while (!flag_done) {
+        int16_t oi;
+        ui_delay_prepare();
+        oi = uiobj_handle_input_cond();
+        if (oi != 0) { flag_done = true; }
+        if (!flag_done) {
+            ui_combat_report_draw_cb(&d);
+            ui_draw_finish();
+        }
+        ui_delay_ticks_or_click(3);
+    }
+    uiobj_unset_callback();
+    uiobj_table_clear();
+    ui_palette_fadeout_a_f_1();
+    ui_draw_finish_mode = 2;
 }

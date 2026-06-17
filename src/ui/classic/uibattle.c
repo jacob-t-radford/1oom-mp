@@ -852,11 +852,11 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
     /*128c7*/
     uiobj_unset_callback();
     uiobj_table_clear();
-    if (bt->autoresolve) {
-        ui_battle_pre(bt->g, bt, d->show_switch, winner);
+    if (bt->autoresolve && !ui_mp_active) {
+        ui_battle_pre(bt->g, bt, d->show_switch, winner); /* SP: per-battle result; in MP the end-of-turn combat report replaces it */
     }
     ui_sound_stop_music();
-    if (!bt->autoresolve) {
+    if (!bt->autoresolve || ui_mp_active) { /* manual battles + every MP battle get the cleanup fade */
         ui_palette_fadeout_a_f_1();
         ui_draw_finish_mode = 2;
     }
