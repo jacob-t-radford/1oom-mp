@@ -396,11 +396,15 @@ ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_
 
 int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
 {
-    /* 1oom-mp: show the sabotage result on the human's client. The screen reads the *post*-sabotage
-       planet state (factories/rebels/unrest), which the client's game copy won't have yet, so ship a
-       snapshot of just that planet along with the params. Returns the framed-empire id (when the
-       saboteur is caught and gets to pin the blame -- handled interactively on the client). */
-    if (g_mp_decision_hook && !IS_AI(g, pi) && (planet < g->galaxy_stars)) {
+    /* 1oom-mp: show the sabotage result ONLY on the saboteur's client (pi == spy). They're the active
+       player -- present at the screen, and their click returns the framing choice. We must NOT relay
+       the VICTIM notification (game_spy_sab_human's second loop, pi == target): it's a blocking screen
+       on a passive player who may be away (especially when one person drives both empires), which
+       hangs the entire turn resolution waiting for an ack that never comes. (It also fires bogusly for
+       an incited revolt -- a human saboteur sets sabotage_num regardless of action.) The victim still
+       sees the effects next turn. The screen reads the *post*-sabotage planet state the client doesn't
+       have yet, so we ship a one-planet snapshot with the params. */
+    if (g_mp_decision_hook && !IS_AI(g, pi) && (pi == spy) && (planet < g->galaxy_stars)) {
         struct { int32_t spy, target, act, other1, other2, snum, planet; planet_t psnap; } rq;
         int32_t other = PLAYER_NONE;
         memset(&rq, 0, sizeof(rq));
