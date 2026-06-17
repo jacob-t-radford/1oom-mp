@@ -665,6 +665,13 @@ void game_spy_sab_human(struct game_s *g)
                 planet_t *p;
                 player_id_t other1, other2;
                 act = ui_spy_sabotage_ask(g, player, target, &planet);
+                if (planet >= g->galaxy_stars) {
+                    /* 1oom-mp: a relayed ask can hand back an out-of-range planet; deref'ing
+                       g->planet[planet] below would segfault. Skip this target and log the value
+                       so the root cause (sentinel vs garbage vs relay desync) is visible. */
+                    log_warning("MP: spy sabotage by player %d on %d returned out-of-range planet %d (act %d); skipping\n", (int)player, (int)target, (int)planet, (int)act);
+                    continue;
+                }
                 g->evn.sabotage_planet[target][player] = planet;
                 p = &(g->planet[planet]);
                 /*ui_spy_sabotage_ask:*/
