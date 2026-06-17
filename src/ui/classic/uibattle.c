@@ -1291,6 +1291,7 @@ void ui_mp_battle_spectate(const struct battle_s *bt)
 {
     struct ui_battle_data_s *d = bt->uictx;
     int16_t oi_hex[BATTLE_AREA_H][BATTLE_AREA_W];
+    if (!d || !d->gfx_bg) { return; } /* ctx not fully loaded (auto-resolved battle): no arena to draw */
     int16_t oi;
     ui_battle_draw_arena(bt, 0, 0);
     ui_battle_draw_bottom_no_ois(bt);

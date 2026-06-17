@@ -877,6 +877,7 @@ static void mp_if_play_movement(void *ctx, int player_id, const uint8_t *buf, in
 
 /* set by the combat dispatch while a battle UI is live on this client */
 static void *s_mp_battle_uictx = NULL;
+static bool s_mp_battle_auto = false; /* this client auto-resolved/retreated its battle: ctx is half-built (no gfx_bg loaded), so it must NOT be drawn as a spectate arena */
 /* set while a relayed AI<->human audience UI is live on this client (so on_wait keeps its screen) */
 static void *s_mp_audience_uictx = NULL;
 static struct audience_s s_mp_audience; /* client's working copy of the relayed audience */
@@ -940,10 +941,13 @@ static void mp_council_ctx_free(void) {
 static int s_mp_combat_hold = 0;
 static void mp_if_on_wait(void *ctx, int reason) {
     (void)ctx;
-    if (s_mp_battle_uictx) {
-        /* I'm a participant watching the other side's turn: render one interactive examine frame
+    if (s_mp_battle_uictx && !s_mp_battle_auto) {
+        /* I'm an interactive participant waiting on the other side's move: render one examine frame
            (banner + examine-only cursor) from the last streamed battle state, instead of
-           a passive black "waiting" screen. on_spectate keeps s_mp_battle fresh. */
+           a passive black "waiting" screen. on_spectate keeps s_mp_battle fresh. NOTE: only for
+           interactively-fought battles -- an auto-resolved/retreated battle leaves the ctx half-built
+           (no gfx_bg), so spectating it would draw a NULL background and segfault; those fall through
+           to the combat "waiting" banner below. */
         s_mp_battle.uictx = s_mp_battle_uictx;
         ui_mp_battle_spectate(&s_mp_battle);
         return;
@@ -1115,12 +1119,15 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             return 1;
         }
         case MP_DEC_BATTLE_INIT: { /* set up the battle UI + run the autoresolve prompt */
+            ui_battle_autoresolve_t ar;
             if ((req_len < (int)sizeof(struct battle_s)) || (resp_buflen < 1)) { return 0; }
             memcpy(&s_mp_battle, req, sizeof(s_mp_battle));
             s_mp_battle.uictx = NULL;
             mp_battle_fixup(g, &s_mp_battle);
-            resp[0] = (uint8_t)ui_battle_init(&s_mp_battle);
+            ar = ui_battle_init(&s_mp_battle);
+            resp[0] = (uint8_t)ar;
             s_mp_battle_uictx = s_mp_battle.uictx; /* capture the UI ctx it allocated */
+            s_mp_battle_auto = (ar != UI_BATTLE_AUTORESOLVE_OFF); /* auto/retreat -> no interactive arena */
             return 1;
         }
         case MP_DEC_BATTLE_TURN: { /* render + poll locally until the human picks one action */
