@@ -160,6 +160,10 @@ static void ui_battle_pre_draw_cb(void *vptr)
             y += 8;
             lbxfont_print_str_center(267, y, buf, UI_SCREEN_W, ui_scale);
         }
+        if (d->party_winner < 0) { /* a battle still to fight -> offer "Auto All" beside the Auto/Retreat buttons */
+            lbxfont_select_set_12_4(0, 0x2, 0, 0);
+            lbxfont_print_str_normal(226, 153, "Auto All", UI_SCREEN_W, ui_scale);
+        }
     }
 }
 
@@ -167,12 +171,16 @@ static void ui_battle_pre_draw_cb(void *vptr)
 
 ui_battle_autoresolve_t ui_battle_pre(struct game_s *g, const struct battle_s *bt, bool hide_other, int winner)
 {
+    static int s_autoall_year = -1; /* QoL: while set to the current year, auto-resolve every battle silently */
     struct ui_battle_pre_data_s d[1];
     int16_t oi_cont = UIOBJI_INVALID, oi_cont2 = UIOBJI_INVALID, oi_auto = UIOBJI_INVALID, oi_retreat = UIOBJI_INVALID;
-    int16_t oi_esc = UIOBJI_INVALID;
+    int16_t oi_autoall = UIOBJI_INVALID, oi_esc = UIOBJI_INVALID;
     bool flag_done = false;
     ui_battle_autoresolve_t ret;
     int party_u = bt->s[SIDE_L].party, party_d = bt->s[SIDE_R].party;
+    if (ui_space_combat_autoresolve && (winner == SIDE_NONE) && (s_autoall_year == (int)g->year)) {
+        return UI_BATTLE_AUTORESOLVE_AUTO; /* "Auto all" was chosen earlier this turn -> skip the prompt */
+    }
     memset(d, 0, sizeof(*d));
     d->g = g;
     d->party_u = party_u;
@@ -198,6 +206,7 @@ ui_battle_autoresolve_t ui_battle_pre(struct game_s *g, const struct battle_s *b
     if (ui_space_combat_autoresolve && (winner == SIDE_NONE)) {
         oi_auto = uiobj_add_t0(250, 152, "", ui_data.gfx.space.autob, MOO_KEY_a);
         oi_retreat = uiobj_add_t0(270, 152, "", ui_data.gfx.space.retreat, MOO_KEY_r);
+        oi_autoall = uiobj_add_mousearea(225, 151, 249, 161, MOO_KEY_l); /* "Auto All" text button (label drawn in the cb) */
     }
     if (ui_space_combat_autoresolve) {
         oi_esc = UIOBJI_ESC;
@@ -219,6 +228,11 @@ ui_battle_autoresolve_t ui_battle_pre(struct game_s *g, const struct battle_s *b
         } else if (oi == oi_retreat) {
             ui_sound_play_sfx_24();
             ret = UI_BATTLE_AUTORESOLVE_RETREAT;
+            flag_done = true;
+        } else if (oi == oi_autoall) {
+            ui_sound_play_sfx_24();
+            s_autoall_year = (int)g->year; /* auto-resolve this and every remaining battle this turn */
+            ret = UI_BATTLE_AUTORESOLVE_AUTO;
             flag_done = true;
         }
         if (!flag_done) {
