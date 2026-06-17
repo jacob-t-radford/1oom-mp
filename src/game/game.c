@@ -900,6 +900,12 @@ static int s_mp_news_n = 0;
 static struct ground_s s_mp_ground[16];
 static int s_mp_ground_n = 0;
 
+/* 1oom-mp: orbital bombings, same buffer+replay treatment as ground (concurrent across players). The
+   planet snapshot is patched in at replay so ui_bomb_show sees the bomb-time owner, not a later one. */
+struct mp_bomb_item_s { int32_t attacker, owner, planet, popdmg, factdmg; uint8_t play_music, hide_other; planet_t psnap; };
+static struct mp_bomb_item_s s_mp_bomb[16];
+static int s_mp_bomb_n = 0;
+
 /* 1oom-mp: shared synchronous council view. The server streams the council chamber (election_s) to
    ALL humans (UI_MP_SPEC_COUNCIL), so everyone watches the votes instead of a black/banner screen.
    The council artwork is a shared resource (LBXFILE_COUNCIL): load it ONCE here and free it ONCE
@@ -992,17 +998,12 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             resp[0] = ui_bomb_ask(g, bpi, bplanet, pop_inbound) ? 1 : 0;
             return 1;
         }
-        case MP_DEC_BOMB_SHOW: { /* show the bombing result (pop killed / factories destroyed) */
-            if (req_len < 16) { return 0; }
-            int attacker = (req[0] << 8) | req[1];
-            int owner = (req[2] << 8) | req[3];
-            planet_id_t bplanet = (planet_id_t)((req[4] << 8) | req[5]);
-            int popdmg = (int)(((uint32_t)req[6] << 24) | ((uint32_t)req[7] << 16) | ((uint32_t)req[8] << 8) | req[9]);
-            int factdmg = (int)(((uint32_t)req[10] << 24) | ((uint32_t)req[11] << 16) | ((uint32_t)req[12] << 8) | req[13]);
-            bool play_music = req[14] != 0;
-            bool hide_other = req[15] != 0;
-            ui_bomb_show(g, mp_cl_player_id(), attacker, owner, bplanet, popdmg, factdmg, play_music, hide_other);
-            if (resp_buflen >= 1) { resp[0] = 1; }
+        case MP_DEC_BOMB_SHOW: { /* buffer the bombing result; replayed at state load so independent bombings play concurrently, not in series */
+            if (req_len < (int)sizeof(struct mp_bomb_item_s)) { return 0; }
+            if (s_mp_bomb_n < (int)(sizeof(s_mp_bomb) / sizeof(s_mp_bomb[0]))) {
+                memcpy(&s_mp_bomb[s_mp_bomb_n++], req, sizeof(struct mp_bomb_item_s));
+            }
+            if (resp_buflen >= 1) { resp[0] = 1; } /* instant ack -- the screen plays later, so the server never blocks on it */
             return 1;
         }
         case MP_DEC_GROUND: { /* buffer a ground-invasion result; replayed at state load so independent invasions play concurrently, not in series */
@@ -1299,6 +1300,18 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
         game_update_within_range(g);
         game_update_visibility(g);
         game_update_have_reserve_fuel(g);
+        if (s_mp_bomb_n > 0) { /* replay this client's orbital bombings (before ground -- bomb then invade); concurrent across players */
+            for (int i = 0; i < s_mp_bomb_n; ++i) {
+                struct mp_bomb_item_s *b = &s_mp_bomb[i];
+                planet_id_t pl = (planet_id_t)b->planet;
+                if (pl >= g->galaxy_stars) { continue; }
+                planet_t saved = g->planet[pl];
+                g->planet[pl] = b->psnap; /* bomb-time planet state; the next GAME_DATA already re-synced, we restore below */
+                ui_bomb_show(g, mp_cl_player_id(), b->attacker, b->owner, pl, b->popdmg, b->factdmg, b->play_music != 0, b->hide_other != 0);
+                g->planet[pl] = saved;
+            }
+            s_mp_bomb_n = 0;
+        }
         if (s_mp_ground_n > 0) { /* replay this client's ground invasions; every player's client does its own at the same time, so they no longer block each other */
             for (int i = 0; i < s_mp_ground_n; ++i) { ui_ground(g, &s_mp_ground[i]); }
             s_mp_ground_n = 0;

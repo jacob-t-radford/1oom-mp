@@ -465,17 +465,18 @@ void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, planet_
             for (int j = 0; j < n; ++j) { if (players[j] == p) { dup = true; break; } }
             if (!dup) { players[n++] = p; }
         }
-        if (n > 0) {
-            uint8_t req[16], resp[2] = {0, 0};
-            int q = 0;
-            req[q++] = (uint8_t)(attacker_i >> 8); req[q++] = (uint8_t)attacker_i;
-            req[q++] = (uint8_t)(owner_i >> 8);    req[q++] = (uint8_t)owner_i;
-            req[q++] = (uint8_t)(planet_i >> 8);   req[q++] = (uint8_t)planet_i;
-            req[q++] = (uint8_t)(popdmg >> 24); req[q++] = (uint8_t)(popdmg >> 16); req[q++] = (uint8_t)(popdmg >> 8); req[q++] = (uint8_t)popdmg;
-            req[q++] = (uint8_t)(factdmg >> 24); req[q++] = (uint8_t)(factdmg >> 16); req[q++] = (uint8_t)(factdmg >> 8); req[q++] = (uint8_t)factdmg;
-            req[q++] = play_music ? 1 : 0;
-            req[q++] = hide_other ? 1 : 0;
-            g_mp_decision_hook_multi(players, n, MP_DEC_BOMB_SHOW, req, q, resp, 1);
+        if ((n > 0) && (planet_i < g->galaxy_stars)) {
+            /* ship the params + a snapshot of the bombed planet: ui_bomb_show reads the planet's live
+               owner, which can flip to NONE when a bombing depopulates it, so the client patches this
+               in to render correctly at replay-time regardless of later same-turn changes. */
+            struct { int32_t attacker, owner, planet, popdmg, factdmg; uint8_t play_music, hide_other; planet_t psnap; } req;
+            uint8_t resp[2] = {0, 0};
+            memset(&req, 0, sizeof(req));
+            req.attacker = attacker_i; req.owner = owner_i; req.planet = (int32_t)planet_i;
+            req.popdmg = popdmg; req.factdmg = factdmg;
+            req.play_music = play_music ? 1 : 0; req.hide_other = hide_other ? 1 : 0;
+            req.psnap = g->planet[planet_i];
+            g_mp_decision_hook_multi(players, n, MP_DEC_BOMB_SHOW, &req, (int)sizeof(req), resp, 1);
         }
     }
 }
