@@ -304,7 +304,9 @@ void hw_audio_music_release(int mus_index)
 
 void hw_audio_music_play(int mus_index)
 {
-    if (audio_initialized && opt_music_enabled && (mus_index < mus_num)) {
+    /* mustbl[].music is NULL when the load failed (e.g. a MIDI track with no SoundFont configured);
+       Mix_PlayMusic(NULL) segfaults, so skip it -- the game just runs silent for that track. */
+    if (audio_initialized && opt_music_enabled && (mus_index >= 0) && (mus_index < mus_num) && mustbl[mus_index].music) {
         if (Mix_PlayingMusic()) {
             Mix_HaltMusic();
         }

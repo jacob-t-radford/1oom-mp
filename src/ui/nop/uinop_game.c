@@ -439,8 +439,11 @@ ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_
             return (ui_sabotage_t)rs.act;
         }
     }
+    /* relay failed (e.g. the spying client dropped): do NOTHING, not a factory sabotage. 0 is
+       UI_SABOTAGE_FACT; UI_SABOTAGE_NONE is -1. Returning 0 here made a dropped client trigger a
+       bogus FACT sabotage on PLANET_NONE. */
     if (planetptr) { *planetptr = PLANET_NONE; }
-    return 0;
+    return UI_SABOTAGE_NONE;
 }
 
 int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
