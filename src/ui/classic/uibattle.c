@@ -1045,6 +1045,7 @@ void ui_battle_draw_item(const struct battle_s *bt, int itemi, int x, int y)
 void ui_battle_draw_arena(const struct battle_s *bt, int itemi, int dmode)
 {
     struct ui_battle_data_s *d = bt->uictx;
+    if (!d || !d->gfx_bg) { return; } /* half-built ctx (a spectated auto-resolved battle): arena gfx never loaded, nothing to draw */
     d->frame_ship = (d->frame_ship + 1) % 5;
     d->frame_missile = (d->frame_missile + 1) % 4;
     ui_draw_erase_buf();

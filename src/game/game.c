@@ -1256,7 +1256,7 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
         s_mp_council_active = true;
         return;
     }
-    if (!s_mp_battle_uictx) { return; }
+    if (!s_mp_battle_uictx || s_mp_battle_auto) { return; } /* not in a battle, or auto-resolved it (ctx half-built, no gfx_bg): can't render the streamed animations */
     if (len == (int)sizeof(struct battle_s)) {
         /* a full snapshot: refresh the spectator's battle (the wait loop redraws it) */
         memcpy(&s_mp_battle, data, sizeof(s_mp_battle));
