@@ -20,6 +20,7 @@
 #include "game_election.h"
 #include "game_end.h"
 #include "game_event.h"
+#include "game_news.h"
 #include "game_save.h"
 #include "game_ground.h"
 #include "lib.h"
@@ -884,6 +885,13 @@ static struct audience_s s_mp_audience; /* client's working copy of the relayed 
    re-establish g + sprite pointers (read directly each draw) after every memcpy. */
 static struct battle_s s_mp_battle;
 
+/* 1oom-mp: turn-summary news relayed from the server (already filtered to this player). Buffered as
+   it streams in during the server's turn resolution, then replayed as one GNN broadcast when the
+   new turn's state loads (mp_if_on_state_loaded). */
+struct mp_news_item_s { int32_t type, subtype, num1, num2, race, planet_i; };
+static struct mp_news_item_s s_mp_news[64];
+static int s_mp_news_n = 0;
+
 /* 1oom-mp: shared synchronous council view. The server streams the council chamber (election_s) to
    ALL humans (UI_MP_SPEC_COUNCIL), so everyone watches the votes instead of a black/banner screen.
    The council artwork is a shared resource (LBXFILE_COUNCIL): load it ONCE here and free it ONCE
@@ -1034,6 +1042,16 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (req_len < (int)sizeof(q)) { return 0; }
             memcpy(&q, req, sizeof(q));
             ui_spy_stolen(g, mp_cl_player_id(), q.spy, q.field, (uint8_t)q.tech);
+            if (resp_buflen >= 1) { resp[0] = 1; }
+            return 1;
+        }
+        case MP_DEC_NEWS_ITEM: { /* buffer one turn-summary news record; replayed at state load */
+            struct mp_news_item_s it;
+            if (req_len < (int)sizeof(it)) { return 0; }
+            memcpy(&it, req, sizeof(it));
+            if (s_mp_news_n < (int)(sizeof(s_mp_news) / sizeof(s_mp_news[0]))) {
+                s_mp_news[s_mp_news_n++] = it;
+            }
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
@@ -1273,6 +1291,22 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
         game_update_within_range(g);
         game_update_visibility(g);
         game_update_have_reserve_fuel(g);
+        if (s_mp_news_n > 0) { /* replay the turn's news as one GNN broadcast, now that fresh state is loaded */
+            ui_news_start();
+            for (int i = 0; i < s_mp_news_n; ++i) {
+                struct news_s ns;
+                memset(&ns, 0, sizeof(ns));
+                ns.type = (news_type_t)s_mp_news[i].type;
+                ns.subtype = s_mp_news[i].subtype;
+                ns.num1 = s_mp_news[i].num1;
+                ns.num2 = s_mp_news[i].num2;
+                ns.race = (race_t)s_mp_news[i].race;
+                ns.planet_i = (planet_id_t)s_mp_news[i].planet_i;
+                ui_news(g, &ns);
+            }
+            ui_news_end();
+            s_mp_news_n = 0;
+        }
     }
     if (getenv("MP_CONTACT")) { /* test: keep everyone in contact. The per-load range re-derive
         (game_update_tech_util) resets fuel_range, which clears contact in the Races screen; bump

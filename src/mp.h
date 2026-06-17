@@ -61,6 +61,7 @@ enum mp_decision_e {
     MP_DEC_BOMB_SHOW     = 12, /* orbital-bombing result (req: attacker/owner/planet + pop/fact damage; shown to both human sides; resp: 1 byte ack) */
     MP_DEC_SPY_RESULT    = 13, /* spy-sabotage result (saboteur AND/or caught victim): req carries the params + a post-sabotage planet snapshot to render the authentic screen; resp: int32 framed-empire id */
     MP_DEC_SPY_STOLEN    = 14, /* tech-theft victim notice (req: spy/field/tech; resp: 1 byte ack) */
+    MP_DEC_NEWS_ITEM     = 15, /* one turn-summary news record (req: type/subtype/num1/num2/race/planet; resp: 1 byte ack). Client buffers + replays at state load. */
 };
 
 /* AUDIENCE relay subtypes: which ui_audience_* call the server is running on the human's behalf.

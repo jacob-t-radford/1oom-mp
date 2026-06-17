@@ -11,6 +11,7 @@
 #include "game_election.h"
 #include "game_ground.h"
 #include "game_turn.h"
+#include "game_news.h"
 #include "mp.h"
 #include <stdio.h>
 #include <string.h>
@@ -507,8 +508,49 @@ void ui_news_start(void)
 {
 }
 
+/* 1oom-mp: news the whole galaxy would plausibly know (space monsters, an empire wiped out, the
+   end-of-turn standings) -- shown to every human. Everything else is personal and goes only to the
+   empire it happened to. Keeps enemy internal troubles private and the "your colony" phrasing right. */
+static bool mp_news_is_global(int type)
+{
+    switch (type) {
+        case GAME_NEWS_STATS:
+        case GAME_NEWS_GENOCIDE:
+        case GAME_NEWS_AMOEBA:
+        case GAME_NEWS_CRYSTAL:
+        case GAME_NEWS_GUARDIAN:
+        case GAME_NEWS_ORION:
+        case GAME_NEWS_PIRATES:
+        case GAME_NEWS_COMET:
+        case GAME_NEWS_NOVA:
+        case GAME_NEWS_STARS:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void ui_news(struct game_s *g, struct news_s *ns)
 {
+    /* the turn resolves headless here, so relay each report to the humans it concerns. They buffer
+       the records and replay the GNN broadcast when the new turn's state loads (see game.c). */
+    if (!g_mp_decision_hook) { return; }
+    {
+        struct { int32_t type, subtype, num1, num2, race, planet_i; } rq;
+        bool global = mp_news_is_global((int)ns->type);
+        player_id_t owner = PLAYER_NONE;
+        rq.type = (int32_t)ns->type; rq.subtype = (int32_t)ns->subtype;
+        rq.num1 = (int32_t)ns->num1; rq.num2 = (int32_t)ns->num2;
+        rq.race = (int32_t)ns->race; rq.planet_i = (int32_t)ns->planet_i;
+        if ((!global) && (ns->planet_i < g->galaxy_stars)) { owner = g->planet[ns->planet_i].owner; }
+        for (player_id_t pi = PLAYER_0; pi < g->players; ++pi) {
+            if (IS_AI(g, pi)) { continue; }
+            if (global || (owner == pi) || (owner == PLAYER_NONE)) {
+                uint8_t ack = 0;
+                g_mp_decision_hook(pi, MP_DEC_NEWS_ITEM, &rq, (int)sizeof(rq), &ack, 1);
+            }
+        }
+    }
 }
 
 void ui_news_end(void)
