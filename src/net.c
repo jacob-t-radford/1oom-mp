@@ -18,6 +18,7 @@
   #define NET_LASTERR()   WSAGetLastError()
 #else
   #include <errno.h>
+  #include <signal.h>
   #include <unistd.h>
   #include <fcntl.h>
   #include <sys/select.h>
@@ -90,6 +91,11 @@ static void net_wsa_ensure(void) {
         WSADATA wsa;
         if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) { s_wsa_inited = true; }
     }
+#else
+    /* A peer that vanishes mid-send() raises SIGPIPE, whose default action kills the
+       process -- the host exited 141 (128+SIGPIPE) when a client window closed. Ignore
+       it so send() returns EPIPE instead and the normal disconnect path runs. Idempotent. */
+    signal(SIGPIPE, SIG_IGN);
 #endif
 }
 
