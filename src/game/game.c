@@ -892,6 +892,14 @@ struct mp_news_item_s { int32_t type, subtype, num1, num2, race, planet_i; };
 static struct mp_news_item_s s_mp_news[64];
 static int s_mp_news_n = 0;
 
+/* 1oom-mp: ground invasions this client took part in, buffered as they stream in during the server's
+   turn resolution, then replayed at the next state load. Replaying client-side (instead of blocking
+   the server on each) lets every player's independent invasions play at the same wall-clock time
+   rather than queuing behind each other. ui_ground renders purely from the ground_s + static data, so
+   replaying against post-invasion state is safe. */
+static struct ground_s s_mp_ground[16];
+static int s_mp_ground_n = 0;
+
 /* 1oom-mp: shared synchronous council view. The server streams the council chamber (election_s) to
    ALL humans (UI_MP_SPEC_COUNCIL), so everyone watches the votes instead of a black/banner screen.
    The council artwork is a shared resource (LBXFILE_COUNCIL): load it ONCE here and free it ONCE
@@ -997,12 +1005,12 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
-        case MP_DEC_GROUND: { /* show a ground-invasion result + animation (both sides see it) */
-            static struct ground_s gr;
-            if (req_len < (int)sizeof(gr)) { return 0; }
-            memcpy(&gr, req, sizeof(gr));
-            ui_ground(g, &gr);
-            if (resp_buflen >= 1) { resp[0] = 1; }
+        case MP_DEC_GROUND: { /* buffer a ground-invasion result; replayed at state load so independent invasions play concurrently, not in series */
+            if (req_len < (int)sizeof(struct ground_s)) { return 0; }
+            if (s_mp_ground_n < (int)(sizeof(s_mp_ground) / sizeof(s_mp_ground[0]))) {
+                memcpy(&s_mp_ground[s_mp_ground_n++], req, sizeof(struct ground_s));
+            }
+            if (resp_buflen >= 1) { resp[0] = 1; } /* instant ack -- the screen plays later, so the server never blocks on it */
             return 1;
         }
         case MP_DEC_SPY_STEAL: { /* which tech field to steal */
@@ -1291,6 +1299,10 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
         game_update_within_range(g);
         game_update_visibility(g);
         game_update_have_reserve_fuel(g);
+        if (s_mp_ground_n > 0) { /* replay this client's ground invasions; every player's client does its own at the same time, so they no longer block each other */
+            for (int i = 0; i < s_mp_ground_n; ++i) { ui_ground(g, &s_mp_ground[i]); }
+            s_mp_ground_n = 0;
+        }
         if (s_mp_news_n > 0) { /* replay the turn's news as one GNN broadcast, now that fresh state is loaded */
             ui_news_start();
             for (int i = 0; i < s_mp_news_n; ++i) {
