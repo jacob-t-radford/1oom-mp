@@ -856,7 +856,16 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
         ui_battle_pre(bt->g, bt, d->show_switch, winner); /* SP: per-battle result; in MP the end-of-turn combat report replaces it */
     }
     ui_sound_stop_music();
-    if (!bt->autoresolve || ui_mp_active) { /* manual battles + every MP battle get the cleanup fade */
+    if (ui_mp_active) {
+        /* In MP the next turn-resolution screen (spy sabotage, audience, the "waiting" banner, ...)
+           is relayed and drawn right after this WITHOUT rebuilding the palette -- a fadeout here
+           leaves all of them black (that's the "finished a combat -> black screen" hang). Restore
+           the normal game palette instead of fading to black. */
+        lbxpal_select(0, -1, 0);
+        lbxpal_set_update_range(0, 0xff);
+        lbxpal_build_colortables();
+        ui_draw_finish_mode = 0;
+    } else if (!bt->autoresolve) { /* SP manual battle: fade out before the starmap returns */
         ui_palette_fadeout_a_f_1();
         ui_draw_finish_mode = 2;
     }
