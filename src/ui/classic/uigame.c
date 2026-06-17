@@ -635,6 +635,15 @@ ui_turn_action_t ui_game_turn(struct game_s *g, int *load_game_i_ptr, int pi)
         if (!s_mp_centered) { s_mp_centered = true; ui_starmap_set_pos_focus(g, pi); }
     }
     game_turn_start_messages(g, pi);
+    /* 1oom-mp: the turn-start replays (news / combat report) end with the palette faded out and draw
+       mode 2. Restore the normal game palette before the injected turn-start prompts (research, etc.)
+       and the starmap, or they render black. Harmless when no replay ran (re-applies bank 0). */
+    if (ui_mp_active) {
+        lbxpal_select(0, -1, 0);
+        lbxpal_set_update_range(0, 0xff);
+        lbxpal_build_colortables();
+        ui_draw_finish_mode = 0;
+    }
     /* 1oom-mp: these turn-start prompts (research/colonize/discovery, ...) are injected outside the
        normal screen flow, so the cursor is still the starmap's; force the normal pointer for them. */
     if (ui_mp_active) { ui_cursor_setup_area(1, &ui_cursor_area_tbl[0]); }
