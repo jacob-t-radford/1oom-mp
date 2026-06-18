@@ -649,9 +649,14 @@ ui_turn_action_t ui_game_turn(struct game_s *g, int *load_game_i_ptr, int pi)
     if (ui_mp_active) { ui_cursor_setup_area(1, &ui_cursor_area_tbl[0]); }
     if (ui_mp_active) { ui_mp_contact_incoming(g, pi); } /* 1oom-mp: first-contact welcome between humans */
     ui_mp_diplo_incoming(g, pi); /* 1oom-mp: surface any incoming human-to-human proposals */
-    ui_mp_colonize_incoming(g, pi); /* 1oom-mp: offer the colonize prompt for waiting colony ships */
+    /* 1oom-mp: turn-start prompt ORDER. Show newly scouted worlds FIRST, then the tech we
+       completed/found this turn (incl. artifacts, right after the discoveries that earned them),
+       and only THEN the colonize decision -- so you've seen all the new planets (and any artifact
+       tech) before deciding whether to settle a colony ship. (Was colonize -> discovery -> tech,
+       which forced the colonize call before the rest of the map was even revealed.) */
     if (ui_mp_active) { ui_mp_discovery_incoming(g, pi); } /* 1oom-mp: notify about newly scouted worlds */
-    ui_mp_research_select(g, pi); /* 1oom-mp: let the human pick research targets */
+    ui_mp_research_select(g, pi); /* 1oom-mp: announce completed/found tech + let the human pick research targets */
+    ui_mp_colonize_incoming(g, pi); /* 1oom-mp: offer the colonize prompt for waiting colony ships -- last, after the map + tech */
     BOOLVEC_CLEAR(ui_data.starmap.select_prio_fleet, FLEET_ENROUTE_MAX);
     BOOLVEC_CLEAR(ui_data.starmap.select_prio_trans, TRANSPORT_MAX);
     while (1) {
