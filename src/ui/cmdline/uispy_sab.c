@@ -180,3 +180,9 @@ int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabot
         return ui_input_list(game_str_nt_victim, "> ", rl_in);
     }
 }
+
+void ui_spy_sabotage_show(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
+{
+    /* single-player: just show the result now (no framing choice here, so the return is irrelevant) */
+    (void)ui_spy_sabotage_done(g, pi, spy, target, act, other1, other2, planet, snum);
+}

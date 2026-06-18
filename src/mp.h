@@ -66,6 +66,7 @@ enum mp_decision_e {
     MP_DEC_BOMB_BATCH    = 17, /* parallel batched bombing: req = this turn's full target list (int32 n + ui_bomb_target_s[n]); fanned out to all human attackers at once. Each client prompts for ITS targets and returns a u64 yes/no bitmask (bit k = bomb targets[k]). */
     MP_DEC_SPY_SABOTAGE_BATCH = 18, /* parallel batched sabotage: req = int32 n + ui_spy_sab_target_s[n]; fanned out to all human spymasters at once. Each client prompts ui_spy_sabotage_ask for ITS targets and returns ui_spy_sab_dec_s[n] (act+planet per opportunity, only its own filled). */
     MP_DEC_SPY_STEAL_BATCH = 19, /* parallel batched tech-steal: req = int32 n + ui_spy_steal_target_s[n] (spy/target/flags_field per opportunity); fanned out to all human spies at once. Each client prompts ui_spy_steal for ITS opportunities and returns int16_t field[n] (-1 = none, only its own filled). */
+    MP_DEC_SPY_RESULT_SHOW = 20, /* non-blocking sabotage result (no framing choice): req = {spy,target,act,other1,other2,snum,planet, planet_t psnap}; resp = 1 byte ack. Client buffers + replays at state load with the snapshot swapped in, so the saboteur's result screen never blocks the other player. */
 };
 
 /* AUDIENCE relay subtypes: which ui_audience_* call the server is running on the human's behalf.

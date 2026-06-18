@@ -909,6 +909,18 @@ struct mp_bomb_item_s { int32_t attacker, owner, planet, popdmg, factdmg; uint8_
 static struct mp_bomb_item_s s_mp_bomb[16];
 static int s_mp_bomb_n = 0;
 
+/* 1oom-mp: espionage result streams, buffered as they stream in during resolution and replayed
+   concurrently at the next state load -- so neither the tech-theft victim notice nor the saboteur's
+   result screen blocks one player on the other's espionage. ui_spy_stolen needs no planet snapshot
+   (it shows only race + tech); the sabotage result swaps in a post-sabotage planet snapshot at replay
+   like ui_bomb_show does. The blocking framing choice (other2 != PLAYER_NONE) is NOT buffered. */
+struct mp_stolen_item_s { int32_t spy, field; uint8_t tech; };
+static struct mp_stolen_item_s s_mp_stolen[16];
+static int s_mp_stolen_n = 0;
+struct mp_sabres_item_s { int32_t spy, target, act, other1, other2, snum, planet; planet_t psnap; };
+static struct mp_sabres_item_s s_mp_sabres[16];
+static int s_mp_sabres_n = 0;
+
 /* 1oom-mp: hysteresis for the "waiting for other players" banner. Counts consecutive on_wait ticks
    since the last relayed event; the banner only appears once this exceeds a threshold, so the brief
    gaps between events don't flash it on and off. Reset to 0 on every relayed decision. */
@@ -1135,12 +1147,26 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(resp, &other, sizeof(other));
             return (int)sizeof(other);
         }
-        case MP_DEC_SPY_STOLEN: { /* notify the human victim which tech was stolen */
-            struct { int32_t spy, field; uint8_t tech; } q;
-            if (req_len < (int)sizeof(q)) { return 0; }
-            memcpy(&q, req, sizeof(q));
-            ui_spy_stolen(g, mp_cl_player_id(), q.spy, q.field, (uint8_t)q.tech);
-            if (resp_buflen >= 1) { resp[0] = 1; }
+        case MP_DEC_SPY_STOLEN: { /* buffer the "tech stolen from you" notice; replayed at state load so the
+                                     victim's screen plays concurrently and never blocks resolution */
+            struct mp_stolen_item_s it;
+            if (req_len < (int)sizeof(it)) { return 0; }
+            memcpy(&it, req, sizeof(it));
+            if (s_mp_stolen_n < (int)(sizeof(s_mp_stolen) / sizeof(s_mp_stolen[0]))) {
+                s_mp_stolen[s_mp_stolen_n++] = it;
+            }
+            if (resp_buflen >= 1) { resp[0] = 1; } /* instant ack -- the screen plays later */
+            return 1;
+        }
+        case MP_DEC_SPY_RESULT_SHOW: { /* buffer a sabotage result (no framing choice); replayed at state
+                                          load with the snapshot swapped in, so it never blocks the other player */
+            struct mp_sabres_item_s it;
+            if (req_len < (int)sizeof(it)) { return 0; }
+            memcpy(&it, req, sizeof(it));
+            if (s_mp_sabres_n < (int)(sizeof(s_mp_sabres) / sizeof(s_mp_sabres[0]))) {
+                s_mp_sabres[s_mp_sabres_n++] = it;
+            }
+            if (resp_buflen >= 1) { resp[0] = 1; } /* instant ack -- the screen plays later */
             return 1;
         }
         case MP_DEC_COMBAT_REPORT: { /* show this auto-resolved battle's result inline, right after the
@@ -1403,6 +1429,24 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
         game_update_visibility(g);
         game_update_have_reserve_fuel(g);
         /* auto-resolved combat results are now shown inline (MP_DEC_COMBAT_REPORT), not consolidated here */
+        if (s_mp_stolen_n > 0) { /* replay tech-theft victim notices (espionage resolves before bombing) */
+            for (int i = 0; i < s_mp_stolen_n; ++i) {
+                ui_spy_stolen(g, mp_cl_player_id(), s_mp_stolen[i].spy, s_mp_stolen[i].field, (uint8_t)s_mp_stolen[i].tech);
+            }
+            s_mp_stolen_n = 0;
+        }
+        if (s_mp_sabres_n > 0) { /* replay saboteurs' result screens concurrently, snapshot swapped in */
+            for (int i = 0; i < s_mp_sabres_n; ++i) {
+                struct mp_sabres_item_s *r = &s_mp_sabres[i];
+                planet_id_t pl = (planet_id_t)r->planet;
+                if (pl >= g->galaxy_stars) { continue; }
+                planet_t saved = g->planet[pl];
+                g->planet[pl] = r->psnap; /* sabotage-time planet state; restore after rendering */
+                ui_spy_sabotage_done(g, mp_cl_player_id(), r->spy, r->target, (ui_sabotage_t)r->act, r->other1, r->other2, pl, r->snum);
+                g->planet[pl] = saved;
+            }
+            s_mp_sabres_n = 0;
+        }
         if (s_mp_bomb_n > 0) { /* replay this client's orbital bombings concurrently with the other player's */
             for (int i = 0; i < s_mp_bomb_n; ++i) {
                 struct mp_bomb_item_s *b = &s_mp_bomb[i];

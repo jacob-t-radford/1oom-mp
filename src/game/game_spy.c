@@ -880,17 +880,25 @@ void game_spy_sab_human(struct game_s *g)
                     }
                 }
                 if (act != UI_SABOTAGE_NONE) {
-                    int other;
                     BOOLVEC_SET1(p->explored, player);
                     g->seen[player][planet].owner = p->owner;
                     g->seen[player][planet].pop = p->pop;
                     g->seen[player][planet].bases = p->missile_bases;
                     g->seen[player][planet].factories = p->factories;
-                    other = ui_spy_sabotage_done(g, player, player, target, act, other1, other2, planet, snum);
-                    if ((other2 != PLAYER_NONE) && (other != PLAYER_NONE)) {
-                        int v;
-                        v = -(rnd_1_n(12, &g->seed) + rnd_1_n(12, &g->seed));
-                        game_diplo_act(g, v, other, target, 7, planet, act);
+                    if (other2 != PLAYER_NONE) {
+                        /* 1oom-mp: a framing choice is offered -- the saboteur picks which of two
+                           witnessing empires to frame, and the pick drives a diplo penalty. This is a
+                           real interactive decision, so it must block to read the return value. */
+                        int other = ui_spy_sabotage_done(g, player, player, target, act, other1, other2, planet, snum);
+                        if (other != PLAYER_NONE) {
+                            int v;
+                            v = -(rnd_1_n(12, &g->seed) + rnd_1_n(12, &g->seed));
+                            game_diplo_act(g, v, other, target, 7, planet, act);
+                        }
+                    } else {
+                        /* 1oom-mp: no framing choice -- show the saboteur's result without blocking the
+                           other player (buffered + replayed concurrently at state load in MP). */
+                        ui_spy_sabotage_show(g, player, player, target, act, other1, other2, planet, snum);
                     }
                 }
             }

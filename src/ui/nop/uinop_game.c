@@ -480,6 +480,25 @@ int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabot
     return PLAYER_NONE;
 }
 
+void ui_spy_sabotage_show(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
+{
+    /* 1oom-mp: non-blocking buffered variant of ui_spy_sabotage_done. Used at the saboteur's result when
+       no framing choice is needed (other2 == PLAYER_NONE), so the return value is irrelevant. The client
+       buffers it + instant-acks and replays at state load (with the snapshot swapped in), so the
+       saboteur's result screen never blocks the other player. Ships the post-sabotage planet snapshot
+       exactly like the blocking version. */
+    if (g_mp_decision_hook && !IS_AI(g, pi) && (planet < g->galaxy_stars)) {
+        struct { int32_t spy, target, act, other1, other2, snum, planet; planet_t psnap; } rq;
+        uint8_t ack = 0;
+        memset(&rq, 0, sizeof(rq));
+        rq.spy = spy; rq.target = target; rq.act = (int32_t)act;
+        rq.other1 = other1; rq.other2 = other2; rq.snum = snum; rq.planet = (int32_t)planet;
+        rq.psnap = g->planet[planet];
+        BOOLVEC_SET1(rq.psnap.within_srange, pi); /* force "in range" so the client shows post-sabotage numbers */
+        g_mp_decision_hook(pi, MP_DEC_SPY_RESULT_SHOW, &rq, (int)sizeof(rq), &ack, 1);
+    }
+}
+
 void ui_newtech(struct game_s *g, int pi)
 {
 }

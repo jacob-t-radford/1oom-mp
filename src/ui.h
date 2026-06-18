@@ -249,6 +249,10 @@ struct ui_spy_steal_target_s { uint8_t spy; uint8_t target; uint8_t flags; };
    fills out[k] (chosen tech field, -1 = none) for each; returns true. In single-player it returns false
    and the caller falls back to the per-target ui_spy_steal. */
 extern bool ui_spy_steal_batch(struct game_s *g, const struct ui_spy_steal_target_s *targets, int n, int16_t *out);
+/* 1oom-mp: non-blocking variant of ui_spy_sabotage_done for the no-framing-choice case. In MP the client
+   buffers + replays it at state load (concurrent, never blocks the other player); in single-player it
+   shows the result screen immediately (just ui_spy_sabotage_done, return ignored). */
+extern void ui_spy_sabotage_show(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum);
 
 extern void ui_turn_pre(const struct game_s *g);
 extern void ui_turn_msg(struct game_s *g, int pi, const char *str);
