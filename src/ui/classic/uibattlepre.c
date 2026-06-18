@@ -160,10 +160,7 @@ static void ui_battle_pre_draw_cb(void *vptr)
             y += 8;
             lbxfont_print_str_center(267, y, buf, UI_SCREEN_W, ui_scale);
         }
-        if (d->party_winner < 0) { /* a battle still to fight -> offer "Auto All" beside the Auto/Retreat buttons */
-            lbxfont_select_set_12_4(0, 0x2, 0, 0);
-            lbxfont_print_str_normal(226, 153, "Auto All", UI_SCREEN_W, ui_scale);
-        }
+        /* Auto All is now a real button (added in ui_battle_pre), no longer a loose text label here */
     }
 }
 
@@ -201,13 +198,18 @@ ui_battle_autoresolve_t ui_battle_pre(struct game_s *g, const struct battle_s *b
         game_battle_count_hulls(bt, d->force);
     }
     uiobj_table_clear();
-    oi_cont = uiobj_add_t0(227, 163, "", d->gfx_contbutt, MOO_KEY_c);
-    oi_cont2 = uiobj_add_inputkey(MOO_KEY_SPACE);
     if ((ui_space_combat_autoresolve || ui_mp_active) && (winner == SIDE_NONE)) {
-        oi_auto = uiobj_add_t0(250, 152, "", ui_data.gfx.space.autob, MOO_KEY_a);
-        oi_retreat = uiobj_add_t0(270, 152, "", ui_data.gfx.space.retreat, MOO_KEY_r);
-        oi_autoall = uiobj_add_mousearea(225, 151, 249, 161, MOO_KEY_l); /* "Auto All" text button (label drawn in the cb) */
+        /* prompt with choices: one matching gray button (design-screen blank + a text label) per
+           option, in a 2x2 grid, so Auto / Retreat / Auto All / Continue all look the same */
+        oi_auto    = uiobj_add_t0(224, 147, "Auto",     ui_data.gfx.design.blank, MOO_KEY_a);
+        oi_retreat = uiobj_add_t0(266, 147, "Retreat",  ui_data.gfx.design.blank, MOO_KEY_r);
+        oi_autoall = uiobj_add_t0(224, 163, "Auto All", ui_data.gfx.design.blank, MOO_KEY_l);
+        oi_cont    = uiobj_add_t0(266, 163, "Continue", ui_data.gfx.design.blank, MOO_KEY_c);
+    } else {
+        /* result screen / plain prompt: just the original Continue button */
+        oi_cont = uiobj_add_t0(227, 163, "", d->gfx_contbutt, MOO_KEY_c);
     }
+    oi_cont2 = uiobj_add_inputkey(MOO_KEY_SPACE);
     if ((ui_space_combat_autoresolve || ui_mp_active)) {
         oi_esc = UIOBJI_ESC;
     }
