@@ -1000,7 +1000,7 @@ int ui_mp_lobby_run(int my_id)
 
     while (!done) {
         int16_t oi;
-        int16_t oi_my_race = UIOBJI_INVALID, oi_my_flag = UIOBJI_INVALID, oi_ready = UIOBJI_INVALID, oi_leave = UIOBJI_INVALID;
+        int16_t oi_my_race = UIOBJI_INVALID, oi_my_flag = UIOBJI_INVALID, oi_ready = UIOBJI_INVALID, oi_leave = UIOBJI_INVALID, oi_start = UIOBJI_INVALID;
         int16_t oi_galaxy = UIOBJI_INVALID, oi_diff = UIOBJI_INVALID, oi_ai = UIOBJI_INVALID;
         int16_t oi_ai_race[MP_MAX_PLAYERS], oi_team[MP_MAX_PLAYERS];
         for (int k = 0; k < MP_MAX_PLAYERS; ++k) { oi_ai_race[k] = UIOBJI_INVALID; oi_team[k] = UIOBJI_INVALID; }
@@ -1063,7 +1063,7 @@ int ui_mp_lobby_run(int my_id)
             lbxfont_print_str_normal(tx, y0 + 13, ((race >= 0) && (race < RACE_NUM)) ? game_str_tbl_race[race] : (is_ai ? (is_host ? "click to pick" : "random") : "choosing"), UI_SCREEN_W, ui_scale);
             if (!is_ai) {
                 lbxfont_select(5, 0xf, 0, 0);
-                lbxfont_print_str_normal(tx, y0 + 24, lob.slot[i].ready ? "READY" : "not ready", UI_SCREEN_W, ui_scale);
+                lbxfont_print_str_normal(tx, y0 + 24, ((lob.open_lobby != 0) && (i == 0)) ? "HOST" : (lob.slot[i].ready ? "READY" : "not ready"), UI_SCREEN_W, ui_scale);
             }
             if (mine) { /* my slot: click portrait to cycle race, flag to cycle color */
                 oi_my_race = uiobj_add_mousearea(x0, y0, x0 + 41, y0 + 35, MOO_KEY_UNKNOWN);
@@ -1100,10 +1100,20 @@ int ui_mp_lobby_run(int my_id)
         lbxfont_print_str_center(40, 181, "LEAVE", UI_SCREEN_W, ui_scale);
         oi_leave = uiobj_add_mousearea(4, 174, 78, 197, MOO_KEY_ESCAPE);
         lbxfont_select(5, 0xf, 0, 0);
-        lbxfont_print_str_center(280, 181, my_ready ? "WAITING" : "READY", UI_SCREEN_W, ui_scale);
-        if (my_race < RACE_NUM) { oi_ready = uiobj_add_mousearea(242, 174, 316, 197, MOO_KEY_SPACE); }
-        lbxfont_select(5, 0xf, 0, 0);
-        lbxfont_print_str_center(160, 189, my_ready ? "waiting for all players..." : "pick your race and color, then ready", UI_SCREEN_W, ui_scale);
+        if ((lob.open_lobby != 0) && is_host) {
+            /* open lobby: the host begins the game (no Ready toggle of their own); START lights up once
+               every other connected human has readied. */
+            bool others_ready = true;
+            for (int j = 1; j < lob.num_humans; ++j) { if (lob.slot[j].connected && !lob.slot[j].ready) { others_ready = false; break; } }
+            bool can_start = (my_race < RACE_NUM) && others_ready;
+            lbxfont_print_str_center(280, 181, "START", UI_SCREEN_W, ui_scale);
+            if (can_start) { oi_start = uiobj_add_mousearea(242, 174, 316, 197, MOO_KEY_SPACE); }
+            lbxfont_print_str_center(160, 189, (my_race >= RACE_NUM) ? "pick your race and color" : (can_start ? "everyone's ready -- click START to begin" : "waiting for players to ready up..."), UI_SCREEN_W, ui_scale);
+        } else {
+            lbxfont_print_str_center(280, 181, my_ready ? "WAITING" : "READY", UI_SCREEN_W, ui_scale);
+            if (my_race < RACE_NUM) { oi_ready = uiobj_add_mousearea(242, 174, 316, 197, MOO_KEY_SPACE); }
+            lbxfont_print_str_center(160, 189, my_ready ? ((lob.open_lobby != 0) ? "waiting for the host to start..." : "waiting for all players...") : "pick your race and color, then ready", UI_SCREEN_W, ui_scale);
+        }
 
         uiobj_finish_frame();
         oi = uiobj_handle_input_cond();
@@ -1112,6 +1122,7 @@ int ui_mp_lobby_run(int my_id)
         else if (oi_my_race != UIOBJI_INVALID && oi == oi_my_race) { g_mp_cl_lobby_set(MP_LOBBY_F_RACE, lobby_next_free(&lob, my_id, my_race, RACE_NUM, true)); }
         else if (oi_my_flag != UIOBJI_INVALID && oi == oi_my_flag) { g_mp_cl_lobby_set(MP_LOBBY_F_BANNER, lobby_next_free(&lob, my_id, my_banner, BANNER_NUM, false)); }
         else if (oi_ready != UIOBJI_INVALID && oi == oi_ready) { g_mp_cl_lobby_set(MP_LOBBY_F_READY, my_ready ? 0 : 1); }
+        else if (oi_start != UIOBJI_INVALID && oi == oi_start) { g_mp_cl_lobby_set(MP_LOBBY_F_START, 1); }
         else if (is_host && oi_galaxy != UIOBJI_INVALID && oi == oi_galaxy) { g_mp_cl_lobby_set(MP_LOBBY_F_GALAXY, (lob.galaxy_size + 1) % GALAXY_SIZE_SEL_NUM); } /* 1oom-mp: hide Enormous/Galactic (larger-maps branch) */
         else if (is_host && oi_diff != UIOBJI_INVALID && oi == oi_diff) { g_mp_cl_lobby_set(MP_LOBBY_F_DIFFICULTY, (lob.difficulty + 1) % DIFFICULTY_NUM); }
         else if (is_host && oi_ai != UIOBJI_INVALID && oi == oi_ai) { int mx = MP_MAX_PLAYERS - lob.num_humans; g_mp_cl_lobby_set(MP_LOBBY_F_NUM_AI, (lob.num_ai >= mx) ? 0 : lob.num_ai + 1); }

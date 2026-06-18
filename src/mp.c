@@ -466,7 +466,7 @@ static void mp_diplo_expire_invites(net_conn_t **conns, int num) {
     }
 }
 
-int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_iface_t *gi) {
+int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_iface_t *gi, int open_lobby) {
     if (num_clients < 1 || num_clients > MP_MAX_PLAYERS) { MP_ERR("bad num_clients %d\n", num_clients); return -1; }
     net_listener_t *l = net_listen(port);
     if (!l) { return -1; }
@@ -481,16 +481,26 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
     }
     int rc = 0;
 
-    /* --- lobby: accept all clients --- */
-    MP_MSG("server: waiting for %d client(s) on port %u\n", num_clients, (unsigned)port);
-    for (int i = 0; i < num_clients; ) {
-        net_conn_t *c = net_accept(l);
-        if (c) {
-            conns[i] = c;
-            ++i;
-            MP_MSG("server: client %d/%d connected (%s)\n", i, num_clients, net_conn_addr(c));
-        } else {
-            usleep(2000);
+    /* --- lobby: accept clients ---
+       fixed mode: block until exactly num_clients connect. open mode: block only for the host
+       (slot 0); the rest join during the lobby loop below, up to `cap`. */
+    int cap = num_clients;
+    if (open_lobby && gi->setup_game) {
+        MP_MSG("server: OPEN lobby on port %u -- waiting for host, then up to %d human(s)\n", (unsigned)port, cap);
+        for (;;) { net_conn_t *c = net_accept(l); if (c) { conns[0] = c; MP_MSG("server: host connected (%s)\n", net_conn_addr(c)); break; } usleep(2000); }
+        num_clients = 1;
+    } else {
+        open_lobby = 0; /* no lobby to drive (resume/legacy) -> fall back to the fixed accept */
+        MP_MSG("server: waiting for %d client(s) on port %u\n", num_clients, (unsigned)port);
+        for (int i = 0; i < num_clients; ) {
+            net_conn_t *c = net_accept(l);
+            if (c) {
+                conns[i] = c;
+                ++i;
+                MP_MSG("server: client %d/%d connected (%s)\n", i, num_clients, net_conn_addr(c));
+            } else {
+                usleep(2000);
+            }
         }
     }
 
@@ -517,6 +527,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         lob.num_ai = (num_clients < MP_MAX_PLAYERS) ? 1 : 0; /* default 1 AI if there's room */
         lob.galaxy_size = 1;                                 /* default medium */
         lob.difficulty = 2;                                  /* default average (DIFFICULTY_AVERAGE) */
+        lob.open_lobby = open_lobby ? 1 : 0;
         { const char *e; /* host-launch overrides for the lobby defaults (still editable in the lobby UI) */
           if ((e = getenv("MP_GSIZE"))) { int v = atoi(e); if ((v >= 0) && (v <= 3)) { lob.galaxy_size = (uint8_t)v; } }
           if ((e = getenv("MP_DIFF")))  { int v = atoi(e); if ((v >= 0) && (v <= 4)) { lob.difficulty = (uint8_t)v; } }
@@ -528,13 +539,30 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         if (getenv("MP_LOBBYDEMO")) { /* test aid: pre-seed picks so a screenshot shows portraits/flags */
             for (int i = 0; i < num_clients; ++i) { lob.slot[i].race = (uint8_t)((i * 3) % 10); lob.slot[i].banner = (uint8_t)(i % 6); }
         }
-        bool dirty = true, all_ready = false;
-        while (!all_ready) {
+        bool dirty = true, started = false, start_req = false;
+        while (!started) {
             if (dirty) {
                 for (int i = 0; i < num_clients; ++i) {
                     if (mp_send(conns[i], MP_MSG_LOBBY, (const uint8_t *)&lob, sizeof(lob)) != 0) { rc = -1; goto done; }
                 }
                 dirty = false;
+            }
+            /* open mode: admit additional humans up to the cap (non-blocking), welcome each into the
+               next contiguous slot, and clamp the AI count so humans+AI never exceeds MP_MAX_PLAYERS. */
+            if (open_lobby && (num_clients < cap)) {
+                net_conn_t *c = net_accept(l);
+                if (c) {
+                    int s = num_clients;
+                    conns[s] = c;
+                    lob.slot[s].connected = 1; lob.slot[s].race = 0xff; lob.slot[s].banner = 0xff; lob.slot[s].ready = 0; lob.slot[s].team = 0;
+                    num_clients = s + 1;
+                    lob.num_humans = (uint8_t)num_clients;
+                    if (((int)lob.num_humans + (int)lob.num_ai) > MP_MAX_PLAYERS) { lob.num_ai = (uint8_t)(MP_MAX_PLAYERS - lob.num_humans); }
+                    { uint8_t w[4] = { (uint8_t)(s >> 8), (uint8_t)s, (uint8_t)(num_clients >> 8), (uint8_t)num_clients };
+                      if (mp_send(c, MP_MSG_WELCOME, w, 4) != 0) { rc = -1; goto done; } }
+                    MP_MSG("server: client joined open lobby -> slot %d (%d/%d humans, %s)\n", s, num_clients, cap, net_conn_addr(c));
+                    dirty = true;
+                }
             }
             for (int i = 0; i < num_clients; ++i) {
                 uint16_t id; uint32_t dl;
@@ -542,16 +570,31 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 if (r < 0) { MP_ERR("server: client %d dropped in lobby\n", i); rc = -1; goto done; }
                 if (r != 1) { continue; }
                 if (id == MP_MSG_LOBBY_PICK && dl >= 2) {
-                    if (mp_lobby_apply(&lob, i, blob[0], blob[1], num_clients)) { dirty = true; }
+                    if (open_lobby && (blob[0] == MP_LOBBY_F_START)) {
+                        if (i == 0) { start_req = true; } /* only the host (slot 0) may start the game */
+                    } else if (mp_lobby_apply(&lob, i, blob[0], blob[1], num_clients)) {
+                        dirty = true;
+                    }
                 }
             }
-            all_ready = true;
-            for (int i = 0; i < num_clients; ++i) { if (!lob.slot[i].ready) { all_ready = false; break; } }
-            if (!all_ready) { usleep(2000); }
+            if (open_lobby) {
+                /* the host pressed Start: go once every other connected human is ready */
+                if (start_req) {
+                    started = true;
+                    for (int i = 1; i < num_clients; ++i) { if (!lob.slot[i].ready) { started = false; break; } }
+                    if (!started) { start_req = false; } /* someone un-readied -- wait for a fresh Start */
+                }
+            } else {
+                started = true;
+                for (int i = 0; i < num_clients; ++i) { if (!lob.slot[i].ready) { started = false; break; } }
+            }
+            if (!started) { usleep(2000); }
         }
+        if (open_lobby) { lob.slot[0].ready = 1; } /* the host's Start stands in for a Ready */
         if (gi->setup_game(gi->ctx, &lob) != 0) { MP_ERR("server: setup_game failed\n"); rc = -1; goto done; }
         MP_MSG("server: game created from lobby (humans=%d ai=%d gsize=%d)\n", lob.num_humans, lob.num_ai, lob.galaxy_size);
     }
+    s_mp_num_conns = num_clients; /* an open lobby may have grown the human count -- lock it in for the decision/spectate hooks */
     {
         int len = gi->serialize(gi->ctx, blob, blobcap);
         if (len <= 0) { MP_ERR("server: serialize failed\n"); rc = -1; goto done; }

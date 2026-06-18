@@ -87,6 +87,7 @@ struct mp_lobby_s {
     uint8_t num_ai;       /* host-set: AI opponents (0 .. MP_MAX_PLAYERS - num_humans) */
     uint8_t galaxy_size;  /* host-set: galaxy size (0..5) */
     uint8_t difficulty;   /* host-set: AI difficulty (0..4) — global, all AIs share it */
+    uint8_t open_lobby;   /* 1 = open lobby: humans join freely up to the cap and the host clicks Start to begin */
     struct {
         uint8_t race;     /* 0xff = not yet chosen */
         uint8_t banner;   /* 0xff = not yet chosen */
@@ -106,6 +107,7 @@ enum mp_lobby_field_e {
     MP_LOBBY_F_AI_RACE= 5, /* host only: value = (ai_slot << 4) | race -- set an AI empire's race */
     MP_LOBBY_F_DIFFICULTY = 6, /* host only: value = difficulty 0..4 */
     MP_LOBBY_F_TEAM = 7,       /* value = (slot << 4) | team -- set a player's team (own slot, or host any) */
+    MP_LOBBY_F_START = 8,      /* open lobby, host (slot 0) only: value ignored -- begin the game with whoever has joined */
 };
 
 /* The game, abstracted. ctx is opaque (the real impl passes a struct game_s *). */
@@ -212,7 +214,7 @@ extern void (*g_mp_cl_diplo_send)(uint16_t id, const uint8_t *data, int len);
 /* Run the authoritative server: accept num_clients, assign empires, broadcast
    state, then loop the simultaneous-turn barrier (wait all END_TURN, advance,
    rebroadcast) until max_turns (0 = until a client disconnects). Returns 0 ok. */
-int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_iface_t *gi);
+int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_iface_t *gi, int open_lobby);
 
 /* Run a client: connect, sync initial state, then each turn submit END_TURN and
    apply the rebroadcast state. (Phase A submits immediately; real client submits

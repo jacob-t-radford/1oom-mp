@@ -70,6 +70,7 @@ static struct game_aux_s game_aux;
 static int opt_mp_host_port = 0;
 static char *opt_mp_join = NULL;
 static int opt_mp_humans = 1; /* host: number of human clients to wait for (empires 0..N-1) */
+static int opt_mp_open = 0;   /* host: >0 = open lobby -- players join freely up to this many and the host clicks Start */
 static char *opt_mp_load = NULL; /* host: path to an MP autosave to resume instead of starting a new game */
 static int s_mp_humans = 1;      /* host: human-client count, recorded in the autosave header for -mpload */
 #define MP_DEFAULT_PORT 24444
@@ -461,6 +462,9 @@ const struct cmdline_options_s main_cmdline_options[] = {
     { "-mpload", 1,
       options_set_str_var, (void *)&opt_mp_load,
       "FILE", "Multiplayer (host): resume a saved game from FILE (e.g. the autosave mp_autosave.blob in the user dir) instead of starting a new one" },
+    { "-mpopen", 1,
+      options_set_int_var, (void *)&opt_mp_open,
+      "MAXHUMANS", "Multiplayer (host): OPEN lobby -- players join freely (up to MAXHUMANS) and the host clicks Start to begin, instead of -mphumans' fixed count" },
     { "-ngn", 2,
       game_opt_set_new_name, 0,
       "PLAYER NAME", "Set new game emperor name for player 1..6" },
@@ -1781,7 +1785,11 @@ static int game_mp_host(void) {
     log_message("MP: %s on port %d, %d empires (%d human, %d AI), %d stars\n", resume ? "resumed" : "hosting", opt_mp_host_port, game.players, humans, (int)game.players - humans, game.galaxy_stars);
     gi = mp_make_iface();
     if (resume) { gi.setup_game = NULL; } /* skip the lobby; the loaded game IS the initial state sent to clients */
-    rc = mp_server_run((uint16_t)opt_mp_host_port, humans, 0 /*until disconnect*/, &gi);
+    int mp_open = (opt_mp_open > 0) && !resume; /* open lobby is a fresh-game thing, not for resume */
+    int mp_cap = mp_open ? opt_mp_open : humans;
+    if (mp_cap > MP_MAX_PLAYERS) { mp_cap = MP_MAX_PLAYERS; }
+    if (mp_cap < 1) { mp_cap = 1; }
+    rc = mp_server_run((uint16_t)opt_mp_host_port, mp_cap, 0 /*until disconnect*/, &gi, mp_open);
     game_mp_premove_hook = NULL;
     g_mp_battle_move_hook = NULL;
     free(s_mp_premove_buf); s_mp_premove_buf = NULL;
