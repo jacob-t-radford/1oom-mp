@@ -174,6 +174,8 @@ struct ui_combat_report_s {
     uint8_t party[2];        /* s[SIDE_L].party, s[SIDE_R].party */
     uint8_t nitems[2];       /* distinct designs present at battle start, per side */
     struct ui_combat_ships_s ships[2][6]; /* NUM_SHIPDESIGNS: before/after counts per design */
+    uint16_t bases_before[2]; /* defending planet's missile bases at battle start, per side */
+    uint16_t bases_after[2];  /* ...and at battle end (only the planet-owner side is non-zero) */
 };
 extern void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s *reps, int n);
 

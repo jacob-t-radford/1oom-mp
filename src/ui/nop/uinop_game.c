@@ -125,6 +125,8 @@ uint8_t * ui_gfx_get_rock(int look)
 struct mp_shipsnap_s { uint8_t side, look, hull; uint16_t num; };
 static struct mp_shipsnap_s s_battle_snap[BATTLE_ITEM_MAX];
 static int s_battle_snap_n = 0;
+static uint16_t s_battle_snap_bases = 0; /* defending planet's missile bases at battle start */
+static int s_battle_snap_pside = -1;     /* which side the planet (its bases) is on */
 
 static uint16_t mp_battle_item_num(const struct battle_s *bt, int side, int look, int hull)
 {
@@ -150,6 +152,8 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
             s_battle_snap_n++;
         }
     }
+    s_battle_snap_bases = bt->bases;
+    s_battle_snap_pside = (int)bt->planet_side;
     /* 1oom-mp: init EVERY human side's client IN PARALLEL (each runs the autoresolve
        prompt + sets up its battle UI at the same time). Battle goes interactive if any
        human picks Continue. Default AUTO outside MP. */
@@ -213,6 +217,10 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
                         rep.ships[side][rep.nitems[side]].after = (uint16_t)(after < 0 ? 0 : after);
                         rep.nitems[side]++;
                     }
+                }
+                if ((s_battle_snap_pside == SIDE_L) || (s_battle_snap_pside == SIDE_R)) {
+                    rep.bases_before[s_battle_snap_pside] = s_battle_snap_bases;
+                    rep.bases_after[s_battle_snap_pside] = (uint16_t)bt->bases;
                 }
                 g_mp_decision_hook_multi(players, n, MP_DEC_COMBAT_REPORT, &rep, (int)sizeof(rep), resp, 1);
             }

@@ -432,6 +432,14 @@ static void ui_combat_report_draw_cb(void *vptr)
             lbxfont_print_str_normal(254, y + 5, buf, UI_SCREEN_W, ui_scale);
             y += 19;
         }
+        if ((r->bases_before[side] > 0) && (y < 182)) { /* the defending planet's missile bases */
+            lbxfont_print_str_normal(40, y + 1, "Bases", UI_SCREEN_W, ui_scale);
+            lib_sprintf(buf, sizeof(buf), "%i", r->bases_before[side]);
+            lbxfont_print_str_normal(210, y + 1, buf, UI_SCREEN_W, ui_scale);
+            lib_sprintf(buf, sizeof(buf), "%i", r->bases_after[side]);
+            lbxfont_print_str_normal(254, y + 1, buf, UI_SCREEN_W, ui_scale);
+            y += 12;
+        }
         y += 4;
     }
     if (d->n > 1) {
