@@ -236,6 +236,13 @@ struct ui_bomb_target_s { uint16_t planet_i; uint8_t attacker; uint16_t pop_inbo
    decided[k] for each target; returns true. In single-player it returns false and the caller falls
    back to the per-planet ui_bomb_ask. */
 extern bool ui_bomb_ask_batch(struct game_s *g, const struct ui_bomb_target_s *targets, int n, bool *decided);
+/* 1oom-mp: one human spymaster's sabotage opportunity (player vs target) + its decision (act + planet) */
+struct ui_spy_sab_target_s { uint8_t player; uint8_t target; };
+struct ui_spy_sab_dec_s { int16_t act; uint16_t planet; };
+/* Ask about all listed sabotage opportunities at once. In MP, fans out to every human spymaster IN
+   PARALLEL and fills out[k] (act+planet) for each; returns true. In single-player it returns false
+   and the caller falls back to the per-target ui_spy_sabotage_ask. */
+extern bool ui_spy_sabotage_batch(struct game_s *g, const struct ui_spy_sab_target_s *targets, int n, struct ui_spy_sab_dec_s *out);
 
 extern void ui_turn_pre(const struct game_s *g);
 extern void ui_turn_msg(struct game_s *g, int pi, const char *str);

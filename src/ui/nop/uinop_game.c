@@ -580,6 +580,47 @@ bool ui_bomb_ask_batch(struct game_s *g, const struct ui_bomb_target_s *targets,
     return true;
 }
 
+bool ui_spy_sabotage_batch(struct game_s *g, const struct ui_spy_sab_target_s *targets, int n, struct ui_spy_sab_dec_s *out)
+{
+    /* 1oom-mp: fan the whole turn's sabotage-opportunity list out to every human spymaster AT ONCE
+       (parallel) so both players pick their sabotage simultaneously rather than one-at-a-time. Each
+       client answers for ITS own opportunities (act+planet) and returns a ui_spy_sab_dec_s[n] array;
+       demux opportunity k from its saboteur-player's slot. Mirrors ui_bomb_ask_batch. */
+    if ((!g_mp_decision_hook_multi) || (n <= 0)) { return false; }
+    if (n > 32) { n = 32; }
+    {
+        int players[8], np = 0;
+        for (int k = 0; k < n; ++k) {
+            int a = targets[k].player;
+            bool dup = false;
+            if ((a < 0) || (a >= (int)g->players) || (!IS_HUMAN(g, a))) { continue; }
+            for (int j = 0; j < np; ++j) { if (players[j] == a) { dup = true; break; } }
+            if ((!dup) && (np < 8)) { players[np++] = a; }
+        }
+        if (np == 0) { return false; }
+        {
+            static uint8_t req[4 + 32 * sizeof(struct ui_spy_sab_target_s)];
+            static uint8_t resp[8 * 32 * sizeof(struct ui_spy_sab_dec_s)];
+            int32_t n32 = n;
+            int rlen = n * (int)sizeof(struct ui_spy_sab_dec_s);
+            memset(resp, 0, sizeof(resp));
+            memcpy(req, &n32, 4);
+            memcpy(req + 4, targets, (size_t)n * sizeof(struct ui_spy_sab_target_s));
+            g_mp_decision_hook_multi(players, np, MP_DEC_SPY_SABOTAGE_BATCH, req, 4 + n * (int)sizeof(struct ui_spy_sab_target_s), resp, rlen);
+            for (int k = 0; k < n; ++k) {
+                int a = targets[k].player, pidx = -1;
+                for (int j = 0; j < np; ++j) { if (players[j] == a) { pidx = j; break; } }
+                if (pidx >= 0) {
+                    memcpy(&out[k], resp + pidx * rlen + k * (int)sizeof(struct ui_spy_sab_dec_s), sizeof(struct ui_spy_sab_dec_s));
+                } else {
+                    out[k].act = -1; out[k].planet = PLANET_NONE;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 void ui_turn_pre(const struct game_s *g)
 {
 }

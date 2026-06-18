@@ -1044,6 +1044,34 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (resp_buflen >= 8) { memcpy(resp, &mask, 8); return 8; }
             return 0;
         }
+        case MP_DEC_SPY_SABOTAGE_BATCH: { /* parallel batched sabotage: prompt ui_spy_sabotage_ask for MY
+                                             opportunities in this turn's list and return ui_spy_sab_dec_s[n]
+                                             (only my own slots filled). Both players answer at once. */
+            int32_t n;
+            int me = mp_cl_player_id();
+            if (req_len < 4) { return 0; }
+            memcpy(&n, req, 4);
+            if ((n < 0) || (n > 32)) { return 0; }
+            if (req_len < (int)(4 + n * (int)sizeof(struct ui_spy_sab_target_s))) { return 0; }
+            {
+                const struct ui_spy_sab_target_s *tgt = (const struct ui_spy_sab_target_s *)(req + 4);
+                int rlen = n * (int)sizeof(struct ui_spy_sab_dec_s);
+                if (resp_buflen < rlen) { return 0; }
+                for (int k = 0; k < n; ++k) {
+                    struct ui_spy_sab_dec_s d;
+                    d.act = (int16_t)UI_SABOTAGE_NONE;
+                    d.planet = PLANET_NONE;
+                    if ((int)tgt[k].player == me) {
+                        planet_id_t planet = PLANET_NONE;
+                        ui_sabotage_t act = ui_spy_sabotage_ask(g, me, tgt[k].target, &planet);
+                        d.act = (int16_t)act;
+                        d.planet = (uint16_t)planet;
+                    }
+                    memcpy(resp + k * (int)sizeof(struct ui_spy_sab_dec_s), &d, sizeof(d));
+                }
+                return rlen;
+            }
+        }
         case MP_DEC_GROUND: { /* buffer a ground-invasion result; replayed at state load so independent invasions play concurrently, not in series */
             if (req_len < (int)sizeof(struct ground_s)) { return 0; }
             if (s_mp_ground_n < (int)(sizeof(s_mp_ground) / sizeof(s_mp_ground[0]))) {

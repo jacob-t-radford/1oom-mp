@@ -345,6 +345,12 @@ ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_
     return action;
 }
 
+bool ui_spy_sabotage_batch(struct game_s *g, const struct ui_spy_sab_target_s *targets, int n, struct ui_spy_sab_dec_s *out)
+{
+    (void)g; (void)targets; (void)n; (void)out;
+    return false; /* single-player: caller falls back to the per-target ui_spy_sabotage_ask */
+}
+
 int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
 {
     struct sabotage_data_s d;

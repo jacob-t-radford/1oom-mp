@@ -649,9 +649,64 @@ void game_spy_esp_human(struct game_s *g, struct spy_turn_s *st)
     }
 }
 
+/* 1oom-mp: parallel batched sabotage. Collect every human spymaster's sabotage opportunities up front
+   and ask about them all at once (ui_spy_sabotage_batch fans out to both players IN PARALLEL), caching
+   each act+planet; the loop below reads the cache instead of prompting inline. Opportunity conditions
+   here MUST mirror the loop's (human player, target != player, sabotage_num > 0). Single-player:
+   ui_spy_sabotage_batch returns false -> inline ui_spy_sabotage_ask. */
+static struct { uint8_t player, target; int16_t act; uint16_t planet; uint8_t ready; } s_sab_dec[32];
+static int s_sab_dec_n = 0;
+static bool s_sab_dec_ready = false;
+
+static bool game_spy_sab_lookup(player_id_t player, player_id_t target, ui_sabotage_t *act, planet_id_t *planet)
+{
+    for (int k = 0; k < s_sab_dec_n; ++k) {
+        if ((s_sab_dec[k].player == (uint8_t)player) && (s_sab_dec[k].target == (uint8_t)target) && s_sab_dec[k].ready) {
+            *act = (ui_sabotage_t)s_sab_dec[k].act;
+            *planet = (planet_id_t)s_sab_dec[k].planet;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void game_spy_sab_collect(struct game_s *g)
+{
+    struct ui_spy_sab_target_s tgt[32];
+    int n = 0;
+    s_sab_dec_n = 0;
+    s_sab_dec_ready = false;
+    for (player_id_t player = PLAYER_0; player < g->players; ++player) {
+        if (IS_AI(g, player)) { continue; }
+        for (player_id_t target = PLAYER_0; target < g->players; ++target) {
+            if ((player != target) && (g->evn.sabotage_num[target][player] > 0) && (n < 32)) {
+                tgt[n].player = (uint8_t)player;
+                tgt[n].target = (uint8_t)target;
+                ++n;
+            }
+        }
+    }
+    if (n == 0) { return; }
+    {
+        struct ui_spy_sab_dec_s dec[32];
+        if (ui_spy_sabotage_batch(g, tgt, n, dec)) {
+            for (int k = 0; k < n; ++k) {
+                s_sab_dec[k].player = tgt[k].player;
+                s_sab_dec[k].target = tgt[k].target;
+                s_sab_dec[k].act = dec[k].act;
+                s_sab_dec[k].planet = dec[k].planet;
+                s_sab_dec[k].ready = 1;
+            }
+            s_sab_dec_n = n;
+            s_sab_dec_ready = true;
+        }
+    }
+}
+
 void game_spy_sab_human(struct game_s *g)
 {
     /* FIXME refactor for multiplayer */
+    game_spy_sab_collect(g);
     for (player_id_t player = PLAYER_0; player < g->players; ++player) {
         if (IS_AI(g, player)) {
             continue;
@@ -664,7 +719,9 @@ void game_spy_sab_human(struct game_s *g)
                 planet_id_t planet;
                 planet_t *p;
                 player_id_t other1, other2;
-                act = ui_spy_sabotage_ask(g, player, target, &planet);
+                if (!(s_sab_dec_ready && game_spy_sab_lookup(player, target, &act, &planet))) {
+                    act = ui_spy_sabotage_ask(g, player, target, &planet);
+                }
                 if (planet >= g->galaxy_stars) {
                     /* 1oom-mp: a relayed ask can hand back an out-of-range planet; deref'ing
                        g->planet[planet] below would segfault. Skip this target and log the value
