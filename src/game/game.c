@@ -1349,7 +1349,7 @@ static void mp_battle_move_relay(struct battle_s *bt, int itemi, int sx, int sy)
     b[3] = (uint8_t)(sx & 0xff);    b[4] = (uint8_t)((sx >> 8) & 0xff);
     b[5] = (uint8_t)(sy & 0xff);    b[6] = (uint8_t)((sy >> 8) & 0xff);
     for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
-        if (bt->s[side].flag_human) { g_mp_spectate_hook(bt->s[side].party, b, 7); }
+        if (bt->s[side].flag_human) { g_mp_spectate_hook(bt->s[side].party, b, 7, 1/*reliable: ship move*/); }
     }
 }
 

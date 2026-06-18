@@ -1275,7 +1275,7 @@ void ui_mp_battle_glide(struct battle_s *bt, int itemi, int tsx, int tsy)
     if (dist < 1) { return; }
     x = b->sx * 32; y = b->sy * 24;
     x1 = tsx * 32; y1 = tsy * 24;
-    steps = 8 * dist;
+    steps = 4 * dist; /* 1oom-mp: snappier than SP's 8*dist -- MP combat already pays a relay round-trip per action, so move the glide along faster */
     bt->cur_item = itemi;
     for (int f = 1; f <= steps; ++f) {
         int cx = x + (x1 - x) * f / steps;

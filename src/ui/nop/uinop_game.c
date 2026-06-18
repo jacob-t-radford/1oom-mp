@@ -269,7 +269,7 @@ void ui_battle_draw_basic(const struct battle_s *bt)
         int actor = ((cside == SIDE_L) || (cside == SIDE_R)) ? bt->s[cside].party : -1;
         for (int side = SIDE_L; side <= SIDE_R; ++side) {
             if (bt->s[side].flag_human && (bt->s[side].party != actor)) {
-                g_mp_spectate_hook(bt->s[side].party, bt, (int)sizeof(*bt));
+                g_mp_spectate_hook(bt->s[side].party, bt, (int)sizeof(*bt), 0/*best-effort: full snapshot self-heals*/);
             }
         }
     }
@@ -296,7 +296,7 @@ void ui_battle_draw_missile(const struct battle_s *bt, int missilei, int x, int 
         memcpy(b + p, &bt->missile[missilei], sizeof(struct battle_missile_s));
         p += (int)sizeof(struct battle_missile_s);
         for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
-            if (bt->s[side].flag_human) { g_mp_spectate_hook(bt->s[side].party, b, p); }
+            if (bt->s[side].flag_human) { g_mp_spectate_hook(bt->s[side].party, b, p, 1/*reliable: missile flight*/); }
         }
     }
 }
@@ -327,7 +327,7 @@ static void mp_spec_send(const struct battle_s *bt, uint8_t kind, const int *arg
            shot/retreat fire (the actor only gets state snapshots at its decision points otherwise). */
         for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
             if (bt->s[side].flag_human) {
-                g_mp_spectate_hook(bt->s[side].party, b, 1 + nargs * 2);
+                g_mp_spectate_hook(bt->s[side].party, b, 1 + nargs * 2, 1/*reliable: one-shot battle animation (beam/damage/retreat/...)*/);
             }
         }
     }
@@ -831,7 +831,7 @@ static void mp_election_relay(struct election_s *el, int kind)
         }
     }
     for (player_id_t p = PLAYER_0; p < el->g->players; ++p) {
-        if (IS_HUMAN(el->g, p)) { g_mp_spectate_hook(p, buf, len); }
+        if (IS_HUMAN(el->g, p)) { g_mp_spectate_hook(p, buf, len, 0/*best-effort: council frame is full state, self-heals*/); }
     }
 }
 

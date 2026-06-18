@@ -69,7 +69,7 @@ static int mp_recv_wait(net_conn_t *c, uint16_t want_id, uint8_t *buf, uint32_t 
 #define MP_DECISION_BUF_MAX 65536
 int (*g_mp_decision_hook)(int, int, const void *, int, void *, int) = NULL;
 int (*g_mp_decision_hook_multi)(const int *, int, int, const void *, int, void *, int) = NULL;
-void (*g_mp_spectate_hook)(int, const void *, int) = NULL;
+void (*g_mp_spectate_hook)(int, const void *, int, int) = NULL;
 void (*g_mp_movement_hook)(const uint8_t *, int) = NULL;
 static net_conn_t **s_mp_conns = NULL;
 static int s_mp_num_conns = 0;
@@ -191,9 +191,16 @@ static int cl_lobby_poll_impl(struct mp_lobby_s *out) {
     return 0;
 }
 
-static void mp_spectate_send(int player_id, const void *data, int len) {
+static void mp_spectate_send(int player_id, const void *data, int len, int reliable) {
     if ((player_id < 0) || (player_id >= s_mp_num_conns) || !s_mp_conns[player_id] || (len < 0)) { return; }
-    mp_send_besteffort(s_mp_conns[player_id], MP_MSG_SPECTATE, data, (uint32_t)len); /* fire-and-forget; drop if buffer full so combat isn't paced to the watcher */
+    if (reliable) {
+        /* one-shot battle animation (beam/damage/move/missile): never drop it -- losing the damage event
+           is why a kill "didn't show until the next turn". Reliable paces the server to the client, which
+           is what we want for a fight the player is watching. */
+        mp_send(s_mp_conns[player_id], MP_MSG_SPECTATE, data, (uint32_t)len);
+    } else {
+        mp_send_besteffort(s_mp_conns[player_id], MP_MSG_SPECTATE, data, (uint32_t)len); /* big snapshot/council frame: drop if buffer full; the next one resyncs */
+    }
 }
 
 /* server -> all clients: a battle just started (active=1) / finished (active=0). A client only waiting

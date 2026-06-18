@@ -172,7 +172,10 @@ extern int (*g_mp_decision_hook_multi)(const int *players, int n, int dtype, con
 
 /* server -> a watching client: push a battle update (fire-and-forget, no reply) so the
    player not currently acting can watch the battle progress. NULL outside MP. */
-extern void (*g_mp_spectate_hook)(int player_id, const void *data, int len);
+/* reliable!=0: send reliably (never dropped) -- for one-shot battle animations (beam/damage/move/missile)
+   so a busy client never loses your attack's result. reliable==0: best-effort, dropped if the buffer is
+   full -- for the big full-battle snapshots and council frames, which self-heal on the next one. */
+extern void (*g_mp_spectate_hook)(int player_id, const void *data, int len, int reliable);
 
 /* server -> all clients: broadcast this turn's movement-replay snapshot (MP_MSG_TURN_MOVE) at the
    moment it is captured (movement-start), so clients animate fleet movement BEFORE the combat / bomb
