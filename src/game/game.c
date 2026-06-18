@@ -1025,6 +1025,26 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
+        case MP_DEC_BOMB_BATCH: { /* parallel batched bombing: prompt for MY targets in this turn's list
+                                     and return a yes/no bitmask. Both players answer at the same time. */
+            int32_t n;
+            uint64_t mask = 0;
+            int me = mp_cl_player_id();
+            if (req_len < 4) { return 0; }
+            memcpy(&n, req, 4);
+            if ((n < 0) || (n > 64)) { return 0; }
+            if (req_len < (int)(4 + n * (int)sizeof(struct ui_bomb_target_s))) { return 0; }
+            {
+                const struct ui_bomb_target_s *tgt = (const struct ui_bomb_target_s *)(req + 4);
+                for (int k = 0; k < n; ++k) {
+                    if ((int)tgt[k].attacker == me) {
+                        if (ui_bomb_ask(g, me, (planet_id_t)tgt[k].planet_i, tgt[k].pop_inbound)) { mask |= ((uint64_t)1 << k); }
+                    }
+                }
+            }
+            if (resp_buflen >= 8) { memcpy(resp, &mask, 8); return 8; }
+            return 0;
+        }
         case MP_DEC_GROUND: { /* buffer a ground-invasion result; replayed at state load so independent invasions play concurrently, not in series */
             if (req_len < (int)sizeof(struct ground_s)) { return 0; }
             if (s_mp_ground_n < (int)(sizeof(s_mp_ground) / sizeof(s_mp_ground[0]))) {

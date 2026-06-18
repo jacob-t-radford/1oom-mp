@@ -138,8 +138,76 @@ static void game_turn_bomb_damage(struct game_s *g, uint8_t pli, player_id_t att
 
 /* -------------------------------------------------------------------------- */
 
+/* 1oom-mp: parallel batched bombing. Collect every human attacker's bombable targets up front and ask
+   about them all at once (ui_bomb_ask_batch fans out to both players IN PARALLEL), caching each yes/no.
+   The apply loop below is unchanged except the human branch reads this cache instead of prompting.
+   IMPORTANT: the target conditions here must stay in lock-step with the apply loop (treaty check,
+   ships-in-orbit v4, damage > 0). Single-player: ui_bomb_ask_batch returns false -> inline prompts. */
+static struct { uint16_t pli; uint8_t i; uint8_t bomb; } s_bomb_dec[64];
+static int s_bomb_dec_n = 0;
+static bool s_bomb_dec_ready = false;
+
+static bool game_bomb_dec_lookup(planet_id_t pli, player_id_t i, bool *out)
+{
+    for (int k = 0; k < s_bomb_dec_n; ++k) {
+        if ((s_bomb_dec[k].pli == (uint16_t)pli) && (s_bomb_dec[k].i == (uint8_t)i)) { *out = (s_bomb_dec[k].bomb != 0); return true; }
+    }
+    return false;
+}
+
+static void game_bomb_collect(struct game_s *g)
+{
+    struct ui_bomb_target_s tgt[64];
+    int n = 0;
+    s_bomb_dec_n = 0;
+    s_bomb_dec_ready = false;
+    for (int pli = 0; pli < g->galaxy_stars; ++pli) {
+        planet_t *p = &(g->planet[pli]);
+        player_id_t owner = p->owner;
+        if (owner == PLAYER_NONE) { continue; }
+        for (player_id_t i = PLAYER_0; i < g->players; ++i) {
+            empiretechorbit_t *ea = &(g->eto[i]);
+            int v4 = 0;
+            bool flag_treaty;
+            if ((i == owner) || (!IS_HUMAN(g, i))) { continue; }
+            for (int j = 0; j < ea->shipdesigns_num; ++j) { if (ea->orbit[pli].ships[j] > 0) { v4 += 2; } }
+            flag_treaty = ((ea->treaty[owner] == TREATY_ALLIANCE) || ((ea->treaty[owner] == TREATY_NONAGGRESSION) && IS_AI(g, i)));
+            if ((v4 > 0) && (!flag_treaty)) {
+                int pop_inbound = 0, popdmg, factdmg, biodmg;
+                for (int j = 0; j < g->transport_num; ++j) {
+                    transport_t *r = &(g->transport[j]);
+                    if ((r->owner == i) && (r->dest == pli)) { pop_inbound += r->pop; }
+                }
+                game_turn_bomb_damage(g, pli, i, &popdmg, &factdmg, &biodmg);
+                if (((popdmg != 0) || (factdmg != 0)) && (n < 64)) {
+                    tgt[n].planet_i = (uint16_t)pli;
+                    tgt[n].attacker = (uint8_t)i;
+                    tgt[n].pop_inbound = (uint16_t)pop_inbound;
+                    tgt[n].popdmg = (uint16_t)popdmg;
+                    tgt[n].factdmg = (uint16_t)factdmg;
+                    ++n;
+                }
+            }
+        }
+    }
+    if (n == 0) { return; }
+    {
+        bool decided[64];
+        if (ui_bomb_ask_batch(g, tgt, n, decided)) {
+            for (int k = 0; k < n; ++k) {
+                s_bomb_dec[k].pli = tgt[k].planet_i;
+                s_bomb_dec[k].i = tgt[k].attacker;
+                s_bomb_dec[k].bomb = decided[k] ? 1 : 0;
+            }
+            s_bomb_dec_n = n;
+            s_bomb_dec_ready = true;
+        }
+    }
+}
+
 void game_turn_bomb(struct game_s *g)
 {
+    game_bomb_collect(g);
     for (int pli = 0; pli < g->galaxy_stars; ++pli) {
         planet_t *p = &(g->planet[pli]);
         player_id_t owner;
@@ -180,7 +248,8 @@ void game_turn_bomb(struct game_s *g)
                 if ((popdmg == 0) && (factdmg == 0)) {
                     flag_do_bomb = false;
                 } else if (IS_HUMAN(g, i)) {
-                    flag_do_bomb = ui_bomb_ask(g, i, pli, pop_inbound);
+                    bool cd;
+                    flag_do_bomb = (s_bomb_dec_ready && game_bomb_dec_lookup(pli, i, &cd)) ? cd : ui_bomb_ask(g, i, pli, pop_inbound);
                     flag_play_music = false;
                 } else {
                     flag_do_bomb = game_ai->bomb(g, i, pli, pop_inbound);

@@ -14,6 +14,12 @@
 
 /* -------------------------------------------------------------------------- */
 
+bool ui_bomb_ask_batch(struct game_s *g, const struct ui_bomb_target_s *targets, int n, bool *decided)
+{
+    (void)g; (void)targets; (void)n; (void)decided;
+    return false;
+}
+
 bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound)
 {
     const planet_t *p = &(g->planet[planet_i]);

@@ -228,6 +228,12 @@ extern void ui_landing(struct game_s *g, int pi, planet_id_t planet_i);
 
 extern bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound);
 extern void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, planet_id_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other);
+/* 1oom-mp: one human attacker's bombable target, for the parallel batched bomb prompt */
+struct ui_bomb_target_s { uint16_t planet_i; uint8_t attacker; uint16_t pop_inbound; uint16_t popdmg; uint16_t factdmg; };
+/* Ask about all listed targets at once. In MP, fans out to every human attacker IN PARALLEL and fills
+   decided[k] for each target; returns true. In single-player it returns false and the caller falls
+   back to the per-planet ui_bomb_ask. */
+extern bool ui_bomb_ask_batch(struct game_s *g, const struct ui_bomb_target_s *targets, int n, bool *decided);
 
 extern void ui_turn_pre(const struct game_s *g);
 extern void ui_turn_msg(struct game_s *g, int pi, const char *str);

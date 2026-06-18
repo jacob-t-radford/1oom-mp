@@ -535,6 +535,43 @@ void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, planet_
     }
 }
 
+bool ui_bomb_ask_batch(struct game_s *g, const struct ui_bomb_target_s *targets, int n, bool *decided)
+{
+    /* 1oom-mp: fan the whole turn's target list out to every human attacker AT ONCE (parallel) so both
+       players decide their bombings simultaneously rather than one-at-a-time. Each client prompts for
+       ITS own targets and returns a u64 yes/no bitmask (bit k = bomb targets[k]); demux per attacker. */
+    if ((!g_mp_decision_hook_multi) || (n <= 0)) { return false; }
+    if (n > 64) { n = 64; }
+    {
+        int players[8], np = 0;
+        for (int k = 0; k < n; ++k) {
+            int a = targets[k].attacker;
+            bool dup = false;
+            if ((a < 0) || (a >= (int)g->players) || (!IS_HUMAN(g, a))) { continue; }
+            for (int j = 0; j < np; ++j) { if (players[j] == a) { dup = true; break; } }
+            if ((!dup) && (np < 8)) { players[np++] = a; }
+        }
+        if (np == 0) { return false; }
+        {
+            static uint8_t req[4 + 64 * sizeof(struct ui_bomb_target_s)];
+            uint8_t resp[8 * 8];
+            int32_t n32 = n;
+            memset(resp, 0, sizeof(resp));
+            memcpy(req, &n32, 4);
+            memcpy(req + 4, targets, (size_t)n * sizeof(struct ui_bomb_target_s));
+            g_mp_decision_hook_multi(players, np, MP_DEC_BOMB_BATCH, req, 4 + n * (int)sizeof(struct ui_bomb_target_s), resp, 8);
+            for (int k = 0; k < n; ++k) {
+                int a = targets[k].attacker, pidx = -1;
+                uint64_t mask = 0;
+                for (int j = 0; j < np; ++j) { if (players[j] == a) { pidx = j; break; } }
+                if (pidx >= 0) { memcpy(&mask, resp + pidx * 8, 8); }
+                decided[k] = (((mask >> k) & 1) != 0);
+            }
+        }
+    }
+    return true;
+}
+
 void ui_turn_pre(const struct game_s *g)
 {
 }
