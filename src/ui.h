@@ -78,6 +78,7 @@ enum ui_mp_spec_e {
     UI_MP_SPEC_DAMAGE,      /* args: target_i, target_x, target_y, dmg_lo, dmg_hi — hit/explosion */
     UI_MP_SPEC_COUNCIL,     /* council frame: [kind][struct election_s] — the shared council view, relayed to ALL humans */
     UI_MP_SPEC_COUNCIL_END, /* council adjourned: [kind] only — tear down the spectator's council view */
+    UI_MP_SPEC_MISSILE,     /* missile flight: [kind][i16 missilei,x,y,tx,ty][struct battle_missile_s] — animate the missile traveling (the struct rides along since missiles launch after the last snapshot) */
 };
 
 /* 1oom-mp: glide a ship from its current hex to (sx,sy) on the spectator's battle screen (replays

@@ -281,6 +281,24 @@ void ui_battle_draw_basic_copy(const struct battle_s *bt)
 
 void ui_battle_draw_missile(const struct battle_s *bt, int missilei, int x, int y, int tx, int ty)
 {
+    /* 1oom-mp: relay missile flight so spectators see the missile travel instead of teleporting (this
+       was a no-op, hence "missiles just appear"). The client animator needs bt->missile[missilei]
+       (wpnt/nummissiles/speed/target/fuel); a missile is launched mid-turn, after the spectator's last
+       full snapshot, so ship the missile struct alongside the from/to coords. Display-only. */
+    if (!g_mp_spectate_hook) { return; }
+    if ((missilei < 0) || (missilei >= BATTLE_MISSILE_MAX)) { return; }
+    {
+        uint8_t b[1 + 10 + sizeof(struct battle_missile_s)];
+        int p = 0;
+        const int16_t vals[5] = { (int16_t)missilei, (int16_t)x, (int16_t)y, (int16_t)tx, (int16_t)ty };
+        b[p++] = UI_MP_SPEC_MISSILE;
+        for (int i = 0; i < 5; ++i) { b[p++] = (uint8_t)(vals[i] & 0xff); b[p++] = (uint8_t)((vals[i] >> 8) & 0xff); }
+        memcpy(b + p, &bt->missile[missilei], sizeof(struct battle_missile_s));
+        p += (int)sizeof(struct battle_missile_s);
+        for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
+            if (bt->s[side].flag_human) { g_mp_spectate_hook(bt->s[side].party, b, p); }
+        }
+    }
 }
 
 void ui_battle_draw_cloaking(const struct battle_s *bt, int from, int to, int sx, int sy)

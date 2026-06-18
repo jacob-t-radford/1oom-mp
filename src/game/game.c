@@ -1383,9 +1383,43 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
     if (!s_mp_battle_uictx || s_mp_battle_auto) { return; } /* not in a battle, or auto-resolved it (ctx half-built, no gfx_bg): can't render the streamed animations */
     if (len == (int)sizeof(struct battle_s)) {
         /* a full snapshot: refresh the spectator's battle (the wait loop redraws it) */
+        {   /* 1oom-mp TEMP DEBUG (jerk-back): log any ship this snapshot repositions vs what's
+               currently displayed. A move here -- especially BACKWARD, right after a glide put the ship
+               forward -- is the "ship jerks back to an old position". Paired with the glide log below,
+               the sequence pinpoints the stale-snapshot trigger. Remove once diagnosed. */
+            const struct battle_s *snap = (const struct battle_s *)data;
+            int lim = (int)s_mp_battle.items_num;
+            if (lim >= BATTLE_ITEM_MAX) { lim = BATTLE_ITEM_MAX - 1; }
+            for (int it = 1; it <= lim; ++it) {
+                if ((s_mp_battle.item[it].sx != snap->item[it].sx) || (s_mp_battle.item[it].sy != snap->item[it].sy)) {
+                    log_message("MP-JERKDBG: snapshot moves item %d (%d,%d)->(%d,%d)\n", it,
+                                (int)s_mp_battle.item[it].sx, (int)s_mp_battle.item[it].sy,
+                                (int)snap->item[it].sx, (int)snap->item[it].sy);
+                }
+            }
+        }
         memcpy(&s_mp_battle, data, sizeof(s_mp_battle));
         mp_battle_fixup(g, &s_mp_battle);
         s_mp_battle.uictx = s_mp_battle_uictx;
+        return;
+    }
+    if (data[0] == UI_MP_SPEC_MISSILE) { /* 1oom-mp: missile flight (struct rides along so the animator
+                                            has wpnt/nummissiles even though it launched after the last
+                                            snapshot). Display-only -- animate it traveling. */
+        int need = 1 + 10 + (int)sizeof(struct battle_missile_s);
+        if (len < need) { return; }
+        {
+            int16_t mi  = (int16_t)(data[1] | (data[2] << 8));
+            int16_t mx  = (int16_t)(data[3] | (data[4] << 8));
+            int16_t my  = (int16_t)(data[5] | (data[6] << 8));
+            int16_t mtx = (int16_t)(data[7] | (data[8] << 8));
+            int16_t mty = (int16_t)(data[9] | (data[10] << 8));
+            if ((mi >= 0) && (mi < BATTLE_MISSILE_MAX)) {
+                memcpy(&s_mp_battle.missile[mi], data + 11, sizeof(struct battle_missile_s));
+                s_mp_battle.uictx = s_mp_battle_uictx;
+                ui_battle_draw_missile(&s_mp_battle, mi, mx, my, mtx, mty);
+            }
+        }
         return;
     }
     /* otherwise a small animation event: replay the attack on the current battle so the spectator
@@ -1407,7 +1441,17 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
             case UI_MP_SPEC_TECHNULL:  if (n >= 2) { ui_battle_draw_technull(&s_mp_battle, a[0], a[1]); } break;
             case UI_MP_SPEC_REPULSE:   if (n >= 4) { ui_battle_draw_repulse(&s_mp_battle, a[0], a[1], a[2], a[3]); } break;
             case UI_MP_SPEC_RETREAT:   if (n >= 1) { s_mp_battle.cur_item = a[0]; ui_battle_draw_retreat(&s_mp_battle); } break;
-            case UI_MP_SPEC_MOVE:      if (n >= 3) { ui_mp_battle_glide(&s_mp_battle, a[0], a[1], a[2]); } break;
+            case UI_MP_SPEC_MOVE:      if (n >= 3) {
+                                           /* 1oom-mp TEMP DEBUG (jerk-back): a glide animates FROM the
+                                              ship's current sx/sy; if a stale snapshot reset that, the
+                                              glide visibly starts from the wrong (old) spot. Remove once
+                                              diagnosed. */
+                                           if ((a[0] >= 0) && (a[0] < BATTLE_ITEM_MAX)) {
+                                               log_message("MP-JERKDBG: glide item %d from (%d,%d) to (%d,%d)\n", a[0],
+                                                           (int)s_mp_battle.item[a[0]].sx, (int)s_mp_battle.item[a[0]].sy, a[1], a[2]);
+                                           }
+                                           ui_mp_battle_glide(&s_mp_battle, a[0], a[1], a[2]);
+                                       } break;
             case UI_MP_SPEC_DAMAGE:    if (n >= 5) { ui_battle_draw_damage(&s_mp_battle, a[0], a[1], a[2], (uint32_t)(uint16_t)a[3] | ((uint32_t)(uint16_t)a[4] << 16)); } break;
             default: break;
         }
