@@ -1176,6 +1176,13 @@ void ui_battle_draw_damage(const struct battle_s *bt, int target_i, int target_x
 {
     const struct battle_item_s *b = &(bt->item[target_i]);
     int target_x_hit, target_y_hit, si, v4, ax, ay, scale;
+    /* 1oom-mp: the hit coords relayed to a spectator/actor can be stale -- the target ship moved after
+       the missile homed on it -- and this routine REDRAWS the ship (ui_battle_draw_item below) at these
+       coords, snapping it back to its pre-move hex for the hit ("jerk back to an old position, then move
+       forward"). Anchor the whole hit animation to the ship's CURRENT hex. In single-player these are
+       already equal, so SP is unchanged. */
+    target_x = b->sx * 32;
+    target_y = b->sy * 24;
     bool flag_quick;
     si = (b->hp1 > 0) ? b->hp1 * 3 : 1;
     if ((b->num <= 0) || (si < damage)) {
