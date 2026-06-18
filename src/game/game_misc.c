@@ -241,19 +241,28 @@ void game_update_total_research(struct game_s *g)
 void game_update_eco_on_waste(struct game_s *g, int player_i, bool force_adjust)
 {
     empiretechorbit_t *e = &(g->eto[player_i]);
-    if (e->race == RACE_SILICOID) {
-        return;
-    }
     for (int i = 0; i < g->galaxy_stars; ++i) {
         planet_t *p = &(g->planet[i]);
         if (p->owner == player_i) {
             uint16_t v;
             int16_t left;
             bool check_locks = !force_adjust && game_num_slider_respects_locks && IS_HUMAN(g, p->owner);
+            bool silicoid_idle;
             v = game_planet_get_waste_percent(NULL, g, p, false);
+            /* 1oom-mp: Silicoids have no waste, so the cleanup adjust below never fires for them (v==0).
+               But ECO that funded growth/terraforming gets stranded on a maxed-out world -- it can't
+               clean (no waste), grow (pop maxed) or terraform (no room left), so it's silently wasted
+               and shown as "Clean". Detect that and let the SAME redistribution pull it back into the
+               other sliders. Human worlds only (don't tug-of-war with the AI's per-turn slider logic),
+               and we deliberately ignore force_adjust for Silicoids so still-growing worlds keep ECO. */
+            silicoid_idle = (e->race == RACE_SILICOID)
+                         && IS_HUMAN(g, p->owner)
+                         && (p->slider[PLANET_SLIDER_ECO] > 0)
+                         && (p->pop >= p->max_pop3)
+                         && (!game_planet_can_terraform(g, p, p->owner, false));
             if (check_locks && p->slider_lock[PLANET_SLIDER_ECO]) {
             } else if (check_locks && p->slider_lock[PLANET_SLIDER_SHIP] && p->slider_lock[PLANET_SLIDER_DEF] && p->slider_lock[PLANET_SLIDER_IND] && p->slider_lock[PLANET_SLIDER_TECH]) {
-            } else if ((p->slider[PLANET_SLIDER_ECO] < v) || force_adjust) {
+            } else if ((p->slider[PLANET_SLIDER_ECO] < v) || (force_adjust && (e->race != RACE_SILICOID)) || silicoid_idle) {
                 int16_t eco_diff = v - p->slider[PLANET_SLIDER_ECO];
                 int16_t sum = 100;
                 if (game_num_waste_adjust_fix) {

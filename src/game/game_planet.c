@@ -487,7 +487,16 @@ int game_planet_get_slider_text_eco(const struct game_s *g, const planet_t *p, b
                     growth = growth2 - growth;
                 }
                 if (growth <= 0) {
-                    str = flag_tform ? game_str_sm_ecotform : game_str_sm_ecoclean;
+                    if (flag_tform) {
+                        str = game_str_sm_ecotform;
+                    } else if (e->race == RACE_SILICOID) {
+                        /* 1oom: Silicoids have no waste, so idle ECO here isn't cleaning anything --
+                           the world is simply maxed. Show "Max" instead of the misleading "Clean".
+                           (Companion to the existing e->race != RACE_SILICOID guard in the branch below.) */
+                        str = game_str_sm_max;
+                    } else {
+                        str = game_str_sm_ecoclean;
+                    }
                 } else if (max) {
                     str = game_str_sm_max;
                 } else {
