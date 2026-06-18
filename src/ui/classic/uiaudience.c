@@ -104,6 +104,14 @@ static void ui_audience_draw_race(struct audience_data_s *d)
     switch (au->gfxi) {
         case 0:
         draw_anim:
+            if (ui_mp_active) {
+                /* 1oom-mp: the audience renders step-by-step over the relay, so this flanking race
+                   animation jumps/flashes each frame. Hold one static frame (same idea as the
+                   emperor-portrait freeze) -- stops the background flashing; single-player unchanged. */
+                lbxgfx_set_new_frame(gfx, 2);
+                lbxgfx_draw_frame(x, 0, gfx, UI_SCREEN_W, ui_scale);
+                break;
+            }
             SETMAX(frame, 2);
             lbxgfx_set_new_frame(gfx, 2);
             for (int f = 0; f <= (frame - 2); ++f) {
