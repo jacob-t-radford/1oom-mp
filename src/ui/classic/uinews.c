@@ -422,6 +422,7 @@ static void ui_combat_report_draw_cb(void *vptr)
         for (int k = 0; (k < r->nitems[side]) && (y < 182); ++k) {
             const struct ui_combat_ships_s *sh = &r->ships[side][k];
             if ((sh->look < 0xd8) && ui_data.gfx.ships[sh->look]) {
+                lbxgfx_set_frame_0(ui_data.gfx.ships[sh->look]); /* static icon: don't advance the anim frame each redraw (was flickering) */
                 lbxgfx_draw_frame(34, y, ui_data.gfx.ships[sh->look], UI_SCREEN_W, ui_scale);
             }
             lbxfont_print_str_normal(86, y + 5, (sh->hull < 4) ? game_str_tbl_st_hull[sh->hull] : "ship", UI_SCREEN_W, ui_scale);
