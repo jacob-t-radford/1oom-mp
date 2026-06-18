@@ -167,13 +167,13 @@ extern void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int w
 /* 1oom-mp: end-of-turn consolidated combat report. One record per auto-resolved space battle, carrying
    both sides' per-design ship losses (by sprite `look`) so each client renders it from its own side.
    Replayed concurrently at state load in place of the per-battle result screens. */
-struct ui_combat_loss_s { uint8_t look; uint8_t hull; uint16_t count; };
+struct ui_combat_ships_s { uint8_t look; uint8_t hull; uint16_t before; uint16_t after; };
 struct ui_combat_report_s {
     uint16_t planet_i;       /* >= galaxy_stars -> deep space */
     int16_t winner_party;    /* winning party id, or -1 */
     uint8_t party[2];        /* s[SIDE_L].party, s[SIDE_R].party */
-    uint8_t nlost[2];        /* distinct designs lost, per side */
-    struct ui_combat_loss_s lost[2][6]; /* NUM_SHIPDESIGNS */
+    uint8_t nitems[2];       /* distinct designs present at battle start, per side */
+    struct ui_combat_ships_s ships[2][6]; /* NUM_SHIPDESIGNS: before/after counts per design */
 };
 extern void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s *reps, int n);
 

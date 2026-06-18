@@ -204,12 +204,14 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
                 rep.party[1] = (uint8_t)bt->s[SIDE_R].party;
                 for (int k = 0; k < s_battle_snap_n; ++k) {
                     int side = s_battle_snap[k].side;
-                    int loss = (int)s_battle_snap[k].num - (int)mp_battle_item_num(bt, side, s_battle_snap[k].look, s_battle_snap[k].hull);
-                    if ((loss > 0) && (side >= 0) && (side < 2) && (rep.nlost[side] < NUM_SHIPDESIGNS)) {
-                        rep.lost[side][rep.nlost[side]].look = s_battle_snap[k].look;
-                        rep.lost[side][rep.nlost[side]].hull = s_battle_snap[k].hull;
-                        rep.lost[side][rep.nlost[side]].count = (uint16_t)loss;
-                        rep.nlost[side]++;
+                    int before = (int)s_battle_snap[k].num;
+                    int after = (int)mp_battle_item_num(bt, side, s_battle_snap[k].look, s_battle_snap[k].hull);
+                    if ((before > 0) && (side >= 0) && (side < 2) && (rep.nitems[side] < NUM_SHIPDESIGNS)) {
+                        rep.ships[side][rep.nitems[side]].look = s_battle_snap[k].look;
+                        rep.ships[side][rep.nitems[side]].hull = s_battle_snap[k].hull;
+                        rep.ships[side][rep.nitems[side]].before = (uint16_t)before;
+                        rep.ships[side][rep.nitems[side]].after = (uint16_t)(after < 0 ? 0 : after);
+                        rep.nitems[side]++;
                     }
                 }
                 g_mp_decision_hook_multi(players, n, MP_DEC_COMBAT_REPORT, &rep, (int)sizeof(rep), resp, 1);
