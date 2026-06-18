@@ -159,16 +159,32 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
        human picks Continue. Default AUTO outside MP. */
     if (g_mp_decision_hook_multi) {
         int players[2];
+        battle_side_i_t sides[2];
         int n = 0;
         for (int side = SIDE_L; side <= SIDE_R; ++side) {
-            if (bt->s[side].flag_human) { players[n++] = bt->s[side].party; }
+            if (bt->s[side].flag_human) { sides[n] = (battle_side_i_t)side; players[n] = bt->s[side].party; ++n; }
         }
         if (n > 0) {
             uint8_t modes[2] = { UI_BATTLE_AUTORESOLVE_AUTO, UI_BATTLE_AUTORESOLVE_AUTO };
             if (g_mp_decision_hook_multi(players, n, MP_DEC_BATTLE_INIT, bt, (int)sizeof(*bt), modes, 1) == 0) {
                 ui_battle_autoresolve_t result = UI_BATTLE_AUTORESOLVE_AUTO;
                 for (int i = 0; i < n; ++i) {
-                    if (modes[i] == UI_BATTLE_AUTORESOLVE_OFF) { result = UI_BATTLE_AUTORESOLVE_OFF; }
+                    /* 1oom-mp: honor EACH human's choice per-side. The battle goes interactive if ANY
+                       human picks Continue (OFF), but a human who picked Auto or Retreat must NOT be
+                       prompted for ship moves -- otherwise the server blocks on a battle-turn RPC that
+                       their (passive) client never answers, deadlocking the whole battle. So flag that
+                       side flag_auto here (server auto-handles it, never prompts), and for Retreat also
+                       set its ships fleeing so they leave the field while the opponent fights live. */
+                    if (modes[i] == UI_BATTLE_AUTORESOLVE_OFF) {
+                        result = UI_BATTLE_AUTORESOLVE_OFF;
+                    } else {
+                        bt->s[sides[i]].flag_auto = 1;
+                        if (modes[i] == UI_BATTLE_AUTORESOLVE_RETREAT) {
+                            for (int it = 1; (it <= (int)bt->items_num) && (it < BATTLE_ITEM_MAX); ++it) {
+                                if (bt->item[it].side == sides[i]) { bt->item[it].retreat = 1; }
+                            }
+                        }
+                    }
                 }
                 return result;
             }
