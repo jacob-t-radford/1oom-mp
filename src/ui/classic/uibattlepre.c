@@ -77,19 +77,21 @@ static void battle_pre_free_data(struct ui_battle_pre_data_s *d)
    words fit. */
 enum { BP_BTN_AUTO, BP_BTN_RETREAT, BP_BTN_AUTOALL, BP_BTN_CONT, BP_BTN_NUM };
 static const struct { int16_t x0, y0, x1, y1; const char *label; } s_bp_btn[BP_BTN_NUM] = {
-    { 224, 145, 263, 159, "Auto" },
-    { 265, 145, 304, 159, "Retreat" },
-    { 224, 161, 263, 175, "Auto All" },
-    { 265, 161, 304, 175, "Continue" },
+    { 222, 145, 264, 159, "Auto" },
+    { 266, 145, 308, 159, "Retreat" },
+    { 222, 161, 264, 175, "Auto All" },
+    { 266, 161, 308, 175, "Continue" },
 };
 static void bp_draw_choice_buttons(void)
 {
     for (int b = 0; b < BP_BTN_NUM; ++b) {
         int x0 = s_bp_btn[b].x0, y0 = s_bp_btn[b].y0, x1 = s_bp_btn[b].x1, y1 = s_bp_btn[b].y1;
-        ui_draw_box_fill(x0 + 2, y0 + 2, x1 - 2, y1 - 2, colortbl_textbox, 0, 5, 1, 0x37, ui_scale);
-        ui_draw_box2(x0, y0, x1, y1, 0x7, 0x10, 0x13, 0x12, ui_scale);
-        lbxfont_select(2, 6, 0, 3);
-        lbxfont_print_str_center((x0 + x1) / 2, (y0 + y1) / 2 - 4, s_bp_btn[b].label, UI_SCREEN_W, ui_scale);
+        /* solid gray face + a RAISED bevel (the textbox bevel colors are gray; reversed top/bottom so it
+           pops out like a button instead of the inset textbox look). colortbl_textbox is blue -> not used. */
+        ui_draw_filled_rect(x0 + 1, y0 + 1, x1 - 1, y1 - 1, 0x11, ui_scale);
+        ui_draw_box2(x0, y0, x1, y1, 0x13, 0x12, 0x7, 0x10, ui_scale);
+        lbxfont_select_set_12_4(5, 2, 0, 0); /* the game's small button-label font */
+        lbxfont_print_str_center((x0 + x1) / 2, (y0 + y1) / 2 - 5, s_bp_btn[b].label, UI_SCREEN_W, ui_scale);
     }
 }
 
