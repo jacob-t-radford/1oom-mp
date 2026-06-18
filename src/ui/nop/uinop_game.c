@@ -625,14 +625,17 @@ bool ui_spy_sabotage_batch(struct game_s *g, const struct ui_spy_sab_target_s *t
             memset(resp, 0, sizeof(resp));
             memcpy(req, &n32, 4);
             memcpy(req + 4, targets, (size_t)n * sizeof(struct ui_spy_sab_target_s));
-            g_mp_decision_hook_multi(players, np, MP_DEC_SPY_SABOTAGE_BATCH, req, 4 + n * (int)sizeof(struct ui_spy_sab_target_s), resp, rlen);
+            int rc = g_mp_decision_hook_multi(players, np, MP_DEC_SPY_SABOTAGE_BATCH, req, 4 + n * (int)sizeof(struct ui_spy_sab_target_s), resp, rlen);
             for (int k = 0; k < n; ++k) {
                 int a = targets[k].player, pidx = -1;
+                /* safe default: a dropped client leaves its slot at the memset 0, which would decode to
+                   act=0 (UI_SABOTAGE_FACT) on planet 0 -- a real factory sabotage. Default to NONE and
+                   only trust the slots when the whole batch succeeded (rc == 0 => every player answered). */
+                out[k].act = -1; out[k].planet = PLANET_NONE;
+                if (rc != 0) { continue; }
                 for (int j = 0; j < np; ++j) { if (players[j] == a) { pidx = j; break; } }
                 if (pidx >= 0) {
                     memcpy(&out[k], resp + pidx * rlen + k * (int)sizeof(struct ui_spy_sab_dec_s), sizeof(struct ui_spy_sab_dec_s));
-                } else {
-                    out[k].act = -1; out[k].planet = PLANET_NONE;
                 }
             }
         }
@@ -666,9 +669,12 @@ bool ui_spy_steal_batch(struct game_s *g, const struct ui_spy_steal_target_s *ta
             memset(resp, 0, sizeof(resp));
             memcpy(req, &n32, 4);
             memcpy(req + 4, targets, (size_t)n * sizeof(struct ui_spy_steal_target_s));
-            g_mp_decision_hook_multi(players, np, MP_DEC_SPY_STEAL_BATCH, req, 4 + n * (int)sizeof(struct ui_spy_steal_target_s), (uint8_t *)resp, rlen);
+            int rc = g_mp_decision_hook_multi(players, np, MP_DEC_SPY_STEAL_BATCH, req, 4 + n * (int)sizeof(struct ui_spy_steal_target_s), (uint8_t *)resp, rlen);
             for (int k = 0; k < n; ++k) {
                 int a = targets[k].spy, pidx = -1;
+                /* -1 = steal nothing. A dropped client leaves its slot at 0 (= field 0, a real steal);
+                   only trust the slots when the whole batch succeeded (rc == 0 => every player answered). */
+                if (rc != 0) { out[k] = -1; continue; }
                 for (int j = 0; j < np; ++j) { if (players[j] == a) { pidx = j; break; } }
                 out[k] = (pidx >= 0) ? resp[pidx * n + k] : -1;
             }
