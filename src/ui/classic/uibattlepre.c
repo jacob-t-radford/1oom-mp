@@ -71,6 +71,28 @@ static void battle_pre_free_data(struct ui_battle_pre_data_s *d)
     ui_gmap_basic_shutdown(d->gmapctx);
 }
 
+/* 1oom-mp: the autoresolve/MP prompt's choice buttons. Drawn as solid gray beveled boxes (the game's
+   textbox recipe -> no transparency) in the draw cb, and clicked via matching invisible mouseareas
+   added in ui_battle_pre. A 2x2 grid in the lower panel; labels in the small button font so the full
+   words fit. */
+enum { BP_BTN_AUTO, BP_BTN_RETREAT, BP_BTN_AUTOALL, BP_BTN_CONT, BP_BTN_NUM };
+static const struct { int16_t x0, y0, x1, y1; const char *label; } s_bp_btn[BP_BTN_NUM] = {
+    { 224, 145, 263, 159, "Auto" },
+    { 265, 145, 304, 159, "Retreat" },
+    { 224, 161, 263, 175, "Auto All" },
+    { 265, 161, 304, 175, "Continue" },
+};
+static void bp_draw_choice_buttons(void)
+{
+    for (int b = 0; b < BP_BTN_NUM; ++b) {
+        int x0 = s_bp_btn[b].x0, y0 = s_bp_btn[b].y0, x1 = s_bp_btn[b].x1, y1 = s_bp_btn[b].y1;
+        ui_draw_box_fill(x0 + 2, y0 + 2, x1 - 2, y1 - 2, colortbl_textbox, 0, 5, 1, 0x37, ui_scale);
+        ui_draw_box2(x0, y0, x1, y1, 0x7, 0x10, 0x13, 0x12, ui_scale);
+        lbxfont_select(2, 6, 0, 3);
+        lbxfont_print_str_center((x0 + x1) / 2, (y0 + y1) / 2 - 4, s_bp_btn[b].label, UI_SCREEN_W, ui_scale);
+    }
+}
+
 static void ui_battle_pre_draw_cb(void *vptr)
 {
     struct ui_battle_pre_data_s *d = vptr;
@@ -160,7 +182,9 @@ static void ui_battle_pre_draw_cb(void *vptr)
             y += 8;
             lbxfont_print_str_center(267, y, buf, UI_SCREEN_W, ui_scale);
         }
-        /* Auto All is now a real button (added in ui_battle_pre), no longer a loose text label here */
+        if (d->party_winner < 0) { /* a battle still to fight -> show the choice buttons */
+            bp_draw_choice_buttons();
+        }
     }
 }
 
@@ -199,12 +223,11 @@ ui_battle_autoresolve_t ui_battle_pre(struct game_s *g, const struct battle_s *b
     }
     uiobj_table_clear();
     if ((ui_space_combat_autoresolve || ui_mp_active) && (winner == SIDE_NONE)) {
-        /* prompt with choices: one matching gray button (design-screen blank + a text label) per
-           option, in a 2x2 grid, so Auto / Retreat / Auto All / Continue all look the same */
-        oi_auto    = uiobj_add_t0(224, 147, "Auto",     ui_data.gfx.design.blank, MOO_KEY_a);
-        oi_retreat = uiobj_add_t0(266, 147, "Retreat",  ui_data.gfx.design.blank, MOO_KEY_r);
-        oi_autoall = uiobj_add_t0(224, 163, "Auto All", ui_data.gfx.design.blank, MOO_KEY_l);
-        oi_cont    = uiobj_add_t0(266, 163, "Continue", ui_data.gfx.design.blank, MOO_KEY_c);
+        /* prompt with choices: invisible mouseareas matching the gray buttons drawn in the cb */
+        oi_auto    = uiobj_add_mousearea(s_bp_btn[BP_BTN_AUTO].x0,    s_bp_btn[BP_BTN_AUTO].y0,    s_bp_btn[BP_BTN_AUTO].x1,    s_bp_btn[BP_BTN_AUTO].y1,    MOO_KEY_a);
+        oi_retreat = uiobj_add_mousearea(s_bp_btn[BP_BTN_RETREAT].x0, s_bp_btn[BP_BTN_RETREAT].y0, s_bp_btn[BP_BTN_RETREAT].x1, s_bp_btn[BP_BTN_RETREAT].y1, MOO_KEY_r);
+        oi_autoall = uiobj_add_mousearea(s_bp_btn[BP_BTN_AUTOALL].x0, s_bp_btn[BP_BTN_AUTOALL].y0, s_bp_btn[BP_BTN_AUTOALL].x1, s_bp_btn[BP_BTN_AUTOALL].y1, MOO_KEY_l);
+        oi_cont    = uiobj_add_mousearea(s_bp_btn[BP_BTN_CONT].x0,    s_bp_btn[BP_BTN_CONT].y0,    s_bp_btn[BP_BTN_CONT].x1,    s_bp_btn[BP_BTN_CONT].y1,    MOO_KEY_c);
     } else {
         /* result screen / plain prompt: just the original Continue button */
         oi_cont = uiobj_add_t0(227, 163, "", d->gfx_contbutt, MOO_KEY_c);
