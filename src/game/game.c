@@ -904,6 +904,10 @@ static int s_mp_ground_n = 0;
 /* 1oom-mp: orbital bombings, same buffer+replay treatment as ground (concurrent across players). The
    planet snapshot is patched in at replay so ui_bomb_show sees the bomb-time owner, not a later one. */
 struct mp_bomb_item_s { int32_t attacker, owner, planet, popdmg, factdmg; uint8_t play_music, hide_other; planet_t psnap; };
+/* 1oom-mp: orbital bombings buffered as they stream in during resolution, replayed concurrently at the
+   next state load -- so the bomb phase never blocks one player on another's bombardment screens. */
+static struct mp_bomb_item_s s_mp_bomb[16];
+static int s_mp_bomb_n = 0;
 
 /* 1oom-mp: hysteresis for the "waiting for other players" banner. Counts consecutive on_wait ticks
    since the last relayed event; the banner only appears once this exceeds a threshold, so the brief
@@ -1010,17 +1014,12 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             resp[0] = ui_bomb_ask(g, bpi, bplanet, pop_inbound) ? 1 : 0;
             return 1;
         }
-        case MP_DEC_BOMB_SHOW: { /* render the bombing inline, right after its "bomb?" prompt, so each
-                                    planet shows its result before the next prompt (the server blocks on
-                                    this like it does on the prompt -- the price of seeing it in context) */
-            struct mp_bomb_item_s b;
+        case MP_DEC_BOMB_SHOW: { /* buffer the bombing result (instant ack, never blocks the server);
+                                    replayed concurrently at state load so both players' bombings play at
+                                    the same wall-clock time instead of one waiting on the other's screens */
             if (req_len < (int)sizeof(struct mp_bomb_item_s)) { return 0; }
-            memcpy(&b, req, sizeof(b));
-            if ((b.planet >= 0) && (b.planet < (int)g->galaxy_stars)) {
-                planet_t saved = g->planet[b.planet];
-                g->planet[b.planet] = b.psnap; /* bomb-time planet state (live owner may have flipped); restore after */
-                ui_bomb_show(g, mp_cl_player_id(), b.attacker, b.owner, (planet_id_t)b.planet, b.popdmg, b.factdmg, b.play_music != 0, b.hide_other != 0);
-                g->planet[b.planet] = saved;
+            if (s_mp_bomb_n < (int)(sizeof(s_mp_bomb) / sizeof(s_mp_bomb[0]))) {
+                memcpy(&s_mp_bomb[s_mp_bomb_n++], req, sizeof(struct mp_bomb_item_s));
             }
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
@@ -1353,7 +1352,18 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
         game_update_visibility(g);
         game_update_have_reserve_fuel(g);
         /* auto-resolved combat results are now shown inline (MP_DEC_COMBAT_REPORT), not consolidated here */
-        /* orbital bombings are now rendered inline (MP_DEC_BOMB_SHOW), so each plays right after its prompt */
+        if (s_mp_bomb_n > 0) { /* replay this client's orbital bombings concurrently with the other player's */
+            for (int i = 0; i < s_mp_bomb_n; ++i) {
+                struct mp_bomb_item_s *b = &s_mp_bomb[i];
+                planet_id_t pl = (planet_id_t)b->planet;
+                if (pl >= g->galaxy_stars) { continue; }
+                planet_t saved = g->planet[pl];
+                g->planet[pl] = b->psnap; /* bomb-time planet state; restore after rendering */
+                ui_bomb_show(g, mp_cl_player_id(), b->attacker, b->owner, pl, b->popdmg, b->factdmg, b->play_music != 0, b->hide_other != 0);
+                g->planet[pl] = saved;
+            }
+            s_mp_bomb_n = 0;
+        }
         if (s_mp_ground_n > 0) { /* replay this client's ground invasions; every player's client does its own at the same time, so they no longer block each other */
             for (int i = 0; i < s_mp_ground_n; ++i) { ui_ground(g, &s_mp_ground[i]); }
             s_mp_ground_n = 0;
