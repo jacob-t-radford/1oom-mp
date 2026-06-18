@@ -70,10 +70,15 @@ static void ui_mp_contact_incoming(struct game_s *g, player_id_t pi)
         s_mp_met_known[j] = met;
         if (first || !newly || !IS_HUMAN(g, j)) { continue; } /* AI first contact uses the AI audience relay */
         {   /* show the other leader + a greeting, like the AI's welcome */
+            static char contactbuf[192];
             struct audience_s au = {0};
             au.g = g; au.ph = pi; au.pa = j;
             ui_audience_start(&au);
-            au.buf = "Greetings. Our two empires have made contact.";
+            /* the other player's leader greets you; name their race for a bit of flavor */
+            lib_sprintf(contactbuf, sizeof(contactbuf),
+                        "So -- another empire reaches for these stars. We are the %s. Whether our meeting ends in alliance or in ash is for us both to decide.",
+                        game_str_tbl_races[g->eto[j].race]);
+            au.buf = contactbuf;
             ui_audience_show1(&au);
             ui_audience_end(&au);
         }
