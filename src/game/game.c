@@ -1244,6 +1244,20 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             ui_battle_action_t act;
             if ((req_len < (int)sizeof(struct battle_s)) || (resp_buflen < 1)) { return 0; }
             if (!s_mp_battle_uictx) { resp[0] = UI_BATTLE_ACT_AUTO; return 1; } /* no UI -> auto, don't crash */
+            {   /* 1oom-mp TEMP DEBUG (jerk-back): the interactive turn re-applies a full battle snapshot
+                   in a DIFFERENT path than the spectate stream (which logged clean). Log any ship this
+                   one repositions vs the displayed state -- a BACKWARD move = the jerk. Remove once found. */
+                const struct battle_s *snap = (const struct battle_s *)req;
+                int lim = (int)s_mp_battle.items_num;
+                if (lim >= BATTLE_ITEM_MAX) { lim = BATTLE_ITEM_MAX - 1; }
+                for (int it = 1; it <= lim; ++it) {
+                    if ((s_mp_battle.item[it].sx != snap->item[it].sx) || (s_mp_battle.item[it].sy != snap->item[it].sy)) {
+                        log_message("MP-JERKDBG: TURN snapshot moves item %d (%d,%d)->(%d,%d)\n", it,
+                                    (int)s_mp_battle.item[it].sx, (int)s_mp_battle.item[it].sy,
+                                    (int)snap->item[it].sx, (int)snap->item[it].sy);
+                    }
+                }
+            }
             memcpy(&s_mp_battle, req, sizeof(s_mp_battle));
             mp_battle_fixup(g, &s_mp_battle);
             s_mp_battle.uictx = s_mp_battle_uictx;
