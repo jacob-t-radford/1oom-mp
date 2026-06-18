@@ -65,6 +65,7 @@ enum mp_decision_e {
     MP_DEC_COMBAT_REPORT = 16, /* one auto-resolved space battle's result (req: struct ui_combat_report_s; resp: 1 byte ack). Client buffers + shows the consolidated report at state load. */
     MP_DEC_BOMB_BATCH    = 17, /* parallel batched bombing: req = this turn's full target list (int32 n + ui_bomb_target_s[n]); fanned out to all human attackers at once. Each client prompts for ITS targets and returns a u64 yes/no bitmask (bit k = bomb targets[k]). */
     MP_DEC_SPY_SABOTAGE_BATCH = 18, /* parallel batched sabotage: req = int32 n + ui_spy_sab_target_s[n]; fanned out to all human spymasters at once. Each client prompts ui_spy_sabotage_ask for ITS targets and returns ui_spy_sab_dec_s[n] (act+planet per opportunity, only its own filled). */
+    MP_DEC_SPY_STEAL_BATCH = 19, /* parallel batched tech-steal: req = int32 n + ui_spy_steal_target_s[n] (spy/target/flags_field per opportunity); fanned out to all human spies at once. Each client prompts ui_spy_steal for ITS opportunities and returns int16_t field[n] (-1 = none, only its own filled). */
 };
 
 /* AUDIENCE relay subtypes: which ui_audience_* call the server is running on the human's behalf.

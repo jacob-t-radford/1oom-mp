@@ -216,6 +216,12 @@ restart:
     return selected;
 }
 
+bool ui_spy_steal_batch(struct game_s *g, const struct ui_spy_steal_target_s *targets, int n, int16_t *out)
+{
+    (void)g; (void)targets; (void)n; (void)out;
+    return false; /* single-player: caller falls back to the per-target ui_spy_steal */
+}
+
 void ui_spy_stolen(struct game_s *g, int pi, int spy, int field, uint8_t tech)
 {
     struct stolen_data_s d;

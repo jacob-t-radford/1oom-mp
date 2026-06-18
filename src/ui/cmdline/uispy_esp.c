@@ -67,6 +67,12 @@ int ui_spy_steal(struct game_s *g, int spy, int target, uint8_t flags_field)
     return v;
 }
 
+bool ui_spy_steal_batch(struct game_s *g, const struct ui_spy_steal_target_s *targets, int n, int16_t *out)
+{
+    (void)g; (void)targets; (void)n; (void)out;
+    return false; /* single-player: caller falls back to the per-target ui_spy_steal */
+}
+
 void ui_spy_stolen(struct game_s *g, int pi, int spy, int field, uint8_t tech)
 {
     const char *s;

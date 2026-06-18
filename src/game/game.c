@@ -1072,6 +1072,29 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
                 return rlen;
             }
         }
+        case MP_DEC_SPY_STEAL_BATCH: { /* parallel batched tech-steal: prompt ui_spy_steal for MY
+                                          opportunities in this turn's list and return int16_t field[n]
+                                          (only my own slots filled). Both players answer at once. */
+            int32_t n;
+            int me = mp_cl_player_id();
+            if (req_len < 4) { return 0; }
+            memcpy(&n, req, 4);
+            if ((n < 0) || (n > 32)) { return 0; }
+            if (req_len < (int)(4 + n * (int)sizeof(struct ui_spy_steal_target_s))) { return 0; }
+            {
+                const struct ui_spy_steal_target_s *tgt = (const struct ui_spy_steal_target_s *)(req + 4);
+                int rlen = n * (int)sizeof(int16_t);
+                if (resp_buflen < rlen) { return 0; }
+                for (int k = 0; k < n; ++k) {
+                    int16_t field = -1;
+                    if ((int)tgt[k].spy == me) {
+                        field = (int16_t)ui_spy_steal(g, me, tgt[k].target, tgt[k].flags);
+                    }
+                    memcpy(resp + k * (int)sizeof(int16_t), &field, sizeof(field));
+                }
+                return rlen;
+            }
+        }
         case MP_DEC_GROUND: { /* buffer a ground-invasion result; replayed at state load so independent invasions play concurrently, not in series */
             if (req_len < (int)sizeof(struct ground_s)) { return 0; }
             if (s_mp_ground_n < (int)(sizeof(s_mp_ground) / sizeof(s_mp_ground[0]))) {

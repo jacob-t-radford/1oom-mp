@@ -621,6 +621,43 @@ bool ui_spy_sabotage_batch(struct game_s *g, const struct ui_spy_sab_target_s *t
     return true;
 }
 
+bool ui_spy_steal_batch(struct game_s *g, const struct ui_spy_steal_target_s *targets, int n, int16_t *out)
+{
+    /* 1oom-mp: fan the whole turn's steal-opportunity list out to every human spy AT ONCE (parallel)
+       so both players pick which tech to steal simultaneously rather than one-at-a-time. Each client
+       answers for ITS own opportunities (chosen field) and returns an int16_t[n] array; demux
+       opportunity k from its spy-player's slot. Mirrors ui_spy_sabotage_batch. */
+    if ((!g_mp_decision_hook_multi) || (n <= 0)) { return false; }
+    if (n > 32) { n = 32; }
+    {
+        int players[8], np = 0;
+        for (int k = 0; k < n; ++k) {
+            int a = targets[k].spy;
+            bool dup = false;
+            if ((a < 0) || (a >= (int)g->players) || (!IS_HUMAN(g, a))) { continue; }
+            for (int j = 0; j < np; ++j) { if (players[j] == a) { dup = true; break; } }
+            if ((!dup) && (np < 8)) { players[np++] = a; }
+        }
+        if (np == 0) { return false; }
+        {
+            static uint8_t req[4 + 32 * sizeof(struct ui_spy_steal_target_s)];
+            static int16_t resp[8 * 32];
+            int32_t n32 = n;
+            int rlen = n * (int)sizeof(int16_t);
+            memset(resp, 0, sizeof(resp));
+            memcpy(req, &n32, 4);
+            memcpy(req + 4, targets, (size_t)n * sizeof(struct ui_spy_steal_target_s));
+            g_mp_decision_hook_multi(players, np, MP_DEC_SPY_STEAL_BATCH, req, 4 + n * (int)sizeof(struct ui_spy_steal_target_s), (uint8_t *)resp, rlen);
+            for (int k = 0; k < n; ++k) {
+                int a = targets[k].spy, pidx = -1;
+                for (int j = 0; j < np; ++j) { if (players[j] == a) { pidx = j; break; } }
+                out[k] = (pidx >= 0) ? resp[pidx * n + k] : -1;
+            }
+        }
+    }
+    return true;
+}
+
 void ui_turn_pre(const struct game_s *g)
 {
 }

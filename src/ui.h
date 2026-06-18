@@ -243,6 +243,12 @@ struct ui_spy_sab_dec_s { int16_t act; uint16_t planet; };
    PARALLEL and fills out[k] (act+planet) for each; returns true. In single-player it returns false
    and the caller falls back to the per-target ui_spy_sabotage_ask. */
 extern bool ui_spy_sabotage_batch(struct game_s *g, const struct ui_spy_sab_target_s *targets, int n, struct ui_spy_sab_dec_s *out);
+/* 1oom-mp: one human spy's tech-steal opportunity (spy vs target) + the available-fields bitmask. */
+struct ui_spy_steal_target_s { uint8_t spy; uint8_t target; uint8_t flags; };
+/* Ask about all listed steal opportunities at once. In MP, fans out to every human spy IN PARALLEL and
+   fills out[k] (chosen tech field, -1 = none) for each; returns true. In single-player it returns false
+   and the caller falls back to the per-target ui_spy_steal. */
+extern bool ui_spy_steal_batch(struct game_s *g, const struct ui_spy_steal_target_s *targets, int n, int16_t *out);
 
 extern void ui_turn_pre(const struct game_s *g);
 extern void ui_turn_msg(struct game_s *g, int pi, const char *str);

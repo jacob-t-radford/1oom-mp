@@ -562,9 +562,94 @@ void game_spy_turn(struct game_s *g, struct spy_turn_s *st)
     }
 }
 
+/* 1oom-mp: parallel batched tech-steal. The available-fields bitmask (flags_field) is produced by an
+   RNG-driven scan (game_spy_esp_sub1, which consumes g->seed) and the matching tbl_tech[] feeds the
+   apply. So we snapshot the seed, run that scan once per (spy,target) up front to build every human
+   spy's opportunity + flags + tbl_tech, fan the flags out to all players IN PARALLEL (one round-trip),
+   cache the chosen field + tbl_tech, and let the loop below read the cache WITHOUT re-running sub1
+   (re-running would double-consume the seed). If the relay is absent (single-player) we restore the
+   seed and fall back to the inline path, so SP behaviour is byte-identical. The cache records EVERY
+   spied opportunity (even flags==0, as field=-1) so the loop never re-runs sub1 in MP. */
+static struct { uint8_t spy, target; int16_t field; uint8_t tbl_tech[TECH_FIELD_NUM]; uint8_t ready; } s_esp_dec[32];
+static int s_esp_dec_n = 0;
+static bool s_esp_dec_ready = false;
+
+static bool game_spy_esp_lookup(player_id_t spy, player_id_t target, int *field, uint8_t *tbl_tech)
+{
+    for (int k = 0; k < s_esp_dec_n; ++k) {
+        if ((s_esp_dec[k].spy == (uint8_t)spy) && (s_esp_dec[k].target == (uint8_t)target) && s_esp_dec[k].ready) {
+            *field = s_esp_dec[k].field;
+            memcpy(tbl_tech, s_esp_dec[k].tbl_tech, TECH_FIELD_NUM);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void game_spy_esp_collect(struct game_s *g, struct spy_turn_s *st)
+{
+    struct ui_spy_steal_target_s tgt[32];
+    int batch_idx[32];
+    int nb = 0, nc = 0;
+    uint32_t saved_seed = g->seed;
+    s_esp_dec_n = 0;
+    s_esp_dec_ready = false;
+    for (player_id_t spy = PLAYER_0; spy < g->players; ++spy) {
+        struct spy_esp_s s[1];
+        if (IS_AI(g, spy)) { continue; }
+        s->spy = spy;
+        for (player_id_t target = PLAYER_0; target < g->players; ++target) {
+            if ((spy != target) && (g->evn.spied_num[target][spy] > 0) && (nc < 32)) {
+                uint8_t tbl_tech[TECH_FIELD_NUM];
+                uint8_t flags_field = 0;
+                s->target = target;
+                for (int i = 0; i < TECH_FIELD_NUM; ++i) { tbl_tech[i] = 0; }
+                for (int loops = 0; loops < 5; ++loops) {
+                    int num = game_spy_esp_sub1(g, s, 0, 0);
+                    game_spy_esp_sub5(s, st->tbl_rmax[target][spy]);
+                    for (int i = 0; i < num; ++i) {
+                        int field = s->tbl_field[i];
+                        if (tbl_tech[field] == 0) {
+                            tbl_tech[field] = s->tbl_tech2[i];
+                            flags_field |= (1 << field);
+                        }
+                    }
+                }
+                s_esp_dec[nc].spy = (uint8_t)spy;
+                s_esp_dec[nc].target = (uint8_t)target;
+                s_esp_dec[nc].field = -1;
+                memcpy(s_esp_dec[nc].tbl_tech, tbl_tech, TECH_FIELD_NUM);
+                s_esp_dec[nc].ready = 1;
+                if ((flags_field != 0) && (nb < 32)) {
+                    tgt[nb].spy = (uint8_t)spy;
+                    tgt[nb].target = (uint8_t)target;
+                    tgt[nb].flags = flags_field;
+                    batch_idx[nb] = nc;
+                    ++nb;
+                }
+                ++nc;
+            }
+        }
+    }
+    if (nb == 0) { g->seed = saved_seed; return; } /* nothing to actually decide; rewind + inline */
+    {
+        int16_t dec[32];
+        if (ui_spy_steal_batch(g, tgt, nb, dec)) {
+            for (int b = 0; b < nb; ++b) { s_esp_dec[batch_idx[b]].field = dec[b]; }
+            s_esp_dec_n = nc;
+            s_esp_dec_ready = true;
+            /* keep the consumed seed: the loop below reads the cache and never re-runs sub1 */
+        } else {
+            g->seed = saved_seed; /* single-player: rewind, fall back to inline ui_spy_steal */
+        }
+    }
+}
+
 void game_spy_esp_human(struct game_s *g, struct spy_turn_s *st)
 {
-    /* FIXME refactor for multiplayer */
+    /* 1oom-mp: gather every human spy's steal choice up front + in parallel (see game_spy_esp_collect),
+       then apply below reading the cache; single-player falls back to the inline ui_spy_steal path. */
+    game_spy_esp_collect(g, st);
     for (player_id_t spy = PLAYER_0; spy < g->players; ++spy) {
         struct spy_esp_s s[1];
         g->evn.newtech[spy].num = 0;
@@ -575,43 +660,47 @@ void game_spy_esp_human(struct game_s *g, struct spy_turn_s *st)
         for (player_id_t target = PLAYER_0; target < g->players; ++target) {
             if ((spy != target) && (g->evn.spied_num[target][spy] > 0)) {
                 uint8_t tbl_tech[TECH_FIELD_NUM];
-                uint8_t flags_field;
+                int field;
+                bool have_dec = false;
                 s->target = target;
-                flags_field = 0;
-                for (int i = 0; i < TECH_FIELD_NUM; ++i) {
-                    tbl_tech[i] = 0;
+                if (s_esp_dec_ready) {
+                    have_dec = game_spy_esp_lookup(spy, target, &field, tbl_tech);
                 }
-                for (int loops = 0; loops < 5; ++loops) {
-                    int num;
-                    num = game_spy_esp_sub1(g, s, 0, 0);
-                    game_spy_esp_sub5(s, st->tbl_rmax[target][spy]);
-                    for (int i = 0; i < num; ++i) {
-                        int field;
-                        field = s->tbl_field[i];
-                        if (tbl_tech[field] == 0) {
-                            tbl_tech[field] = s->tbl_tech2[i];
-                            flags_field |= (1 << field);
+                if (!have_dec) {
+                    /* single-player / fallback: compute available fields + prompt inline */
+                    uint8_t flags_field = 0;
+                    for (int i = 0; i < TECH_FIELD_NUM; ++i) {
+                        tbl_tech[i] = 0;
+                    }
+                    for (int loops = 0; loops < 5; ++loops) {
+                        int num;
+                        num = game_spy_esp_sub1(g, s, 0, 0);
+                        game_spy_esp_sub5(s, st->tbl_rmax[target][spy]);
+                        for (int i = 0; i < num; ++i) {
+                            int f;
+                            f = s->tbl_field[i];
+                            if (tbl_tech[f] == 0) {
+                                tbl_tech[f] = s->tbl_tech2[i];
+                                flags_field |= (1 << f);
+                            }
                         }
                     }
+                    field = (flags_field != 0) ? ui_spy_steal(g, spy, target, flags_field) : -1;
                 }
-                if (flags_field != 0) {
-                    int field;
-                    field = ui_spy_steal(g, spy, target, flags_field);
-                    if ((field >= 0) && (field < TECH_FIELD_NUM)) {
-                        bool framed;
-                        planet_id_t planet;
-                        planet = game_planet_get_random(g, target);
-                        framed = (g->evn.spied_spy[target][spy] == -1);
-                        g->evn.stolen_field[target][spy] = field;
-                        g->evn.stolen_tech[target][spy] = tbl_tech[field];
-                        game_tech_get_new(g, spy, field, tbl_tech[field], TECHSOURCE_SPY, planet, target, framed);
-                        if (!framed) {
-                            game_diplo_act(g, -g->evn.spied_spy[target][spy], spy, target, 4, 0, field);
-                        }
-                        game_tech_finish_new(g, spy);
-                        ui_newtech(g, spy);
-                        g->evn.newtech[spy].num = 0;
+                if ((field >= 0) && (field < TECH_FIELD_NUM)) {
+                    bool framed;
+                    planet_id_t planet;
+                    planet = game_planet_get_random(g, target);
+                    framed = (g->evn.spied_spy[target][spy] == -1);
+                    g->evn.stolen_field[target][spy] = field;
+                    g->evn.stolen_tech[target][spy] = tbl_tech[field];
+                    game_tech_get_new(g, spy, field, tbl_tech[field], TECHSOURCE_SPY, planet, target, framed);
+                    if (!framed) {
+                        game_diplo_act(g, -g->evn.spied_spy[target][spy], spy, target, 4, 0, field);
                     }
+                    game_tech_finish_new(g, spy);
+                    ui_newtech(g, spy);
+                    g->evn.newtech[spy].num = 0;
                 }
             }
         }
