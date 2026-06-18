@@ -510,6 +510,10 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         lob.num_ai = (num_clients < MP_MAX_PLAYERS) ? 1 : 0; /* default 1 AI if there's room */
         lob.galaxy_size = 1;                                 /* default medium */
         lob.difficulty = 2;                                  /* default average (DIFFICULTY_AVERAGE) */
+        { const char *e; /* host-launch overrides for the lobby defaults (still editable in the lobby UI) */
+          if ((e = getenv("MP_GSIZE"))) { int v = atoi(e); if ((v >= 0) && (v <= 3)) { lob.galaxy_size = (uint8_t)v; } }
+          if ((e = getenv("MP_DIFF")))  { int v = atoi(e); if ((v >= 0) && (v <= 4)) { lob.difficulty = (uint8_t)v; } }
+          if ((e = getenv("MP_AI")))    { int v = atoi(e); if ((v >= 0) && (v <= MP_MAX_PLAYERS - num_clients)) { lob.num_ai = (uint8_t)v; } } }
         for (int i = 0; i < MP_MAX_PLAYERS; ++i) {
             lob.slot[i].race = 0xff; lob.slot[i].banner = 0xff; lob.slot[i].ready = 0;
             lob.slot[i].connected = (i < num_clients) ? 1 : 0; /* AI slots start race-unset (= random) */
