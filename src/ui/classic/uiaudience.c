@@ -379,7 +379,21 @@ int16_t ui_audience_ask3(struct audience_s *au)
 
 int16_t ui_audience_ask4(struct audience_s *au)
 {
-    return ui_audience_ask_do(au, 139, ui_audience_draw_cb4);
+    /* 1oom-mp: the options were pinned at a fixed Y=139 while the message (drawn at Y=136 by
+       draw_cb4) wraps downward -- a 2-line prompt (e.g. the P2P "They request an audience...")
+       landed on top of the responses. Measure the wrapped message height like ask2b/ask3 and put
+       the options just below it instead. */
+    int strh = 0;
+    if (au->buf) {
+        lbxfont_select(3, 1, 0, 0);
+        lbxfont_set_gap_h(1);
+        strh = lbxfont_calc_split_str_h(245, au->buf);
+        if (strh > 39) {
+            lbxfont_set_gap_h(0);
+            strh = lbxfont_calc_split_str_h(245, au->buf);
+        }
+    }
+    return ui_audience_ask_do(au, strh ? (139 + strh) : 139, ui_audience_draw_cb4);
 }
 
 void ui_audience_newtech(struct audience_s *au, int pi)

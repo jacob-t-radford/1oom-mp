@@ -791,7 +791,7 @@ void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s 
 static void mp_election_relay(struct election_s *el, int kind)
 {
     if (!g_mp_spectate_hook || !el || !el->g) { return; }
-    uint8_t buf[1 + sizeof(struct election_s)];
+    uint8_t buf[1 + sizeof(struct election_s) + 256];
     int len = 1;
     buf[0] = (uint8_t)kind;
     if (kind == UI_MP_SPEC_COUNCIL) {
@@ -799,6 +799,18 @@ static void mp_election_relay(struct election_s *el, int kind)
         e.g = NULL; e.uictx = NULL; e.buf = NULL; e.str = NULL;
         memcpy(buf + 1, &e, sizeof(e));
         len = 1 + (int)sizeof(e);
+        /* 1oom-mp: el->str (the chamber announcement / vote tally / "X is now emperor" / "no
+           majority" result banner) is a pointer into server memory, so the zeroed copy above leaves
+           the client with nothing to draw -- no council text ever shows. Append the TEXT so the
+           client can re-point el->str at its own copy (see mp_if_on_spectate). */
+        {
+            const char *s = el->str ? el->str : "";
+            int slen = (int)strlen(s);
+            if (slen > 255) { slen = 255; }
+            memcpy(buf + len, s, (size_t)slen);
+            buf[len + slen] = 0;
+            len += slen + 1;
+        }
     }
     for (player_id_t p = PLAYER_0; p < el->g->players; ++p) {
         if (IS_HUMAN(el->g, p)) { g_mp_spectate_hook(p, buf, len); }

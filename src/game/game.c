@@ -934,6 +934,7 @@ static int s_mp_wait_quiet = 0;
 static struct election_s s_mp_election;
 static bool s_mp_council_active = false;
 static void *s_mp_election_ctx = NULL;
+static char s_mp_election_str[256]; /* 1oom-mp: client copy of the streamed council announcement text (el->str is a server pointer; the bytes ride after the struct -- see mp_if_on_spectate) */
 
 static void mp_council_ctx_ensure(struct game_s *g) {
     if (!s_mp_election_ctx) {
@@ -1357,9 +1358,23 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
     /* 1oom-mp: shared council frames (relayed to ALL humans, even non-combatants) -- handle before
        the battle gate, since a council watcher isn't in a battle. */
     if ((len >= 1) && (data[0] == UI_MP_SPEC_COUNCIL_END)) { mp_council_ctx_free(); return; }
-    if ((len == 1 + (int)sizeof(struct election_s)) && (data[0] == UI_MP_SPEC_COUNCIL)) {
+    if ((len >= 1 + (int)sizeof(struct election_s)) && (data[0] == UI_MP_SPEC_COUNCIL)) {
         memcpy(&s_mp_election, data + 1, sizeof(s_mp_election));
-        s_mp_election.g = g; s_mp_election.buf = NULL; s_mp_election.str = NULL;
+        s_mp_election.g = g; s_mp_election.buf = NULL;
+        /* 1oom-mp: the announcement text rides after the struct (el->str was a server pointer, zeroed
+           in transport). Copy it into our own buffer and re-point str, so the council banner -- incl.
+           the "X is now emperor" / "no 2/3 majority" result -- actually renders. */
+        {
+            int textlen = len - 1 - (int)sizeof(struct election_s);
+            if (textlen > 0) {
+                if (textlen > (int)sizeof(s_mp_election_str) - 1) { textlen = (int)sizeof(s_mp_election_str) - 1; }
+                memcpy(s_mp_election_str, data + 1 + sizeof(struct election_s), (size_t)textlen);
+                s_mp_election_str[textlen] = 0;
+                s_mp_election.str = (s_mp_election_str[0] != 0) ? s_mp_election_str : NULL;
+            } else {
+                s_mp_election.str = NULL;
+            }
+        }
         mp_council_ctx_ensure(g);
         s_mp_election.uictx = s_mp_election_ctx; /* re-point: the memcpy above zeroed it */
         s_mp_council_active = true;
