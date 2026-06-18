@@ -1430,6 +1430,14 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
             int16_t mty = (int16_t)(data[9] | (data[10] << 8));
             if ((mi >= 0) && (mi < BATTLE_MISSILE_MAX)) {
                 memcpy(&s_mp_battle.missile[mi], data + 11, sizeof(struct battle_missile_s));
+                {   /* JERKDBG: is the missile flying to where the target ship actually is? */
+                    int tgt = (int)s_mp_battle.missile[mi].target;
+                    if ((tgt >= 0) && (tgt < BATTLE_ITEM_MAX)) {
+                        log_message("MP-JERKDBG: MISSILE %d dest_px(%d,%d) vs target item %d px(%d,%d)\n",
+                                    mi, (int)mtx, (int)mty, tgt,
+                                    (int)s_mp_battle.item[tgt].sx * 32, (int)s_mp_battle.item[tgt].sy * 24);
+                    }
+                }
                 s_mp_battle.uictx = s_mp_battle_uictx;
                 ui_battle_draw_missile(&s_mp_battle, mi, mx, my, mtx, mty);
             }
@@ -1466,7 +1474,16 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
                                            }
                                            ui_mp_battle_glide(&s_mp_battle, a[0], a[1], a[2]);
                                        } break;
-            case UI_MP_SPEC_DAMAGE:    if (n >= 5) { ui_battle_draw_damage(&s_mp_battle, a[0], a[1], a[2], (uint32_t)(uint16_t)a[3] | ((uint32_t)(uint16_t)a[4] << 16)); } break;
+            case UI_MP_SPEC_DAMAGE:    if (n >= 5) {
+                                           /* JERKDBG: does the hit/shield draw at the ship's actual spot,
+                                              or a stale one? a[1],a[2] are the hit coords; compare to the
+                                              target ship's pixel position. A mismatch = the visible jerk. */
+                                           if ((a[0] >= 0) && (a[0] < BATTLE_ITEM_MAX)) {
+                                               log_message("MP-JERKDBG: DAMAGE item %d coords(%d,%d) vs ship px(%d,%d)\n",
+                                                           a[0], a[1], a[2], (int)s_mp_battle.item[a[0]].sx * 32, (int)s_mp_battle.item[a[0]].sy * 24);
+                                           }
+                                           ui_battle_draw_damage(&s_mp_battle, a[0], a[1], a[2], (uint32_t)(uint16_t)a[3] | ((uint32_t)(uint16_t)a[4] << 16));
+                                       } break;
             default: break;
         }
     }
