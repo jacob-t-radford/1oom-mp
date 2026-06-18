@@ -170,6 +170,7 @@ static void ui_audience_draw_cb1(void *vptr)
     if (au->mode != 1) {
         ui_audience_draw_race(d);
     }
+    if (ui_mp_active) { lbxgfx_set_frame_0(d->gfx_emperor); } /* MP: the relayed step-by-step render makes the bg animation jerky -> keep it static so the area around the alien doesn't flicker */
     lbxgfx_draw_frame(0, -2, d->gfx_emperor, UI_SCREEN_W, ui_scale);
     lbxgfx_draw_frame(0, 0, d->gfx_border, UI_SCREEN_W, ui_scale);
     if ((au->mode >= 0) && (au->mode <= 2)) {
@@ -186,6 +187,7 @@ static void ui_audience_draw_cb2(void *vptr)
     struct audience_s *au = d->au;
     int strh;
     ui_audience_draw_race(d);
+    if (ui_mp_active) { lbxgfx_set_frame_0(d->gfx_emperor); } /* MP: the relayed step-by-step render makes the bg animation jerky -> keep it static so the area around the alien doesn't flicker */
     lbxgfx_draw_frame(0, -2, d->gfx_emperor, UI_SCREEN_W, ui_scale);
     lbxgfx_draw_frame(0, 0, d->gfx_border, UI_SCREEN_W, ui_scale);
     lbxfont_select(3, 1, 0, 0);
@@ -203,6 +205,7 @@ static void ui_audience_draw_cb3(void *vptr)
     struct audience_data_s *d = vptr;
     struct audience_s *au = d->au;
     ui_audience_draw_race(d);
+    if (ui_mp_active) { lbxgfx_set_frame_0(d->gfx_emperor); } /* MP: the relayed step-by-step render makes the bg animation jerky -> keep it static so the area around the alien doesn't flicker */
     lbxgfx_draw_frame(0, -2, d->gfx_emperor, UI_SCREEN_W, ui_scale);
     lbxgfx_draw_frame(0, 0, d->gfx_border, UI_SCREEN_W, ui_scale);
     lbxfont_select(3, 2, 1, 0);
@@ -217,6 +220,7 @@ static void ui_audience_draw_cb4(void *vptr)    /* FIXME combine with cb3 and/or
     struct audience_s *au = d->au;
     int strh;
     ui_audience_draw_race(d);
+    if (ui_mp_active) { lbxgfx_set_frame_0(d->gfx_emperor); } /* MP: the relayed step-by-step render makes the bg animation jerky -> keep it static so the area around the alien doesn't flicker */
     lbxgfx_draw_frame(0, -2, d->gfx_emperor, UI_SCREEN_W, ui_scale);
     lbxgfx_draw_frame(0, 0, d->gfx_border, UI_SCREEN_W, ui_scale);
     lbxfont_select(3, 1, 0, 0);

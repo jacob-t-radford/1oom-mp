@@ -905,9 +905,10 @@ static int s_mp_ground_n = 0;
    planet snapshot is patched in at replay so ui_bomb_show sees the bomb-time owner, not a later one. */
 struct mp_bomb_item_s { int32_t attacker, owner, planet, popdmg, factdmg; uint8_t play_music, hide_other; planet_t psnap; };
 
-/* 1oom-mp: auto-resolved space-battle results, shown as one consolidated combat report at state load */
-static struct ui_combat_report_s s_mp_report[16];
-static int s_mp_report_n = 0;
+/* 1oom-mp: hysteresis for the "waiting for other players" banner. Counts consecutive on_wait ticks
+   since the last relayed event; the banner only appears once this exceeds a threshold, so the brief
+   gaps between events don't flash it on and off. Reset to 0 on every relayed decision. */
+static int s_mp_wait_quiet = 0;
 
 /* 1oom-mp: shared synchronous council view. The server streams the council chamber (election_s) to
    ALL humans (UI_MP_SPEC_COUNCIL), so everyone watches the votes instead of a black/banner screen.
@@ -965,7 +966,11 @@ static void mp_if_on_wait(void *ctx, int reason) {
         return;
     }
     if (s_mp_audience_uictx) { ui_mp_wait(MP_WAIT_BATTLE); return; } /* mid AI-audience: keep its screen, just pump */
-    ui_mp_wait(reason);
+    if (++s_mp_wait_quiet < 700) {
+        ui_mp_wait(MP_WAIT_BATTLE); /* brief gap between relayed events: just pump, keep the screen up (no banner flash) */
+    } else {
+        ui_mp_wait(reason); /* sustained wait -> show the banner */
+    }
 }
 
 /* interactive combat: the client renders a battle from the server's streamed
@@ -992,6 +997,7 @@ static void mp_battle_fixup(struct game_s *g, struct battle_s *bt) {
    Dispatches by type to the matching real UI; returns the response byte length. */
 static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int req_len, uint8_t *resp, int resp_buflen) {
     struct game_s *g = (struct game_s *)ctx;
+    s_mp_wait_quiet = 0; /* a relayed event just arrived -> hold off the "waiting" banner briefly (hysteresis) */
     switch (dtype) {
         case MP_DEC_PING: /* synthetic round-trip self-test: return req[0]+1 */
             if (resp_buflen >= 1) { resp[0] = (req_len > 0) ? (uint8_t)(req[0] + 1) : 0x42; return 1; }
@@ -1067,11 +1073,13 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
-        case MP_DEC_COMBAT_REPORT: { /* buffer one auto-resolved battle's result; shown in the consolidated report at state load */
-            if (req_len < (int)sizeof(struct ui_combat_report_s)) { return 0; }
-            if (s_mp_report_n < (int)(sizeof(s_mp_report) / sizeof(s_mp_report[0]))) {
-                memcpy(&s_mp_report[s_mp_report_n++], req, sizeof(struct ui_combat_report_s));
-            }
+        case MP_DEC_COMBAT_REPORT: { /* show this auto-resolved battle's result inline, right after the
+                                        battle, instead of holding it to end-of-turn (so you don't wait
+                                        on the other player to see your own outcome) */
+            struct ui_combat_report_s rep;
+            if (req_len < (int)sizeof(rep)) { return 0; }
+            memcpy(&rep, req, sizeof(rep));
+            ui_combat_report(g, mp_cl_player_id(), &rep, 1);
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
@@ -1324,10 +1332,7 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
         game_update_within_range(g);
         game_update_visibility(g);
         game_update_have_reserve_fuel(g);
-        if (s_mp_report_n > 0) { /* consolidated space-combat report for auto-resolved battles, before the bomb/ground recaps */
-            ui_combat_report(g, mp_cl_player_id(), s_mp_report, s_mp_report_n);
-            s_mp_report_n = 0;
-        }
+        /* auto-resolved combat results are now shown inline (MP_DEC_COMBAT_REPORT), not consolidated here */
         /* orbital bombings are now rendered inline (MP_DEC_BOMB_SHOW), so each plays right after its prompt */
         if (s_mp_ground_n > 0) { /* replay this client's ground invasions; every player's client does its own at the same time, so they no longer block each other */
             for (int i = 0; i < s_mp_ground_n; ++i) { ui_ground(g, &s_mp_ground[i]); }

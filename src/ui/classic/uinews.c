@@ -473,6 +473,10 @@ void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s 
         uiobj_unset_callback();
     }
     uiobj_table_clear();
-    ui_palette_fadeout_a_f_1();
-    ui_draw_finish_mode = 2;
+    /* shown inline during resolution -> restore the game palette (don't fade to black) so the next
+       turn-resolution screen renders correctly */
+    lbxpal_select(0, -1, 0);
+    lbxpal_set_update_range(0, 0xff);
+    lbxpal_build_colortables();
+    ui_draw_finish_mode = 0;
 }
