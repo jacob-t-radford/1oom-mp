@@ -479,6 +479,30 @@ void game_update_empire_contact(struct game_s *g)
             }
         }
     }
+    /* 1oom-mp shared diplomacy: a team pools its diplomatic contacts -- if any teammate has met an
+       empire, every human on the team has met them too (so you can negotiate with that empire and
+       see its worlds). Mutual, so the met empire also knows you (your ally introduced you). Looped
+       to a fixed point so contact spreads across the whole team; only human contact is widened. */
+    {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (player_id_t a = PLAYER_0; a < g->players; ++a) {
+                if (!IS_HUMAN(g, a)) { continue; }
+                for (player_id_t b = PLAYER_0; b < g->players; ++b) {
+                    if ((a == b) || (g->mp_team[a] == 0) || (g->mp_team[a] != g->mp_team[b])) { continue; }
+                    for (player_id_t x = PLAYER_0; x < g->players; ++x) {
+                        if ((x == a) || (x == b)) { continue; }
+                        if (BOOLVEC_IS1(g->eto[b].contact, x) && BOOLVEC_IS0(g->eto[a].contact, x)) {
+                            BOOLVEC_SET1(g->eto[a].contact, x);
+                            BOOLVEC_SET1(g->eto[x].contact, a);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 bool game_check_coord_is_visible(const struct game_s *g, player_id_t pi, int range, int x, int y)

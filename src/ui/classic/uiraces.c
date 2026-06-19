@@ -335,6 +335,7 @@ int ui_races(struct game_s *g, player_id_t api)
             }
         }
         for (int i = 0; i < (PLAYER_NUM - 1); ++i) {
+            if ((g->mp_team[api] != 0) && (g->mp_team[api] == g->mp_team[d.tbl_ei[i]])) { continue; } /* 1oom-mp: can't spy on a teammate */
             if (oi == oi_tbl_spy_minus[i]) {
                 if (kbd_is_modifier(MOO_MOD_ALT)) {
                     e->spying[d.tbl_ei[i]] = 0;
