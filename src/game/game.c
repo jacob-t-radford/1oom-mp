@@ -1451,6 +1451,7 @@ static int mp_if_apply_orders(void *ctx, int player_id, const uint8_t *buf, int 
 static void mp_if_on_state_loaded(void *ctx, int first) {
     struct game_s *g = (struct game_s *)ctx;
     mp_council_ctx_free(); /* a turn resolved: tear down any council view (safety net if COUNCIL_END was dropped) */
+    ui_mp_team_plan_reset(); /* a turn resolved: drop last turn's teammate overlay so stale fleets don't linger */
     if (first) {
         /* The client never ran game_aux_start, so the galaxy distance table is empty.
            Build it from the just-loaded star positions BEFORE game_start recomputes
@@ -1607,6 +1608,7 @@ void ui_mp_team_plan_tick(void) {
 }
 
 /* starmap overlay accessors. */
+void ui_mp_team_plan_reset(void) { for (int p = 0; p < MP_MAX_PLAYERS; ++p) { s_team_plan[p].active = false; } }
 bool ui_mp_team_plan_active(int player) {
     return (player >= 0) && (player < MP_MAX_PLAYERS) && s_team_plan[player].active;
 }
