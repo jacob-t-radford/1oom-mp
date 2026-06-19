@@ -1554,6 +1554,8 @@ struct mp_team_plan_s {
     uint16_t col[16];
     int sl_num;
     struct { uint16_t planet; planet_t p; } sl[PLANETS_MAX]; /* a teammate's owned worlds, full live state */
+    int orbit_num;
+    uint16_t orbit[PLANETS_MAX]; /* planets where this teammate has ships orbiting live this turn */
 };
 static struct mp_team_plan_s s_team_plan[MP_MAX_PLAYERS];
 static uint8_t *s_team_plan_buf = NULL;
@@ -1588,6 +1590,9 @@ static void mp_team_plan_recv(const void *data, int len) {
             pos += (int)sizeof(planet_t);
         }
     }
+    tp->orbit_num = 0;
+    TPGET(&n, 2);
+    for (int i = 0; i < (int)n; ++i) { uint16_t pli; TPGET(&pli, 2); if (tp->orbit_num < PLANETS_MAX) { tp->orbit[tp->orbit_num++] = pli; } }
     tp->active = true;
 #undef TPGET
     { static bool logged = false; if (!logged) { logged = true; log_message("MP: live team-plan relay active (first snapshot from P%d: %d fleets)\n", sender, tp->fleet_num); } }
@@ -1611,6 +1616,12 @@ void ui_mp_team_plan_tick(void) {
 void ui_mp_team_plan_reset(void) { for (int p = 0; p < MP_MAX_PLAYERS; ++p) { s_team_plan[p].active = false; } }
 bool ui_mp_team_plan_active(int player) {
     return (player >= 0) && (player < MP_MAX_PLAYERS) && s_team_plan[player].active;
+}
+/* true if this teammate's overlay is live AND they have ships orbiting planet_i right now. */
+bool ui_mp_team_plan_orbit_has(int player, int planet_i) {
+    if ((player < 0) || (player >= MP_MAX_PLAYERS) || !s_team_plan[player].active) { return false; }
+    for (int i = 0; i < s_team_plan[player].orbit_num; ++i) { if (s_team_plan[player].orbit[i] == planet_i) { return true; } }
+    return false;
 }
 int ui_mp_team_plan_fleet_total(void) {
     int n = 0;

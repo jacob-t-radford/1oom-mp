@@ -663,10 +663,16 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                 if (BOOLVEC_IS0(p->within_srange, d->api) && (i != d->api)) {
                     continue;
                 }
-                for (int j = 0; j < e->shipdesigns_num; ++j) {
-                    if (e->orbit[pi].ships[j]) {
-                        tblorbit[num++] = i;
-                        break;
+                if (ui_mp_team_plan_active(i)) {
+                    /* teammate's overlay is live: use their relayed orbit so a ship they just
+                       sent en-route this turn stops showing in orbit too (no phantom duplicate). */
+                    if (ui_mp_team_plan_orbit_has(i, pi)) { tblorbit[num++] = i; }
+                } else {
+                    for (int j = 0; j < e->shipdesigns_num; ++j) {
+                        if (e->orbit[pi].ships[j]) {
+                            tblorbit[num++] = i;
+                            break;
+                        }
                     }
                 }
             }

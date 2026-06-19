@@ -111,6 +111,7 @@ extern void ui_mp_diplo_handle(struct game_s *g, int pi);
 extern void ui_mp_team_plan_tick(void);
 extern void ui_mp_team_plan_reset(void);
 extern bool ui_mp_team_plan_active(int player);
+extern bool ui_mp_team_plan_orbit_has(int player, int planet_i);
 extern int ui_mp_team_plan_fleet_total(void);
 extern bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest);
 extern int ui_mp_team_plan_colonizer(int planet_i);

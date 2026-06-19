@@ -103,6 +103,18 @@ int game_mp_write_team_plan(const struct game_s *g, player_id_t pi, uint8_t *buf
         ++cnt;
     }
     memcpy(buf + cntpos, &cnt, 2);
+    /* planets where I have ships orbiting RIGHT NOW, so a teammate's map drops the orbit icon
+       for a ship I just sent en-route this turn (else it shows in orbit AND en-route at once). */
+    cntpos = pos; cnt = 0; PUT(&cnt, 2);
+    for (int i = 0; i < g->galaxy_stars; ++i) {
+        const fleet_orbit_t *o = &g->eto[pi].orbit[i];
+        int any = 0;
+        for (int j = 0; j < g->eto[pi].shipdesigns_num; ++j) { if (o->ships[j]) { any = 1; break; } }
+        if (!any) { continue; }
+        v = (uint16_t)i; PUT(&v, 2);
+        ++cnt;
+    }
+    memcpy(buf + cntpos, &cnt, 2);
     return pos;
 }
 
