@@ -784,6 +784,16 @@ void ui_news(struct game_s *g, struct news_s *ns)
         rq.num1 = (int32_t)ns->num1; rq.num2 = (int32_t)ns->num2;
         rq.race = (int32_t)ns->race; rq.planet_i = (int32_t)ns->planet_i;
         if ((!global) && (ns->planet_i < g->galaxy_stars)) { owner = g->planet[ns->planet_i].owner; }
+        /* 1oom-mp: the computer-virus report hits an empire's research, not one of its colonies, so it
+           carries no planet_i -- the lookup above misses, owner stays NONE, and it would broadcast to the
+           whole galaxy. Route it to the single empire it concerns, found by race (each empire is a
+           distinct race). If virus_player is an AI, no human matches and no human is told -- correct. */
+        if ((!global) && (ns->type == GAME_NEWS_VIRUS) && (ns->race < RACE_NUM)) {
+            owner = PLAYER_NONE;
+            for (player_id_t pe = PLAYER_0; pe < g->players; ++pe) {
+                if (g->eto[pe].race == (race_t)ns->race) { owner = pe; break; }
+            }
+        }
         for (player_id_t pi = PLAYER_0; pi < g->players; ++pi) {
             if (IS_AI(g, pi)) { continue; }
             if (global || (owner == pi) || (owner == PLAYER_NONE)) {
