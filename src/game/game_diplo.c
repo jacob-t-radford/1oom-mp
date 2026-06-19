@@ -146,6 +146,10 @@ void game_diplo_break_treaty(struct game_s *g, player_id_t breaker, player_id_t 
     }
     eb = &(g->eto[breaker]);
     ev = &(g->eto[victim]);
+    /* 1oom-mp: same-team empires are a locked alliance -- their treaty can never be broken. */
+    if ((g->mp_team[breaker] != 0) && (g->mp_team[breaker] == g->mp_team[victim])) {
+        return;
+    }
     if (ev->treaty[breaker] >= TREATY_WAR) {
         return;
     }
@@ -204,6 +208,10 @@ void game_diplo_start_war(struct game_s *g, player_id_t pi, player_id_t pi2)
     }
     e = &(g->eto[pi]);
     e2 = &(g->eto[pi2]);
+    /* 1oom-mp: same-team empires are a locked alliance -- they can never go to war. */
+    if ((g->mp_team[pi] != 0) && (g->mp_team[pi] == g->mp_team[pi2])) {
+        return;
+    }
     if (IS_HUMAN(g, pi) && (e->have_met[pi2] == 0)) {
         e->have_met[pi2] = 1;
     }
@@ -355,6 +363,11 @@ void game_diplo_set_treaty(struct game_s *g, player_id_t p1, player_id_t p2, tre
 {
     empiretechorbit_t *e1 = &(g->eto[p1]);
     empiretechorbit_t *e2 = &(g->eto[p2]);
+    /* 1oom-mp: same-team empires are a locked alliance -- never set their treaty to anything else
+       (guards the election FINAL_WAR path and any stray MP diplomacy order from splitting a team). */
+    if ((g->mp_team[p1] != 0) && (g->mp_team[p1] == g->mp_team[p2]) && (treaty != TREATY_ALLIANCE)) {
+        return;
+    }
     e1->treaty[p2] = treaty;
     e2->treaty[p1] = treaty;
 }
