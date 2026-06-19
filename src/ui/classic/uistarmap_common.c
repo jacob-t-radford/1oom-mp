@@ -477,13 +477,16 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         }
         tx = (p->x - x) * 2 + 14;
         ty = (p->y - y) * 2 + 22;
+        /* 1oom-mp teams: draw a teammate's worlds in the VIEWER's banner colour, so your whole side
+           reads as one colour against the enemies. FFA / single-player are unaffected (no team). */
+        player_id_t name_owner = ((p->owner != PLAYER_NONE) && (g->mp_team[d->api] != 0) && (g->mp_team[d->api] == g->mp_team[p->owner])) ? d->api : p->owner;
         if (p->owner == PLAYER_NONE) {
             lbxfont_select(2, 7, 0, 0);
         } else if (visible || (pi == g->evn.planet_orion_i)) {
-            lbxfont_select(2, tbl_banner_fontparam[g->eto[p->owner].banner], 0, 0);
+            lbxfont_select(2, tbl_banner_fontparam[g->eto[name_owner].banner], 0, 0);
         } else if (BOOLVEC_IS1(g->eto[d->api].contact, p->owner) || (p->within_frange[d->api] == 1)) {
             lbxfont_select(2, 0, 0, 0);
-            lbxfont_set_color0(tbl_banner_color[g->eto[p->owner].banner]);
+            lbxfont_set_color0(tbl_banner_color[g->eto[name_owner].banner]);
         } else {
             lbxfont_select(2, 7, 0, 0);
         }
@@ -555,7 +558,9 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
     for (int i = 0; i < g->enroute_num; ++i) {
         const fleet_enroute_t *r = &g->enroute[i];
         if (BOOLVEC_IS1(r->visible, d->api)) {
-            uint8_t *gfx = ui_data.gfx.starmap.smalship[g->eto[r->owner].banner];
+            /* 1oom-mp teams: a teammate's ships fly the viewer's banner colour too (see planet tint). */
+            player_id_t fl_owner = ((g->mp_team[d->api] != 0) && (g->mp_team[d->api] == g->mp_team[r->owner])) ? d->api : r->owner;
+            uint8_t *gfx = ui_data.gfx.starmap.smalship[g->eto[fl_owner].banner];
             const planet_t *p = &g->planet[r->dest];
             tx = (r->x - x) * 2 + 8;
             ty = (r->y - y) * 2 + 8;
