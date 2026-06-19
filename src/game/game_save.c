@@ -28,7 +28,7 @@
 #define GAME_SAVE_OFFS_VERSION  8
 #define GAME_SAVE_OFFS_NAME 16
 
-#define GAME_SAVE_VERSION   1
+#define GAME_SAVE_VERSION   2  /* v2: per-empire mp_team[] (1oom-mp teams) */
 
 /* -------------------------------------------------------------------------- */
 
@@ -724,6 +724,7 @@ static int game_save_encode(uint8_t *buf, int buflen, const struct game_s *g, ui
         pos = game_save_encode_sd(buf, pos, &(g->current_design[i]));
     }
     pos = game_save_encode_evn(buf, pos, &(g->evn), g->players, version);
+    SG_1OOM_EN_TBL_U8(g->mp_team, g->players); /* 1oom-mp: per-empire team, synced to clients (save v2+) */
     SG_1OOM_EN_U32(GAME_SAVE_END);
     return pos;
 }
@@ -834,6 +835,7 @@ static int game_save_decode(const uint8_t *buf, int buflen, struct game_s *g, ui
         pos = game_save_decode_sd(buf, pos, &(g->current_design[i]));
     }
     pos = game_save_decode_evn(buf, pos, &(g->evn), g->players, version);
+    if (version >= 2) { SG_1OOM_DE_TBL_U8(g->mp_team, g->players); } /* 1oom-mp: per-empire team (save v2+) */
     {
         uint32_t v;
         SG_1OOM_DE_U32(v);
