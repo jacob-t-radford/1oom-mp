@@ -557,6 +557,29 @@ void game_update_visibility(struct game_s *g)
             }
         }
     }
+    /* 1oom-mp: shared team vision -- a human empire sees everything its teammates (human or AI) can
+       see: scanner coverage plus enroute/transport/orbiting fleets. This is the last step of the
+       visibility recompute (game_update_within_range then game_update_visibility) on both server and
+       client, so it stays consistent (no desync). Only human sight is widened; AI sight is left
+       untouched so AI decisions are unaffected. */
+    for (player_id_t h = PLAYER_0; h < g->players; ++h) {
+        if (!IS_HUMAN(g, h)) { continue; }
+        for (player_id_t t = PLAYER_0; t < g->players; ++t) {
+            if ((t == h) || (g->mp_team[h] == 0) || (g->mp_team[h] != g->mp_team[t])) { continue; }
+            for (int k = 0; k < g->enroute_num; ++k) {
+                if (BOOLVEC_IS1(g->enroute[k].visible, t)) { BOOLVEC_SET1(g->enroute[k].visible, h); }
+            }
+            for (int k = 0; k < g->transport_num; ++k) {
+                if (BOOLVEC_IS1(g->transport[k].visible, t)) { BOOLVEC_SET1(g->transport[k].visible, h); }
+            }
+            for (int i = 0; i < g->galaxy_stars; ++i) {
+                if (BOOLVEC_IS1(g->planet[i].within_srange, t)) { BOOLVEC_SET1(g->planet[i].within_srange, h); }
+                for (player_id_t owner = PLAYER_0; owner < g->players; ++owner) {
+                    if (BOOLVEC_IS1(g->eto[owner].orbit[i].visible, t)) { BOOLVEC_SET1(g->eto[owner].orbit[i].visible, h); }
+                }
+            }
+        }
+    }
 }
 
 void game_adjust_slider_group(int16_t *slidertbl, int slideri, int16_t value, int num, const uint16_t *locktbl)
