@@ -335,7 +335,9 @@ int ui_races(struct game_s *g, player_id_t api)
             }
         }
         for (int i = 0; i < (PLAYER_NUM - 1); ++i) {
-            if ((g->mp_team[api] != 0) && (g->mp_team[api] == g->mp_team[d.tbl_ei[i]])) { continue; } /* 1oom-mp: can't spy on a teammate */
+            /* 1oom-mp: spying on a teammate is blocked by NOT registering the slider/+/- for them
+               (see the registration loop). Don't guard the whole handler here -- that also swallowed
+               the oi_tbl_oppon click and broke report/audience/status for a teammate. */
             if (oi == oi_tbl_spy_minus[i]) {
                 if (kbd_is_modifier(MOO_MOD_ALT)) {
                     e->spying[d.tbl_ei[i]] = 0;
