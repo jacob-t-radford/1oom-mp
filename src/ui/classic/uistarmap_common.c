@@ -120,6 +120,18 @@ static void ui_starmap_draw_planetinfo_do(const struct game_s *g, player_id_t ap
         lbxfont_select(5, 0xe, 0, 0);
         lbxfont_print_str_center(269, show_plus ? 27 : 35, game_str_sm_unexplored, UI_SCREEN_W, ui_scale);
     }
+    /* 1oom-mp live teammate visibility: a teammate's CURRENT production allocation (read-only),
+       streamed live during planning -- so you can see if they flip a world over to building ships. */
+    {
+        int sl[PLANET_SLIDER_NUM];
+        if ((p->owner != api) && ui_mp_team_plan_planet_sliders(planet_i, sl)) {
+            char pbuf[64];
+            lib_sprintf(pbuf, sizeof(pbuf), "Sh%d De%d In%d Ec%d Te%d",
+                        sl[PLANET_SLIDER_SHIP], sl[PLANET_SLIDER_DEF], sl[PLANET_SLIDER_IND], sl[PLANET_SLIDER_ECO], sl[PLANET_SLIDER_TECH]);
+            lbxfont_select(2, 0xf, 0, 0);
+            lbxfont_print_str_center(269, 54, pbuf, UI_SCREEN_W, ui_scale);
+        }
+    }
 }
 
 static void ui_starmap_draw_range_parsec(struct starmap_data_s *d, int y)

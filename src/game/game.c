@@ -1623,6 +1623,27 @@ bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest) {
     }
     return false;
 }
+/* the teammate about to colonize planet_i this turn (their banner for the marker), else -1. */
+int ui_mp_team_plan_colonizer(int planet_i) {
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) {
+        if (!s_team_plan[p].active) { continue; }
+        for (int i = 0; i < s_team_plan[p].col_num; ++i) { if (s_team_plan[p].col[i] == planet_i) { return p; } }
+    }
+    return -1;
+}
+/* live production sliders for a teammate's planet (from their relayed plan); false if none. */
+bool ui_mp_team_plan_planet_sliders(int planet_i, int *out) {
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) {
+        if (!s_team_plan[p].active) { continue; }
+        for (int i = 0; i < s_team_plan[p].sl_num; ++i) {
+            if (s_team_plan[p].sl[i].planet == planet_i) {
+                if (out) { for (int s = 0; s < PLANET_SLIDER_NUM; ++s) { out[s] = s_team_plan[p].sl[i].slider[s]; } }
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 /* serialize my current orders, send them with the given ready flag, and remember them. */
 static void mp_submit_orders(bool ready) {
