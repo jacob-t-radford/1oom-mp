@@ -431,6 +431,7 @@ int ui_races(struct game_s *g, player_id_t api)
                     x = (i / 3) * 157;
                     y = (i % 3) * 64;
                     pi = d.tbl_ei[i];
+                    if ((g->mp_team[api] != 0) && (g->mp_team[api] == g->mp_team[pi])) { continue; } /* 1oom-mp: no spying on a teammate -- don't register the slider drag or the +/- areas */
                     uiobj_add_slider_int(x + 103, y + 44, 0, 100, 25, 9, &e->spying[pi]);
                     oi_tbl_spy_minus[i] = uiobj_add_mousearea(x + 97, y + 42, x + 100, y + 50, MOO_KEY_UNKNOWN);
                     oi_tbl_spy_plus[i] = uiobj_add_mousearea(x + 130, y + 42, x + 134, y + 50, MOO_KEY_UNKNOWN);
