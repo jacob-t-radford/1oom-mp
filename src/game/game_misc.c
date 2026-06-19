@@ -467,7 +467,10 @@ void game_update_empire_contact(struct game_s *g)
                     SETMIN(mindist, dist);
                 }
             }
-            if (mindist <= frange) {
+            /* 1oom-mp: teammates are always in contact -- fuel-range distance must never break it,
+               or the alliance machinery and the starmap lose track of each other's worlds (and the
+               player gets a spurious "contact broken" every turn). */
+            if ((mindist <= frange) || ((g->mp_team[pi1] != 0) && (g->mp_team[pi1] == g->mp_team[pi2]))) {
                 BOOLVEC_SET1(e1->contact, pi2);
                 BOOLVEC_SET1(e2->contact, pi1);
             } else {
