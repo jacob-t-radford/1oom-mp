@@ -576,7 +576,7 @@ void game_update_visibility(struct game_s *g)
                 if (BOOLVEC_IS1(g->transport[k].visible, t)) { BOOLVEC_SET1(g->transport[k].visible, h); }
             }
             for (int i = 0; i < g->galaxy_stars; ++i) {
-                if (BOOLVEC_IS1(g->planet[i].within_srange, t)) { BOOLVEC_SET1(g->planet[i].within_srange, h); }
+                if (BOOLVEC_IS1(g->planet[i].within_srange, t) || (g->planet[i].owner == t)) { BOOLVEC_SET1(g->planet[i].within_srange, h); }
                 for (player_id_t owner = PLAYER_0; owner < g->players; ++owner) {
                     if (BOOLVEC_IS1(g->eto[owner].orbit[i].visible, t)) { BOOLVEC_SET1(g->eto[owner].orbit[i].visible, h); }
                 }
