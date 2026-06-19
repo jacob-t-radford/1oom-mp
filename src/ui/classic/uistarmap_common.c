@@ -137,18 +137,13 @@ static void ui_starmap_draw_sliders_and_prod(struct starmap_data_s *d)
     const struct game_s *g = d->g;
     int focus_i = g->planet_focus_i[d->api];
     const planet_t *p = &g->planet[focus_i];
-    planet_t pcopy;
     int x = 311;
     char buf[64];
-    /* 1oom-mp: for a teammate's world, draw their CURRENT (live-relayed) sliders instead of the
-       last-synced ones, so you watch their production change in real time. Read-only (no handlers). */
+    /* 1oom-mp: for a teammate's world, draw their full CURRENT (live-relayed) planet -- sliders AND
+       economy -- so the read-only panel's production figures match exactly what they see. */
     if (p->owner != d->api) {
-        int sl[PLANET_SLIDER_NUM];
-        if (ui_mp_team_plan_planet_sliders(focus_i, sl)) {
-            pcopy = *p;
-            for (planet_slider_i_t i = PLANET_SLIDER_SHIP; i < PLANET_SLIDER_NUM; ++i) { pcopy.slider[i] = (int16_t)sl[i]; }
-            p = &pcopy;
-        }
+        const planet_t *tp = ui_mp_team_plan_planet(focus_i);
+        if (tp) { p = tp; }
     }
 
     for (planet_slider_i_t i = PLANET_SLIDER_SHIP; i < PLANET_SLIDER_NUM; ++i) {
@@ -299,7 +294,7 @@ void ui_starmap_draw_basic(struct starmap_data_s *d)
     } else {
         player_id_t owner = p->owner;
         int pi = g->planet_focus_i[d->api];
-        bool teammate_live = ui_mp_team_plan_planet_sliders(pi, NULL); /* 1oom-mp: a teammate's live plan -> show their read-only sliders, not the enemy-colony picture */
+        bool teammate_live = (ui_mp_team_plan_planet(pi) != NULL); /* 1oom-mp: a teammate's live plan -> show their read-only sliders, not the enemy-colony picture */
         if (BOOLVEC_IS0(p->within_srange, d->api) && !(ui_extra_enabled && g->gaux->flag_cheat_stars) && ((owner == PLAYER_NONE) || BOOLVEC_IS0(g->eto[d->api].contact, owner))) {
             owner = g->seen[d->api][pi].owner;
         }

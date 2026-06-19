@@ -92,13 +92,14 @@ int game_mp_write_team_plan(const struct game_s *g, player_id_t pi, uint8_t *buf
         ++cnt;
     }
     memcpy(buf + cntpos, &cnt, 2);
-    /* production sliders for the worlds I own */
+    /* full planet snapshot for the worlds I own, so a teammate's read-only panel shows EXACT
+       production figures (not just proportional slider bars) -- sliders + economy ride along. */
     cntpos = pos; cnt = 0; PUT(&cnt, 2);
     for (int i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p = &g->planet[i];
         if (p->owner != pi) { continue; }
         v = (uint16_t)i; PUT(&v, 2);
-        for (int s = 0; s < PLANET_SLIDER_NUM; ++s) { uint8_t sv = (uint8_t)p->slider[s]; PUT(&sv, 1); }
+        PUT(p, (int)sizeof(planet_t));
         ++cnt;
     }
     memcpy(buf + cntpos, &cnt, 2);

@@ -113,7 +113,7 @@ extern bool ui_mp_team_plan_active(int player);
 extern int ui_mp_team_plan_fleet_total(void);
 extern bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest);
 extern int ui_mp_team_plan_colonizer(int planet_i);
-extern bool ui_mp_team_plan_planet_sliders(int planet_i, int *out);
+extern const struct planet_s *ui_mp_team_plan_planet(int planet_i);
 
 /* 1oom-mp: true when this classic UI is running as a networked client (set by game.c's
    game_mp_join). Used to enable client-side turn-start prompts that the headless server

@@ -1552,7 +1552,7 @@ struct mp_team_plan_s {
     int col_num;
     uint16_t col[16];
     int sl_num;
-    struct { uint16_t planet; uint8_t slider[PLANET_SLIDER_NUM]; } sl[PLANETS_MAX];
+    struct { uint16_t planet; planet_t p; } sl[PLANETS_MAX]; /* a teammate's owned worlds, full live state */
 };
 static struct mp_team_plan_s s_team_plan[MP_MAX_PLAYERS];
 static uint8_t *s_team_plan_buf = NULL;
@@ -1577,9 +1577,15 @@ static void mp_team_plan_recv(const void *data, int len) {
     for (int i = 0; i < (int)n; ++i) { uint16_t pli; TPGET(&pli, 2); if (tp->col_num < 16) { tp->col[tp->col_num++] = pli; } }
     TPGET(&n, 2); tp->sl_num = 0;
     for (int i = 0; i < (int)n; ++i) {
-        uint16_t pli; uint8_t sv[PLANET_SLIDER_NUM]; TPGET(&pli, 2);
-        for (int s = 0; s < PLANET_SLIDER_NUM; ++s) { TPGET(&sv[s], 1); }
-        if (tp->sl_num < PLANETS_MAX) { tp->sl[tp->sl_num].planet = pli; memcpy(tp->sl[tp->sl_num].slider, sv, PLANET_SLIDER_NUM); ++tp->sl_num; }
+        uint16_t pli; TPGET(&pli, 2);
+        if (tp->sl_num < PLANETS_MAX) {
+            tp->sl[tp->sl_num].planet = pli;
+            TPGET(&tp->sl[tp->sl_num].p, (int)sizeof(planet_t));
+            ++tp->sl_num;
+        } else {
+            if (pos + (int)sizeof(planet_t) > len) { return; }
+            pos += (int)sizeof(planet_t);
+        }
     }
     tp->active = true;
 #undef TPGET
@@ -1631,18 +1637,15 @@ int ui_mp_team_plan_colonizer(int planet_i) {
     }
     return -1;
 }
-/* live production sliders for a teammate's planet (from their relayed plan); false if none. */
-bool ui_mp_team_plan_planet_sliders(int planet_i, int *out) {
+/* a teammate's live planet snapshot (full state, for the read-only panel); NULL if none. */
+const planet_t *ui_mp_team_plan_planet(int planet_i) {
     for (int p = 0; p < MP_MAX_PLAYERS; ++p) {
         if (!s_team_plan[p].active) { continue; }
         for (int i = 0; i < s_team_plan[p].sl_num; ++i) {
-            if (s_team_plan[p].sl[i].planet == planet_i) {
-                if (out) { for (int s = 0; s < PLANET_SLIDER_NUM; ++s) { out[s] = s_team_plan[p].sl[i].slider[s]; } }
-                return true;
-            }
+            if (s_team_plan[p].sl[i].planet == planet_i) { return &s_team_plan[p].sl[i].p; }
         }
     }
-    return false;
+    return NULL;
 }
 
 /* serialize my current orders, send them with the given ready flag, and remember them. */
