@@ -132,6 +132,16 @@ static void cl_diplo_send_impl(uint16_t id, const uint8_t *data, int len) {
 int (*g_mp_cl_diplo_recv)(uint16_t *, uint8_t *, int) = NULL;
 void (*g_mp_cl_diplo_send)(uint16_t, const uint8_t *, int) = NULL;
 
+/* client: stream this player's live plan snapshot to teammates (best-effort -- only the latest
+   snapshot matters, so a dropped one self-heals on the next frame). */
+static void cl_team_plan_send_impl(const void *data, int len) {
+    if (!s_cl_conn) { return; }
+    if (len < 0) { len = 0; }
+    mp_send_besteffort(s_cl_conn, MP_MSG_TEAM_PLAN, data, (uint32_t)len);
+}
+void (*g_mp_cl_team_plan_send)(const void *, int) = NULL;
+void (*g_mp_team_plan_recv)(const void *, int) = NULL;
+
 /* client: service the socket once during planning. The server is silent until everyone is
    ready, then sends RESOLVE_START; returns 1 once that arrives (or the link drops), which
    tells the interactive turn UI to stop and hand off to the resolution wait loop. */
@@ -145,6 +155,7 @@ static int cl_poll_impl(void) {
         if (id == MP_MSG_RESOLVE_START) { s_cl_resolving = true; return 1; }
         if (id == MP_MSG_GAME_OVER) { s_cl_game_over = true; return 1; }
         if ((id >= MP_MSG_DIPLO_INVITE) && (id <= MP_MSG_DIPLO_CANCEL)) { cl_diplo_stash(id, s_cl_blob, dl); return 0; }
+        if ((id == MP_MSG_TEAM_PLAN) && g_mp_team_plan_recv) { g_mp_team_plan_recv(s_cl_blob, dl); return 0; }
         /* nothing else is expected before resolution; ignore */
     }
     return 0;
@@ -466,6 +477,19 @@ static void mp_diplo_expire_invites(net_conn_t **conns, int num) {
     }
 }
 
+/* server: relay a player's live plan snapshot to its teammates only (best-effort). */
+static void mp_team_plan_server_handle(net_conn_t **conns, int num, int from_i, const uint8_t *blob, uint32_t dl, const mp_game_iface_t *gi) {
+    int team;
+    if (!gi->get_team) { return; }
+    team = gi->get_team(gi->ctx, from_i);
+    if (team == 0) { return; } /* sender isn't on a team -> nobody to share with */
+    for (int j = 0; j < num; ++j) {
+        if ((j != from_i) && (gi->get_team(gi->ctx, j) == team)) {
+            mp_send_besteffort(conns[j], MP_MSG_TEAM_PLAN, blob, dl);
+        }
+    }
+}
+
 int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_iface_t *gi, int open_lobby) {
     if (num_clients < 1 || num_clients > MP_MAX_PLAYERS) { MP_ERR("bad num_clients %d\n", num_clients); return -1; }
     net_listener_t *l = net_listen(port);
@@ -635,6 +659,8 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                         if (olen > 0) { memcpy(porders[i], blob + 3, (size_t)olen); }
                         porders_len[i] = olen; ready[i] = (blob[2] != 0);
                     }
+                } else if (id == MP_MSG_TEAM_PLAN) {     /* live teammate-plan snapshot -> relay to teammates */
+                    mp_team_plan_server_handle(conns, num_clients, i, blob, dl, gi);
                 } else {                                 /* live-diplomacy messages (0x20-0x2A) */
                     mp_diplo_server_handle(conns, num_clients, i, id, blob, dl);
                 }
@@ -758,9 +784,11 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
             g_mp_cl_send_ready = cl_send_ready_impl;
             g_mp_cl_poll = cl_poll_impl;
             g_mp_cl_diplo_recv = cl_diplo_recv_impl; g_mp_cl_diplo_send = cl_diplo_send_impl;
+            g_mp_cl_team_plan_send = cl_team_plan_send_impl;
             if (gi->write_orders) { (void)gi->write_orders(gi->ctx, player_id, blob + 2, blobcap - 2); }
             g_mp_cl_poll = NULL; g_mp_cl_send_ready = NULL; s_cl_conn = NULL; s_cl_blob = NULL;
             g_mp_cl_diplo_recv = NULL; g_mp_cl_diplo_send = NULL;
+            g_mp_cl_team_plan_send = NULL;
             if (s_cl_game_over) { MP_MSG("client: game over\n"); goto done; }
         } else {
             /* submit my turn: [u16 player_id][orders blob] */

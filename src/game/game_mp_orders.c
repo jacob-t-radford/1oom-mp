@@ -67,6 +67,44 @@ void game_mp_colonize_record(player_id_t pi, planet_id_t pli)
     if (s_colonize_act_num < MP_COLONIZE_MAX) { s_colonize_act[s_colonize_act_num++] = pli; }
 }
 
+/* 1oom-mp live teammate visibility: serialize this player's IN-PROGRESS plan for teammates --
+   en-route fleets (x,y,dest), queued colonizes, and per-owned-planet production sliders. Compact
+   and best-effort streamed each frame; the viewer overlays it on their starmap. */
+int game_mp_write_team_plan(const struct game_s *g, player_id_t pi, uint8_t *buf, int buflen)
+{
+    int pos = 0;
+    uint16_t v, cnt;
+    int cntpos;
+    v = (uint16_t)pi; PUT(&v, 2);
+    /* en-route fleets I own */
+    cntpos = pos; cnt = 0; PUT(&cnt, 2);
+    for (int i = 0; i < g->enroute_num; ++i) {
+        const fleet_enroute_t *r = &g->enroute[i];
+        if (r->owner != pi) { continue; }
+        v = r->x; PUT(&v, 2); v = r->y; PUT(&v, 2); v = (uint16_t)r->dest; PUT(&v, 2);
+        ++cnt;
+    }
+    memcpy(buf + cntpos, &cnt, 2);
+    /* colonizes I queued this turn */
+    cntpos = pos; cnt = 0; PUT(&cnt, 2);
+    for (int i = 0; i < s_colonize_act_num; ++i) {
+        v = (uint16_t)s_colonize_act[i]; PUT(&v, 2);
+        ++cnt;
+    }
+    memcpy(buf + cntpos, &cnt, 2);
+    /* production sliders for the worlds I own */
+    cntpos = pos; cnt = 0; PUT(&cnt, 2);
+    for (int i = 0; i < g->galaxy_stars; ++i) {
+        const planet_t *p = &g->planet[i];
+        if (p->owner != pi) { continue; }
+        v = (uint16_t)i; PUT(&v, 2);
+        for (int s = 0; s < PLANET_SLIDER_NUM; ++s) { uint8_t sv = (uint8_t)p->slider[s]; PUT(&sv, 1); }
+        ++cnt;
+    }
+    memcpy(buf + cntpos, &cnt, 2);
+    return pos;
+}
+
 int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, int buflen)
 {
     int pos = 0;

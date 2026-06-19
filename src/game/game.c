@@ -1544,6 +1544,86 @@ static uint8_t *s_mp_orders_tmp = NULL; /* scratch: current orders, to compare a
 static int s_mp_orders_cap = 0;
 static int s_mp_orders_len = 0;
 
+/* ---- 1oom-mp live teammate visibility: a teammate's relayed in-progress plan, for the overlay ---- */
+struct mp_team_plan_s {
+    bool active;
+    int fleet_num;
+    struct { uint16_t x, y, dest; } fleet[FLEET_ENROUTE_MAX];
+    int col_num;
+    uint16_t col[16];
+    int sl_num;
+    struct { uint16_t planet; uint8_t slider[PLANET_SLIDER_NUM]; } sl[PLANETS_MAX];
+};
+static struct mp_team_plan_s s_team_plan[MP_MAX_PLAYERS];
+static uint8_t *s_team_plan_buf = NULL;
+static int s_team_plan_cap = 0;
+
+/* client: a teammate's plan snapshot arrived -> store it for the starmap overlay. */
+static void mp_team_plan_recv(const void *data, int len) {
+    const uint8_t *buf = (const uint8_t *)data;
+    int pos = 0;
+    uint16_t sender = 0, n = 0;
+#define TPGET(dst, nn) do { if (pos + (int)(nn) > len) { return; } memcpy((dst), buf + pos, (nn)); pos += (int)(nn); } while (0)
+    TPGET(&sender, 2);
+    if ((sender >= MP_MAX_PLAYERS) || (s_mp_my_pid < 0)) { return; }
+    if (!((game.mp_team[s_mp_my_pid] != 0) && (game.mp_team[s_mp_my_pid] == game.mp_team[sender]))) { return; }
+    struct mp_team_plan_s *tp = &s_team_plan[sender];
+    TPGET(&n, 2); tp->fleet_num = 0;
+    for (int i = 0; i < (int)n; ++i) {
+        uint16_t fx, fy, fd; TPGET(&fx, 2); TPGET(&fy, 2); TPGET(&fd, 2);
+        if (tp->fleet_num < FLEET_ENROUTE_MAX) { tp->fleet[tp->fleet_num].x = fx; tp->fleet[tp->fleet_num].y = fy; tp->fleet[tp->fleet_num].dest = fd; ++tp->fleet_num; }
+    }
+    TPGET(&n, 2); tp->col_num = 0;
+    for (int i = 0; i < (int)n; ++i) { uint16_t pli; TPGET(&pli, 2); if (tp->col_num < 16) { tp->col[tp->col_num++] = pli; } }
+    TPGET(&n, 2); tp->sl_num = 0;
+    for (int i = 0; i < (int)n; ++i) {
+        uint16_t pli; uint8_t sv[PLANET_SLIDER_NUM]; TPGET(&pli, 2);
+        for (int s = 0; s < PLANET_SLIDER_NUM; ++s) { TPGET(&sv[s], 1); }
+        if (tp->sl_num < PLANETS_MAX) { tp->sl[tp->sl_num].planet = pli; memcpy(tp->sl[tp->sl_num].slider, sv, PLANET_SLIDER_NUM); ++tp->sl_num; }
+    }
+    tp->active = true;
+#undef TPGET
+    { static bool logged = false; if (!logged) { logged = true; log_message("MP: live team-plan relay active (first snapshot from P%d: %d fleets)\n", sender, tp->fleet_num); } }
+}
+
+/* client: called each planning frame -> stream my current plan to teammates (throttled). */
+void ui_mp_team_plan_tick(void) {
+    static int ctr = 0;
+    if (g_mp_team_plan_recv != mp_team_plan_recv) { g_mp_team_plan_recv = mp_team_plan_recv; }
+    if (!g_mp_cl_team_plan_send || (s_mp_my_pid < 0) || (game.mp_team[s_mp_my_pid] == 0)) { return; }
+    if (++ctr < 8) { return; }
+    ctr = 0;
+    if (!s_team_plan_buf) { s_team_plan_cap = game_save_blob_maxlen(&game); s_team_plan_buf = (uint8_t *)malloc(s_team_plan_cap); if (!s_team_plan_buf) { return; } }
+    {
+        int len = game_mp_write_team_plan(&game, (player_id_t)s_mp_my_pid, s_team_plan_buf, s_team_plan_cap);
+        if (len > 0) { g_mp_cl_team_plan_send(s_team_plan_buf, len); }
+    }
+}
+
+/* starmap overlay accessors. */
+bool ui_mp_team_plan_active(int player) {
+    return (player >= 0) && (player < MP_MAX_PLAYERS) && s_team_plan[player].active;
+}
+int ui_mp_team_plan_fleet_total(void) {
+    int n = 0;
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) { if (s_team_plan[p].active) { n += s_team_plan[p].fleet_num; } }
+    return n;
+}
+bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest) {
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) {
+        if (!s_team_plan[p].active) { continue; }
+        if (idx < s_team_plan[p].fleet_num) {
+            if (owner) { *owner = p; }
+            if (x) { *x = s_team_plan[p].fleet[idx].x; }
+            if (y) { *y = s_team_plan[p].fleet[idx].y; }
+            if (dest) { *dest = s_team_plan[p].fleet[idx].dest; }
+            return true;
+        }
+        idx -= s_team_plan[p].fleet_num;
+    }
+    return false;
+}
+
 /* serialize my current orders, send them with the given ready flag, and remember them. */
 static void mp_submit_orders(bool ready) {
     if (!s_mp_orders_buf) {
@@ -1635,9 +1715,15 @@ static int mp_if_write_orders(void *ctx, int player_id, uint8_t *buf, int buflen
 static int mp_if_setup_game(void *ctx, const struct mp_lobby_s *lobby);
 static int mp_if_run_lobby(void *ctx, int my_id);
 
+static int mp_if_get_team(void *ctx, int player) {
+    (void)ctx;
+    return ((player >= 0) && (player < (int)game.players)) ? game.mp_team[player] : 0;
+}
+
 static mp_game_iface_t mp_make_iface(void) {
     mp_game_iface_t gi;
     gi.ctx = &game;
+    gi.get_team = mp_if_get_team;
     gi.serialize = mp_if_serialize;
     gi.deserialize = mp_if_deserialize;
     gi.advance_turn = mp_if_advance;

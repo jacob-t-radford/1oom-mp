@@ -12,6 +12,7 @@ struct game_s;
 /* Write player pi's owned-planet production orders into buf. Returns length or <0.
    Side-effect-free: safe to call repeatedly (the soft-ready client does, to detect changes). */
 extern int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, int buflen);
+extern int game_mp_write_team_plan(const struct game_s *g, player_id_t pi, uint8_t *buf, int buflen);
 
 /* Clear the diplo/colonize actions queued last turn. Call at the start of each turn. */
 extern void game_mp_orders_reset(void);

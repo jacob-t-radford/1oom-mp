@@ -325,6 +325,8 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             oi1 = 0;
         }
         sm_drag_panned = false;
+        /* 1oom-mp live teammate visibility: stream my in-progress plan to teammates each frame. */
+        if (ui_mp_turn_active && ui_mp_turn_active()) { ui_mp_team_plan_tick(); }
         /* 1oom-mp soft-ready: pump the net each frame while browsing. Once the server says
            everyone is ready, leave the map; ui_game_turn then ends the turn for resolution. */
         if (ui_mp_turn_active && ui_mp_turn_active() && ui_mp_turn_poll && ui_mp_turn_poll()) {

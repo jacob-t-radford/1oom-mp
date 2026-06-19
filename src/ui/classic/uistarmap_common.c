@@ -554,6 +554,7 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
     }
     for (int i = 0; i < g->enroute_num; ++i) {
         const fleet_enroute_t *r = &g->enroute[i];
+        if (ui_mp_team_plan_active(r->owner)) { continue; } /* teammate's live overlay replaces their stale committed fleets */
         if (BOOLVEC_IS1(r->visible, d->api)) {
             uint8_t *gfx = ui_data.gfx.starmap.smalship[g->eto[r->owner].banner];
             const planet_t *p = &g->planet[r->dest];
@@ -573,6 +574,25 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                     ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_green, 5, ui_data.starmap.line_anim_phase, starmap_scale);
                 }
             }
+            lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
+        }
+    }
+    /* 1oom-mp live teammate visibility: overlay teammates' in-progress planned fleets (streamed each
+       frame during planning) so you see where they're sending ships before the turn resolves. Drawn
+       in the owner's banner colour with a green planned-route line to the destination. */
+    {
+        int tpn = ui_mp_team_plan_fleet_total();
+        for (int k = 0; k < tpn; ++k) {
+            int fo = 0, fx = 0, fy = 0, fdest = 0;
+            const planet_t *pd; uint8_t *gfx;
+            if (!ui_mp_team_plan_fleet_get(k, &fo, &fx, &fy, &fdest)) { break; }
+            if ((fdest < 0) || (fdest >= g->galaxy_stars)) { continue; }
+            pd = &g->planet[fdest];
+            gfx = ui_data.gfx.starmap.smalship[g->eto[fo].banner];
+            tx = (fx - x) * 2 + 8;
+            ty = (fy - y) * 2 + 8;
+            if (pd->x < fx) { lbxgfx_set_new_frame(gfx, 1); } else { lbxgfx_set_frame_0(gfx); }
+            ui_draw_line_limit_ctbl(tx + 5, ty + 2, (pd->x - x) * 2 + 14, (pd->y - y) * 2 + 14, colortbl_line_green, 5, ui_data.starmap.line_anim_phase, starmap_scale);
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }
     }

@@ -106,6 +106,12 @@ extern int ui_mp_lobby_run(int my_id);
    The proposer side runs inline from the AUDIENCE action. NULL transport (single-player) is a no-op. */
 extern bool ui_mp_diplo_pump(int pi);
 extern void ui_mp_diplo_handle(struct game_s *g, int pi);
+/* 1oom-mp live teammate visibility: _tick streams my plan to teammates each planning frame; the
+   starmap overlay reads teammates' relayed fleets via _active / _fleet_total / _fleet_get. */
+extern void ui_mp_team_plan_tick(void);
+extern bool ui_mp_team_plan_active(int player);
+extern int ui_mp_team_plan_fleet_total(void);
+extern bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest);
 
 /* 1oom-mp: true when this classic UI is running as a networked client (set by game.c's
    game_mp_join). Used to enable client-side turn-start prompts that the headless server
