@@ -577,6 +577,10 @@ void game_update_visibility(struct game_s *g)
             }
             for (int i = 0; i < g->galaxy_stars; ++i) {
                 if (BOOLVEC_IS1(g->planet[i].within_srange, t) || (g->planet[i].owner == t)) { BOOLVEC_SET1(g->planet[i].within_srange, h); }
+                if (BOOLVEC_IS1(g->planet[i].explored, t) && BOOLVEC_IS0(g->planet[i].explored, h)) {
+                    g->seen[h][i] = g->seen[t][i]; /* inherit the teammate's last-known view of a world they've explored */
+                    BOOLVEC_SET1(g->planet[i].explored, h);
+                }
                 for (player_id_t owner = PLAYER_0; owner < g->players; ++owner) {
                     if (BOOLVEC_IS1(g->eto[owner].orbit[i].visible, t)) { BOOLVEC_SET1(g->eto[owner].orbit[i].visible, h); }
                 }
