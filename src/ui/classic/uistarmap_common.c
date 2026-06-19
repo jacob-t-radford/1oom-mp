@@ -482,6 +482,14 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             ty = (p->y - y) * 2 + 11;
         }
         gfx_aux_draw_frame_from_limit(tx, ty, &ui_data.starmap.star_aux, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
+        { /* 1oom-mp live teammate visibility: a teammate is about to colonize this world this turn --
+             mark it in their banner colour so you see their settling plans before the turn resolves. */
+            int cz = ui_mp_team_plan_colonizer(pi);
+            if (cz >= 0) {
+                ui_draw_filled_rect(tx - 1, ty - 6, tx + 3, ty - 2, tbl_banner_color[g->eto[cz].banner], starmap_scale);
+                ui_draw_box1(tx - 2, ty - 7, tx + 4, ty - 1, 0, 0, starmap_scale);
+            }
+        }
         if (d->anim_delay == 0) {
             if (anim_frame == 4) {
                 anim_frame = rnd_0_nm1(50, &ui_data.seed);
