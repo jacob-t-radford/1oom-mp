@@ -314,7 +314,10 @@ static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t 
         uint8_t pp[4] = { (uint8_t)want_f[selw], want_t[selw], (uint8_t)give_f[selg], give_t[selg] };
         diplo_cl_proposal_p(sid, MP_DIPLO_PROPOSE_TECH, pp, 4);
         int acc = mp_diplo_await_answer(g, pi, pa);
-        if (acc >= 0) { ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. The exchange is agreed." : "They refuse our offer."); }
+        if (acc >= 0) {
+            if (acc) { game_tech_get_new(g, pi, (tech_field_t)pp[0], pp[1], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); } /* 1oom-mp: optimistic -- the tech we wanted is usable THIS turn (server re-grants authoritatively at resolution) */
+            ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. The exchange is agreed." : "They refuse our offer.");
+        }
     }
 }
 
@@ -434,7 +437,7 @@ static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player
         if ((verb == MP_DIPLO_PROPOSE_TRADE) || (verb == MP_DIPLO_PROPOSE_TECH)) {
             game_mp_diplo_record_p(pi, pa, MP_DIPLO_ACCEPT, verb, pp); /* authoritative at resolution */
             if (verb == MP_DIPLO_PROPOSE_TRADE) { game_diplo_set_trade(g, pi, pa, pp[0] | (pp[1] << 8)); } /* optimistic */
-            /* traded techs arrive with the next authoritative state sync (granted server-side) */
+            else { game_tech_get_new(g, pi, (tech_field_t)pp[2], pp[3], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); } /* 1oom-mp: optimistic -- the offered tech is usable THIS turn (server re-grants authoritatively at resolution) */
         } else {
             game_mp_diplo_record(pi, pa, MP_DIPLO_ACCEPT, verb); /* authoritative at resolution */
             mp_diplo_apply_local(g, pi, pa, verb);               /* and immediately, locally */
