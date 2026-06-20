@@ -102,6 +102,7 @@ static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, ba
             bt->s[side].flag_have_scan = true;
         }
         b->side = side;
+        b->owner = bt->s[side].party; /* 1oom-mp: this stack belongs to the side's empire (per-stack for future combined fleets) */
         b->gfx = ui_gfx_get_ship(b->look);
         b->shiptbli = shiptbli;
     }
@@ -242,6 +243,7 @@ void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_i
             bt->bases = p->missile_bases;
             game_parsed_from_planet(sp, g, p);
             game_battle_item_add(bt, sp, SIDE_NONE/*planet*/);
+            bt->item[0].owner = owner; /* 1oom-mp: the planet stack belongs to its owner */
         } else {
             bt->planet_side = SIDE_NONE;
         }

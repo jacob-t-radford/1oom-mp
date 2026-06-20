@@ -51,6 +51,10 @@ struct battle_item_s {
     uint8_t unman;
     bool can_retaliate;
     battle_side_i_t side;
+    int owner; /* 1oom-mp: the empire that owns this stack. Today it always equals the side's single
+                  party; it exists so a future combined-fleet battle can put multiple ALLIED empires on
+                  one side and still attribute losses/retreat per stack. int (not player_id_t) to also
+                  hold monster ids (party >= PLAYER_NUM). */
     int8_t actman;
     uint16_t hploss;
     int8_t maxrange;
