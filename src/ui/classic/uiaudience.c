@@ -254,12 +254,17 @@ static int16_t ui_audience_ask_do(struct audience_s *au, int y, void (*draw_cb)(
 
 /* -------------------------------------------------------------------------- */
 
+/* 1oom-mp: the audience whose portrait is currently on screen, so the live-diplomacy wait loop can
+   keep redrawing it instead of a black "waiting" frame. Set on start, cleared on end. */
+static struct audience_data_s *s_cur_audience = NULL;
+
 void ui_audience_start(struct audience_s *au)
 {
     static struct audience_data_s d;    /* HACK */
     ui_switch_2(au->g, au->ph, au->pa);
     d.au = au;
     au->uictx = &d;
+    s_cur_audience = &d;
     /* 1oom-mp: the audience screen inherits the caller's cursor; in MP it's entered from injected
        paths (turn-start prompts, the live-diplomacy breakout) that leave the starmap's cursor set,
        so force the normal pointer here -- matches the single-player races-screen entry. */
@@ -280,6 +285,28 @@ void ui_audience_start(struct audience_s *au)
     uiobj_table_clear();
     uiobj_set_callback_and_delay(ui_audience_draw_cb1, &d, 3);
     uiobj_set_downcount(1);
+}
+
+/* 1oom-mp: redraw the CURRENT audience portrait with a status line (e.g. "Awaiting their
+   decision...") for the live human<->human diplomacy wait. Returns false if no audience is on
+   screen (the caller then falls back to a plain centered message). buf/mode are saved + restored so
+   the audience's own state is untouched. */
+bool ui_audience_draw_waiting(const char *msg)
+{
+    struct audience_data_s *d = s_cur_audience;
+    struct audience_s *au;
+    const char *savebuf;
+    int savemode;
+    if (!d || !d->au) { return false; }
+    au = d->au;
+    savebuf = au->buf;
+    savemode = au->mode;
+    au->buf = msg;
+    au->mode = 0;
+    ui_audience_draw_cb1(d);
+    au->buf = savebuf;
+    au->mode = savemode;
+    return true;
 }
 
 void ui_audience_show1(struct audience_s *au)
@@ -454,4 +481,5 @@ void ui_audience_end(struct audience_s *au)
     lbxpal_build_colortables();
     ui_switch_1(au->g, au->ph);
     audience_free_data(d);
+    s_cur_audience = NULL;
 }

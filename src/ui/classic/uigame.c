@@ -156,11 +156,18 @@ static int ui_mp_diplo_wait(const char *msg, uint8_t *out, int *outlen)
             }
         }
         ui_delay_prepare();
-        ui_draw_erase_buf();
-        lbxfont_select(2, 0xd, 0, 0);
-        lbxfont_print_str_center(160, 88, msg, UI_SCREEN_W, ui_scale);
-        lbxfont_select(2, 6, 0, 0);
-        lbxfont_print_str_center(160, 100, "(Esc to cancel)", UI_SCREEN_W, ui_scale);
+        if (ui_audience_draw_waiting(msg)) {
+            /* 1oom-mp: keep the alien's audience screen up while we wait for the other human, with
+               `msg` as the status line, instead of a black "waiting" frame. */
+            lbxfont_select(2, 6, 0, 0);
+            lbxfont_print_str_center(160, 180, "(Esc to cancel)", UI_SCREEN_W, ui_scale);
+        } else {
+            ui_draw_erase_buf();
+            lbxfont_select(2, 0xd, 0, 0);
+            lbxfont_print_str_center(160, 88, msg, UI_SCREEN_W, ui_scale);
+            lbxfont_select(2, 6, 0, 0);
+            lbxfont_print_str_center(160, 100, "(Esc to cancel)", UI_SCREEN_W, ui_scale);
+        }
         uiobj_table_clear();
         (void)uiobj_add_inputkey(MOO_KEY_ESCAPE);
         uiobj_finish_frame();

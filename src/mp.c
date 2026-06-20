@@ -237,12 +237,14 @@ static int mp_decision_rpc(int player_id, int dtype, const void *req, int req_le
         int sr = mp_send(c, MP_MSG_DECISION_REQ, m, 2 + (uint32_t)req_len);
         free(m);
         if (sr != 0) { return -1; }
+        MP_MSG("MPDBG rpc1: dtype=%d player=%d sent, waiting resp\n", dtype, player_id);
     }
     {   /* block for DECISION_RESP: [u16 dtype][resp] */
         uint8_t *buf = (uint8_t *)malloc(MP_DECISION_BUF_MAX);
         if (!buf) { return -1; }
         uint32_t dl = 0;
         int r = mp_recv_wait(c, MP_MSG_DECISION_RESP, buf, MP_DECISION_BUF_MAX, &dl, NULL, 0);
+        MP_MSG("MPDBG rpc1: dtype=%d player=%d resp r=%d dl=%u\n", dtype, player_id, r, dl);
         if ((r != 0) || (dl < 2)) { free(buf); return -1; }
         int rlen = (int)dl - 2;
         if (rlen > resp_buflen) { rlen = resp_buflen; }
@@ -272,13 +274,16 @@ static int mp_decision_rpc_multi(const int *players, int n, int dtype, const voi
             if (mp_send(s_mp_conns[players[i]], MP_MSG_DECISION_REQ, m, 2 + (uint32_t)req_len) != 0) { free(m); return -1; }
         }
         free(m);
+        MP_MSG("MPDBG rpcN: dtype=%d sent to %d player(s)\n", dtype, n);
     }
     {   /* collect each player's answer into its slot */
         uint8_t *buf = (uint8_t *)malloc(MP_DECISION_BUF_MAX);
         if (!buf) { return -1; }
         for (int i = 0; i < n; ++i) {
             uint32_t dl = 0;
-            if ((mp_recv_wait(s_mp_conns[players[i]], MP_MSG_DECISION_RESP, buf, MP_DECISION_BUF_MAX, &dl, NULL, 0) != 0) || (dl < 2)) { free(buf); return -1; }
+            MP_MSG("MPDBG rpcN: dtype=%d waiting resp from player[%d]=%d\n", dtype, i, players[i]);
+            if ((mp_recv_wait(s_mp_conns[players[i]], MP_MSG_DECISION_RESP, buf, MP_DECISION_BUF_MAX, &dl, NULL, 0) != 0) || (dl < 2)) { MP_MSG("MPDBG rpcN: dtype=%d resp FAIL from player[%d]=%d\n", dtype, i, players[i]); free(buf); return -1; }
+            MP_MSG("MPDBG rpcN: dtype=%d got resp from player[%d]=%d\n", dtype, i, players[i]);
             int rlen = (int)dl - 2;
             if (rlen > resp_stride) { rlen = resp_stride; }
             if (rlen > 0) { memcpy((uint8_t *)resps + (size_t)i * resp_stride, buf + 2, rlen); }
@@ -790,6 +795,7 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
                 } else if (id == MP_MSG_DECISION_REQ) {
                     /* the server paused resolution to ask us a decision — answer it */
                     int dtype = (dl >= 2) ? ((blob[0] << 8) | blob[1]) : 0;
+                    MP_MSG("MPDBG client: got DECISION_REQ dtype=%d\n", dtype);
                     int rlen = 0;
                     if (gi->handle_decision) {
                         rlen = gi->handle_decision(gi->ctx, dtype, blob + 2, (int)dl - 2, respbuf + 2, MP_DECISION_BUF_MAX - 2);

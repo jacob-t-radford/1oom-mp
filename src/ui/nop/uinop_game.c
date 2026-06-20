@@ -13,6 +13,7 @@
 #include "game_turn.h"
 #include "game_news.h"
 #include "mp.h"
+#include "log.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -154,6 +155,7 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
     }
     s_battle_snap_bases = bt->bases;
     s_battle_snap_pside = (int)bt->planet_side;
+    log_message("MPDBG init: planet=%d items=%d L.party=%d(h%d a%d) R.party=%d(h%d a%d)\n", bt->planet_i, (int)bt->items_num, bt->s[SIDE_L].party, (int)bt->s[SIDE_L].flag_human, (int)bt->s[SIDE_L].flag_auto, bt->s[SIDE_R].party, (int)bt->s[SIDE_R].flag_human, (int)bt->s[SIDE_R].flag_auto);
     /* 1oom-mp: init EVERY human side's client IN PARALLEL (each runs the autoresolve
        prompt + sets up its battle UI at the same time). Battle goes interactive if any
        human picks Continue. Default AUTO outside MP. */
@@ -427,6 +429,7 @@ ui_battle_action_t ui_battle_turn(const struct battle_s *bt)
     if (g_mp_decision_hook) {
         battle_side_i_t side = bt->item[bt->cur_item].side;
         int party = ((side == SIDE_L) || (side == SIDE_R)) ? bt->s[side].party : -1;
+        log_message("MPDBG turn: cur_item=%d side=%d party=%d (L.party=%d R.party=%d)\n", bt->cur_item, (int)side, party, bt->s[SIDE_L].party, bt->s[SIDE_R].party);
         if (party >= 0) {
             uint8_t act = UI_BATTLE_ACT_AUTO;
             int r = g_mp_decision_hook(party, MP_DEC_BATTLE_TURN, bt, (int)sizeof(*bt), &act, 1);
