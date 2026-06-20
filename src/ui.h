@@ -118,6 +118,7 @@ extern int ui_mp_team_plan_fleet_total(void);
 extern bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest);
 extern int ui_mp_team_plan_colonizer(int planet_i);
 extern const struct planet_s *ui_mp_team_plan_planet(int planet_i);
+extern int ui_mp_diplo_invite_pending(void); /* 1oom-mp: proposer id of a pending incoming audience request (starmap notification), else -1 */
 
 /* 1oom-mp: true when this classic UI is running as a networked client (set by game.c's
    game_mp_join). Used to enable client-side turn-start prompts that the headless server
