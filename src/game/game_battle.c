@@ -223,6 +223,8 @@ void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_i
     bt->g = g;
     bt->s[SIDE_R].party = party_r;
     bt->s[SIDE_L].party = party_l;
+    bt->s[SIDE_R].parties[0] = party_r; bt->s[SIDE_R].num_parties = 1; /* 1oom-mp: one empire per side today */
+    bt->s[SIDE_L].parties[0] = party_l; bt->s[SIDE_L].num_parties = 1;
     bt->planet_i = planet_i;
     bt->pop = p->pop;
     bt->fact = p->factories;
