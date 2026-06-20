@@ -152,6 +152,7 @@ int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, i
         PUT(&p->reloc, sizeof(p->reloc));
         PUT(&p->trans_num, sizeof(p->trans_num));
         PUT(&p->trans_dest, sizeof(p->trans_dest));
+        PUT(p->name, sizeof(p->name)); /* 1oom-mp: relay a renamed planet so it doesn't revert at resolution */
     }
     {
         uint16_t term = 0xffff;
@@ -282,12 +283,15 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         int16_t sl[PLANET_SLIDER_NUM];
         uint16_t lk[PLANET_SLIDER_NUM], reloc, trans_num, trans_dest;
         uint8_t buildship;
+        char name[PLANET_NAME_LEN];
         GET(sl, sizeof(sl));
         GET(lk, sizeof(lk));
         GET(&buildship, 1);
         GET(&reloc, sizeof(reloc));
         GET(&trans_num, sizeof(trans_num));
         GET(&trans_dest, sizeof(trans_dest));
+        GET(name, sizeof(name));
+        name[PLANET_NAME_LEN - 1] = '\0'; /* keep it a valid string */
         /* anti-cheat: only touch planets this player actually owns */
         if (p->owner != pi) {
             continue;
@@ -301,6 +305,7 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         p->reloc = reloc;
         p->trans_num = trans_num;
         p->trans_dest = trans_dest;
+        memcpy(p->name, name, sizeof(p->name)); /* 1oom-mp: persist a renamed planet */
         ++applied;
     }
     /* fleet movement: copy orbit ship-counts; replace this player's in-transit
