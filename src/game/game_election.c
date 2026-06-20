@@ -93,6 +93,11 @@ static void game_election_accept(struct election_s *el)
         if (IS_AI(g, ph) || (!IS_ALIVE(g, ph))) {
             continue;
         }
+        /* 1oom-mp teams: if my own team produced the Emperor, I accept automatically -- we won together,
+           there is nothing to refuse (and I must never end up at final war with my winning teammate). */
+        if ((g->winner < g->players) && (g->mp_team[ph] != 0) && (g->mp_team[ph] == g->mp_team[g->winner])) {
+            continue;
+        }
         if (el->first_human == el->last_human) {
             el->str = game_str_el_accept;
         } else {
@@ -101,6 +106,14 @@ static void game_election_accept(struct election_s *el)
         }
         if (!ui_election_accept(el, ph)) {
             BOOLVEC_SET1(g->refuse, ph);
+        }
+    }
+    /* 1oom-mp teams: a team stands together -- if any human member refused the verdict, the whole human
+       team refuses, so teammates share one side of the final war instead of being split across it. */
+    for (player_id_t a = PLAYER_0; a < g->players; ++a) {
+        if (BOOLVEC_IS0(g->refuse, a) || (g->mp_team[a] == 0)) { continue; }
+        for (player_id_t b = PLAYER_0; b < g->players; ++b) {
+            if (IS_HUMAN(g, b) && IS_ALIVE(g, b) && (g->mp_team[b] == g->mp_team[a])) { BOOLVEC_SET1(g->refuse, b); }
         }
     }
     if (!BOOLVEC_IS_CLEAR(g->refuse, PLAYER_NUM)) {
@@ -187,6 +200,9 @@ void game_election(struct game_s *g)
         n = el->tbl_votes[player];
         if (IS_AI(g, player)) {
             votefor = game_ai->vote(el, player);
+            /* 1oom-mp teams: an AI backs its own team's candidate (a team votes as a bloc for one of its own). */
+            if ((g->mp_team[player] != 0) && (g->mp_team[player] == g->mp_team[el->candidate[0]])) { votefor = 1; }
+            else if ((g->mp_team[player] != 0) && (g->mp_team[player] == g->mp_team[el->candidate[1]])) { votefor = 2; }
         } else {
             lib_sprintf(el->buf, UI_STRBUF_SIZE, "%s (%s%s", g->emperor_names[player], game_election_print_votes(n, vbuf, sizeof(vbuf)), game_str_el_dots);
             el->str = el->buf;
@@ -283,7 +299,20 @@ void game_election(struct game_s *g)
                     }
                 }
             }
-            g->end = IS_HUMAN(g, g->winner) ? GAME_END_WON_GOOD : GAME_END_LOST_EXILE;
+            {
+                /* 1oom-mp teams: a victory by ANY member of a team is the team's victory -- so if the
+                   elected Emperor shares a team with a living human, the humans WON (not exile). Gated on
+                   mp_team, so non-team games keep the vanilla "human Emperor => won" rule. (Single human
+                   team is the intended case; a galaxy with multiple human teams would need a per-viewer
+                   outcome, which the global g->end can't express.) */
+                bool human_team_won = IS_HUMAN(g, g->winner);
+                if ((!human_team_won) && (g->mp_team[g->winner] != 0)) {
+                    for (player_id_t i = PLAYER_0; i < g->players; ++i) {
+                        if ((g->mp_team[i] == g->mp_team[g->winner]) && IS_HUMAN(g, i) && IS_ALIVE(g, i)) { human_team_won = true; break; }
+                    }
+                }
+                g->end = human_team_won ? GAME_END_WON_GOOD : GAME_END_LOST_EXILE;
+            }
         } else {
             el->str = game_str_el_neither;
             el->cur_i = PLAYER_NONE;
