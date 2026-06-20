@@ -186,6 +186,7 @@ static void game_battle_prepare_add_ships(struct battle_s *bt, battle_side_i_t s
         if (s > 0) {
             bt->s[side].tbl_ships[num_types] = s;
             bt->s[side].tbl_shiptype[num_types] = i;
+            bt->s[side].tbl_owner[num_types] = bt->s[side].party; /* 1oom-mp: this entry's empire (per-empire once allies join) */
             game_parsed_from_design(sp, &sd[i], s);
             if (bt->s[side].race == RACE_MRRSHAN) {
                 sp->complevel += 4;
@@ -262,6 +263,7 @@ void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_i
         /* BUG? these were uninitialized */
         bt->s[SIDE_R].tbl_ships[0] = 1;
         bt->s[SIDE_R].tbl_shiptype[0] = 0;
+        bt->s[SIDE_R].tbl_owner[0] = party_r; /* 1oom-mp: the monster owns its own stack (>= PLAYER_NUM, skipped in writeback) */
     } else {
         game_battle_prepare_add_ships(bt, SIDE_R, planet_i);
     }
@@ -419,18 +421,17 @@ void game_battle_finish(struct battle_s *bt)
         }
     }
     for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
-        if (bt->s[side].party < PLAYER_NUM) {
-            empiretechorbit_t *e = &(g->eto[bt->s[side].party]);
-            const shipdesign_t *sd = &(g->srd[bt->s[side].party].design[0]);
-            shipcount_t *os = &(e->orbit[bt->planet_i].ships[0]);
-            for (int i = 0; i < bt->s[side].num_types; ++i) {
-                uint8_t st;
-                shipcount_t n;
-                st = bt->s[side].tbl_shiptype[i];
-                n = bt->s[side].tbl_ships[i];
-                os[st] = n;
-                bt->s[side].apparent_force -= (sd[st].hull + 1) * n;
-            }
+        /* 1oom-mp: survivors return to THEIR owner's orbit (per stack), not the side's lead empire, so a
+           combined-fleet battle reduces each ally's own fleet. Identical today: one owner per side. */
+        for (int i = 0; i < bt->s[side].num_types; ++i) {
+            int owner = bt->s[side].tbl_owner[i];
+            uint8_t st;
+            shipcount_t n;
+            if (owner >= PLAYER_NUM) { continue; } /* monster / none */
+            st = bt->s[side].tbl_shiptype[i];
+            n = bt->s[side].tbl_ships[i];
+            g->eto[owner].orbit[bt->planet_i].ships[st] = n;
+            bt->s[side].apparent_force -= (g->srd[owner].design[st].hull + 1) * n;
         }
     }
     game_diplo_battle_finish(g, bt->s[SIDE_L].party, bt->s[SIDE_R].party, bt->pop - p->pop, bt->s[SIDE_L].apparent_force, bt->biodamage, bt->s[SIDE_R].apparent_force, bt->planet_i);

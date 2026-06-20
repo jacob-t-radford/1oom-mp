@@ -96,8 +96,9 @@ struct battle_side_s {
     int parties[BATTLE_SIDE_PARTIES_MAX]; /* 1oom-mp: every empire on this side (party + allied teammates) */
     uint8_t num_parties;                  /* 1oom-mp: count in parties[] (1 today; >1 for combined fleets) */
     race_t race;
-    shipcount_t tbl_ships[NUM_SHIPDESIGNS];
-    uint8_t tbl_shiptype[NUM_SHIPDESIGNS];
+    shipcount_t tbl_ships[NUM_SHIPDESIGNS * BATTLE_SIDE_PARTIES_MAX];   /* 1oom-mp: sized for a coalition side (was NUM_SHIPDESIGNS) */
+    uint8_t tbl_shiptype[NUM_SHIPDESIGNS * BATTLE_SIDE_PARTIES_MAX];
+    int tbl_owner[NUM_SHIPDESIGNS * BATTLE_SIDE_PARTIES_MAX];           /* 1oom-mp: the empire each entry belongs to (per-owner loss attribution) */
     uint8_t num_types;
     uint8_t items; /* not counting planet */
     uint32_t apparent_force;
