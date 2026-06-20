@@ -209,6 +209,35 @@ static void game_battle_prepare_add_ships(struct battle_s *bt, battle_side_i_t s
     /* flag_human/flag_auto are set by the caller from the side's LEAD (so an AI ally can't flip them). */
 }
 
+/* 1oom-mp teams: add every alive teammate of the side's lead that has a fleet at this planet onto the
+   side (combined fleets). Side-based targeting then makes them fight together without friendly fire;
+   losses attribute per item.owner; the battle loop drops them afterward so they don't re-fight. The lead
+   commands the whole side for now (per-owner control is the later networking phase). No-op off teams. */
+static void game_battle_prepare_add_allies(struct battle_s *bt, battle_side_i_t side, planet_id_t planet_i)
+{
+    struct game_s *g = bt->g;
+    int lead = bt->s[side].party;
+    if ((lead < 0) || (lead >= PLAYER_NUM) || (g->mp_team[lead] == 0)) {
+        return; /* monster / no team -> nobody to bring along */
+    }
+    for (player_id_t a = PLAYER_0; a < g->players; ++a) {
+        bool has = false;
+        const shipdesign_t *sd;
+        if ((a == (player_id_t)lead) || (g->mp_team[a] != g->mp_team[lead]) || (!IS_ALIVE(g, a))) { continue; }
+        if (bt->s[side].num_parties >= BATTLE_SIDE_PARTIES_MAX) { break; }
+        for (int i = 0; i < g->eto[a].shipdesigns_num; ++i) {
+            if (g->eto[a].orbit[planet_i].ships[i] > 0) { has = true; break; }
+        }
+        if (!has) { continue; } /* this teammate has no fleet here */
+        game_battle_prepare_add_ships(bt, side, (int)a, planet_i);
+        bt->s[side].parties[bt->s[side].num_parties++] = (int)a;
+        sd = &(g->srd[a].design[0]);
+        for (int i = 0; i < g->eto[a].shipdesigns_num; ++i) {
+            bt->s[side].apparent_force += (sd[i].hull + 1) * g->eto[a].orbit[planet_i].ships[i];
+        }
+    }
+}
+
 /* -------------------------------------------------------------------------- */
 
 void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_id_t planet_i)
@@ -252,6 +281,7 @@ void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_i
     }
     game_battle_prepare_add_ships(bt, SIDE_L, party_l, planet_i);
     bt->s[SIDE_L].flag_human = IS_HUMAN(g, party_l); bt->s[SIDE_L].flag_auto = !bt->s[SIDE_L].flag_human;
+    game_battle_prepare_add_allies(bt, SIDE_L, planet_i); /* 1oom-mp teams: co-located teammates join this side */
     if (party_r >= PLAYER_NUM) {
         monster_id_t mi;
         mi = party_r - PLAYER_NUM;
@@ -267,6 +297,7 @@ void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_i
     } else {
         game_battle_prepare_add_ships(bt, SIDE_R, party_r, planet_i);
         bt->s[SIDE_R].flag_human = IS_HUMAN(g, party_r); bt->s[SIDE_R].flag_auto = !bt->s[SIDE_R].flag_human;
+        game_battle_prepare_add_allies(bt, SIDE_R, planet_i); /* 1oom-mp teams: co-located teammates join this side */
     }
 }
 
@@ -367,6 +398,14 @@ void game_battle_handle_all(struct game_s *g)
                     }
                     /* _def won */
                     BOOLVEC_SET0(tbl_have_force, party_att);
+                    /* 1oom-mp teams: teammates that joined this combined battle have already fought ->
+                       drop them from the force list so the pairwise loop gives them no second battle.
+                       (Survivors re-join the next battle here via game_battle_prepare_add_allies.) */
+                    for (battle_side_i_t bs = SIDE_L; bs <= SIDE_R; ++bs) {
+                        for (int k = 1; k < bt->s[bs].num_parties; ++k) {
+                            if (bt->s[bs].parties[k] < PLAYER_NUM) { BOOLVEC_SET0(tbl_have_force, bt->s[bs].parties[k]); }
+                        }
+                    }
                     game_battle_post(g, party_att, party_def, pli);
                 } else {
                     /*11926*/
@@ -393,6 +432,13 @@ void game_battle_handle_all(struct game_s *g)
                         }
                         /* _l won */
                         BOOLVEC_SET0(tbl_have_force, party_r);
+                        /* 1oom-mp teams: drop teammates that already fought in this combined battle so
+                           the pairwise loop gives them no redundant second battle. */
+                        for (battle_side_i_t bs = SIDE_L; bs <= SIDE_R; ++bs) {
+                            for (int k = 1; k < bt->s[bs].num_parties; ++k) {
+                                if (bt->s[bs].parties[k] < PLAYER_NUM) { BOOLVEC_SET0(tbl_have_force, bt->s[bs].parties[k]); }
+                            }
+                        }
                         game_battle_post(g, party_r, party_l, pli);
                         /*v14 = 1;*/
                     }
