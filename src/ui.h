@@ -176,6 +176,7 @@ typedef enum {
 
 extern ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt);
 extern void ui_battle_init_spectate(struct battle_s *bt); /* 1oom-mp: load the arena for a teammate OBSERVING (no prompt, no orders); no-op in headless/cmdline UIs */
+extern int ui_mp_battle_watch_prompt(void); /* 1oom-mp: one frame of the opt-in "teammate in combat, press W to watch" wait screen; returns 1 if the watch key was pressed. 0 in headless/cmdline */
 extern void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner);
 
 /* 1oom-mp: end-of-turn consolidated combat report. One record per auto-resolved space battle, carrying

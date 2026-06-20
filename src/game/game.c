@@ -889,6 +889,7 @@ static struct audience_s s_mp_audience; /* client's working copy of the relayed 
    can render the spectate/examine view from it). battle_s isn't fully self-contained, so we
    re-establish g + sprite pointers (read directly each draw) after every memcpy. */
 static struct battle_s s_mp_battle;
+static bool s_mp_battle_avail = false; /* 1oom-mp: a teammate's interactive battle is available to WATCH (opt-in); set on BATTLE_INIT, cleared on BATTLE_END. The observer loads the arena only if it presses the watch key. */
 
 /* 1oom-mp: turn-summary news relayed from the server (already filtered to this player). Buffered as
    it streams in during the server's turn resolution, then replayed as one GNN broadcast when the
@@ -977,6 +978,16 @@ static void mp_if_on_wait(void *ctx, int reason) {
            synchronous council view) rather than a waiting banner. */
         s_mp_election.uictx = s_mp_election_ctx;
         ui_election_spectate(&s_mp_election);
+        return;
+    }
+    if (s_mp_battle_avail) {
+        /* 1oom-mp: a teammate is in combat -> OPT-IN. Show the "press W to watch" prompt instead of
+           forcing the arena; load it (and switch to the spectate render next tick) only if pressed. */
+        if (ui_mp_battle_watch_prompt()) {
+            ui_battle_init_spectate(&s_mp_battle); /* s_mp_battle.g already set by BATTLE_INIT fixup */
+            s_mp_battle_uictx = s_mp_battle.uictx;
+            s_mp_battle_auto = false;
+        }
         return;
     }
     if (reason == MP_WAIT_COUNCIL) { s_mp_combat_hold = 0; } /* the council banner (fallback if no chamber stream) takes priority over a stale combat notice */
@@ -1385,14 +1396,13 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
         return;
     }
     if ((data[0] == UI_MP_SPEC_BATTLE_INIT) && (len >= 1 + (int)sizeof(struct battle_s))) {
-        /* 1oom-mp: a teammate's fight is starting -> load the arena so we can WATCH the streamed frames
-           (handled before the battle gate: an observer has no ctx yet). Submits nothing. */
+        /* 1oom-mp: a teammate's fight is starting -> OFFER it (opt-in). Stash the battle but DON'T
+           load the arena; the observer chooses to watch from the wait screen (mp_if_on_wait). The
+           fixup sets s_mp_battle.g so a later ui_battle_init_spectate works without g in hand. */
         memcpy(&s_mp_battle, data + 1, sizeof(s_mp_battle));
         s_mp_battle.uictx = NULL;
         mp_battle_fixup(g, &s_mp_battle);
-        ui_battle_init_spectate(&s_mp_battle);
-        s_mp_battle_uictx = s_mp_battle.uictx;
-        s_mp_battle_auto = false;
+        s_mp_battle_avail = true;
         return;
     }
     if ((data[0] == UI_MP_SPEC_BATTLE_END) && (len >= 1 + (int)sizeof(struct battle_s) + 5)) {
@@ -1406,6 +1416,7 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
             ui_battle_shutdown(&s_mp_battle, colony != 0, winner);
             s_mp_battle_uictx = NULL;
         }
+        s_mp_battle_avail = false; /* the fight is over: drop the watch offer / tear-down done */
         return;
     }
     if (!s_mp_battle_uictx || s_mp_battle_auto) { return; } /* not in a battle, or auto-resolved it (ctx half-built, no gfx_bg): can't render the streamed animations */

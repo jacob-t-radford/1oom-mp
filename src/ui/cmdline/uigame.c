@@ -151,6 +151,11 @@ void ui_battle_init_spectate(struct battle_s *bt)
     (void)bt; /* cmdline: no battle render */
 }
 
+int ui_mp_battle_watch_prompt(void)
+{
+    return 0; /* cmdline: no battle render */
+}
+
 int ui_mp_lobby_run(int my_id)
 {
     /* cmdline client: no interactive lobby UI -- auto-pick a race by slot, ready up, and wait. */

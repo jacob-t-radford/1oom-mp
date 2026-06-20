@@ -1158,6 +1158,27 @@ int ui_mp_lobby_run(int my_id)
 /* 1oom-mp: one frame of a "waiting for players" screen. Called repeatedly by the
    MP client while it blocks on the network — pumps SDL events (so the window stays
    alive / movable) and shows a status line instead of a frozen image. */
+/* 1oom-mp: one frame of the OPT-IN prompt shown while a teammate is in combat. Mirrors the diplo
+   wait's input frame (proven to work during the resolution wait, same as ui_mp_battle_spectate).
+   Returns 1 the frame the watch key (W) is pressed, so the caller loads the spectator arena. */
+int ui_mp_battle_watch_prompt(void)
+{
+    int16_t oi_w, oi;
+    if (!s_mp_ui_ready) { hw_event_handle(); return 0; }
+    ui_delay_prepare();
+    ui_draw_erase_buf();
+    lbxfont_select(2, 0xd, 0, 0);
+    lbxfont_print_str_center(160, 84, "A teammate has entered combat.", UI_SCREEN_W, ui_scale);
+    lbxfont_select(2, 6, 0, 0);
+    lbxfont_print_str_center(160, 98, "Press  W  to watch", UI_SCREEN_W, ui_scale);
+    uiobj_table_clear();
+    oi_w = uiobj_add_inputkey(MOO_KEY_w);
+    uiobj_finish_frame();
+    oi = uiobj_handle_input_cond();
+    ui_delay_ticks_or_click(2);
+    return (oi == oi_w) ? 1 : 0;
+}
+
 void ui_mp_wait(int reason)
 {
     hw_event_handle();          /* poll input + ~10ms delay; keeps the window responsive */

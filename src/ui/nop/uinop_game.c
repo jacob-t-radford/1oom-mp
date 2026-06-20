@@ -1034,6 +1034,11 @@ void ui_battle_init_spectate(struct battle_s *bt)
     (void)bt; /* headless: the server never renders/observes */
 }
 
+int ui_mp_battle_watch_prompt(void)
+{
+    return 0; /* headless: never watches */
+}
+
 int ui_mp_lobby_run(int my_id)
 {
     (void)my_id;
