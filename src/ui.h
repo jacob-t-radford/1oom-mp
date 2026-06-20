@@ -304,6 +304,7 @@ extern int16_t ui_audience_ask3(struct audience_s *au);
 extern int16_t ui_audience_ask4(struct audience_s *au);
 extern void ui_audience_newtech(struct audience_s *au, int pi);
 extern void ui_audience_end(struct audience_s *au);
+extern bool ui_audience_draw_waiting(const char *msg); /* 1oom-mp: redraw the live audience portrait with a status line (diplomacy wait); false if no audience active */
 
 extern void ui_newships(struct game_s *g, int pi);
 
