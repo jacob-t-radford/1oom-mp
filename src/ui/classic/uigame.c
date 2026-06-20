@@ -367,6 +367,7 @@ static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player
         if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY) || (verb == MP_DIPLO_BREAK_TRADE)) {
             game_mp_diplo_record(pi, pa, verb, 0); /* unilateral: applies at resolution */
             mp_diplo_apply_local(g, pi, pa, verb); /* and immediately, locally */
+            diplo_cl_proposal(sid, verb); /* 1oom-mp: relay it so the TARGET is notified + applies it too (was: never relayed -> target saw nothing, war waited for next turn) */
             au.buf = "It is done.";
             ui_audience_show1(&au);
             ui_audience_end(&au);
@@ -397,6 +398,16 @@ static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player
     int pn = len - 3;
     if (pn < 0) { pn = 0; } if (pn > 4) { pn = 4; }
     for (int i = 0; i < pn; ++i) { pp[i] = buf[3 + i]; }
+    if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY) || (verb == MP_DIPLO_BREAK_TRADE)) {
+        /* 1oom-mp: a unilateral act, not a proposal -> apply it locally (live immediately, like the
+           proposer) and show a notice on the alien portrait, instead of a bogus accept/reject prompt. */
+        mp_diplo_apply_local(g, pi, pa, verb);
+        ui_mp_diplo_msgbox(g, pi, pa,
+              (verb == MP_DIPLO_DECLARE_WAR)  ? "They have declared war upon us!"
+            : (verb == MP_DIPLO_BREAK_TREATY) ? "They have broken our treaty!"
+            :                                   "They have broken our trade agreement!");
+        return;
+    }
     struct audience_s au = {0};
     char msg[200];
     au.g = g; au.ph = pi; au.pa = pa;
