@@ -223,7 +223,7 @@ static void game_battle_prepare_add_allies(struct battle_s *bt, battle_side_i_t 
     for (player_id_t a = PLAYER_0; a < g->players; ++a) {
         bool has = false;
         const shipdesign_t *sd;
-        if ((a == (player_id_t)lead) || (g->mp_team[a] != g->mp_team[lead]) || (!IS_ALIVE(g, a))) { continue; }
+        if ((a == (player_id_t)lead) || (g->mp_team[a] != g->mp_team[lead]) || (!IS_ALIVE(g, a)) || (!IS_HUMAN(g, a))) { continue; } /* 1oom-mp: combined fleets join HUMAN teammates (each drives their own ships); AI allies fight separately */
         if (bt->s[side].num_parties >= BATTLE_SIDE_PARTIES_MAX) { break; }
         for (int i = 0; i < g->eto[a].shipdesigns_num; ++i) {
             if (g->eto[a].orbit[planet_i].ships[i] > 0) { has = true; break; }
