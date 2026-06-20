@@ -282,7 +282,7 @@ static void ui_starmap_do_help(struct game_s *g, player_id_t api)
 void ui_starmap_do(struct game_s *g, player_id_t active_player)
 {
     bool flag_done = false;
-    int16_t oi_b, oi_c, oi_starview1, oi_starview2, oi_shippic, oi_finished, oi_equals, oi_hash, oi_diplo,
+    int16_t oi_b, oi_c, oi_starview1, oi_starview2, oi_shippic, oi_finished, oi_equals, oi_hash, oi_diplo, oi_ping,
             oi_f2, oi_f3, oi_f4, oi_f5, oi_f6, oi_f7, oi_f8, oi_f9, oi_f10,
             oi_alt_galaxy, oi_alt_p, oi_alt_events,
             oi_wheelname, oi_wheelshippic, oi_search, oi_rename,
@@ -313,6 +313,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
         oi_equals = UIOBJI_INVALID; \
         oi_hash = UIOBJI_INVALID; \
         oi_diplo = UIOBJI_INVALID; \
+        oi_ping = UIOBJI_INVALID; \
         oi_wheelname = UIOBJI_INVALID; \
         oi_wheelshippic = UIOBJI_INVALID; \
         oi_rename = UIOBJI_INVALID; \
@@ -395,6 +396,9 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
         } else if (oi1 == oi_b) {
             ui_data.ui_main_loop_action = UI_MAIN_LOOP_SCRAP_BASES;
             flag_done = true;
+            ui_sound_play_sfx_24();
+        } else if ((oi_ping != UIOBJI_INVALID) && (oi1 == oi_ping)) {
+            ui_mp_set_ping(g->planet_focus_i[active_player]); /* 1oom-mp teams: flag/unflag this world for allies (stays on the map) */
             ui_sound_play_sfx_24();
         } else if (oi1 == oi_c) {
             ui_data.ui_main_loop_action = UI_MAIN_LOOP_SPIES_CAUGHT;
@@ -763,6 +767,9 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             STARMAP_UIOBJ_FILL_FX();
             if ((p->owner == active_player) && p->missile_bases) {
                 oi_b = uiobj_add_mousearea(272, 59, 312, 67, MOO_KEY_b);
+            }
+            if (ui_mp_turn_active && ui_mp_turn_active() && (g->mp_team[active_player] != 0)) {
+                oi_ping = uiobj_add_inputkey(MOO_KEY_p); /* 1oom-mp teams: flag the focused world for my allies */
             }
             oi_c = uiobj_add_inputkey(MOO_KEY_c);
             if (ui_mp_turn_active && ui_mp_turn_active() && ((ui_mp_diplo_invite_pending() >= 0) || (ui_mp_team_vote_pending() >= 0))) {

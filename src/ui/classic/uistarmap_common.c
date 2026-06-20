@@ -485,6 +485,14 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                 ui_draw_box1(tx - 2, ty - 7, tx + 4, ty - 1, 0, 0, starmap_scale);
             }
         }
+        { /* 1oom-mp teams: a teammate flagged this world for the team ("look here") -> ring the star in their colour. */
+            int pgr = ui_mp_team_plan_ping_at(pi);
+            if (pgr >= 0) {
+                uint8_t bc = tbl_banner_color[g->eto[pgr].banner];
+                ui_draw_box1(tx - 4, ty - 4, tx + 6, ty + 6, 0, 0, starmap_scale);
+                ui_draw_box1(tx - 3, ty - 3, tx + 5, ty + 5, bc, bc, starmap_scale);
+            }
+        }
         if (d->anim_delay == 0) {
             if (anim_frame == 4) {
                 anim_frame = rnd_0_nm1(50, &ui_data.seed);

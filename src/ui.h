@@ -112,6 +112,8 @@ extern int ui_mp_team_vote_pending(void); /* 1oom-mp teams: proposer id of a tea
 /* 1oom-mp live teammate visibility: _tick streams my plan to teammates each planning frame; the
    starmap overlay reads teammates' relayed fleets via _active / _fleet_total / _fleet_get. */
 extern void ui_mp_team_plan_tick(void);
+extern void ui_mp_set_ping(int planet_i);          /* 1oom-mp teams: flag a planet for teammates (toggle) */
+extern int ui_mp_team_plan_ping_at(int planet_i);  /* 1oom-mp teams: teammate who pinged planet_i this turn, else -1 */
 extern void ui_mp_team_plan_reset(void);
 extern bool ui_mp_team_plan_active(int player);
 extern bool ui_mp_team_plan_orbit_has(int player, int planet_i);
