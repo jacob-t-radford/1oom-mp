@@ -155,6 +155,7 @@ static int cl_poll_impl(void) {
         if (id == MP_MSG_RESOLVE_START) { s_cl_resolving = true; return 1; }
         if (id == MP_MSG_GAME_OVER) { s_cl_game_over = true; return 1; }
         if ((id >= MP_MSG_DIPLO_INVITE) && (id <= MP_MSG_DIPLO_CANCEL)) { cl_diplo_stash(id, s_cl_blob, dl); return 0; }
+        if (id == MP_MSG_TEAM_STANCE) { cl_diplo_stash(id, s_cl_blob, dl); return 0; } /* 1oom-mp teams: drains through the same diplo inbox/pump */
         if ((id == MP_MSG_TEAM_PLAN) && g_mp_team_plan_recv) { g_mp_team_plan_recv(s_cl_blob, dl); return 0; }
         /* nothing else is expected before resolution; ignore */
     }
@@ -451,6 +452,12 @@ static void mp_diplo_server_handle(net_conn_t **conns, int num, int from_i, uint
         int peer = (from_i == prop) ? resp : prop;
         if ((peer >= 0) && (peer < num)) { mp_send(conns[peer], id, blob, dl); } /* forward to peer */
         s_diplo_busy[prop] = false; s_diplo_busy[resp] = false; s_diplo_sess[s].active = false;
+    } else if (id == MP_MSG_TEAM_STANCE) {
+        /* 1oom-mp teams: store-and-forward a foreign-policy consensus message to its addressee. */
+        if (dl < 4) { return; }
+        int from = (blob[0] << 8) | blob[1], to = (blob[2] << 8) | blob[3];
+        if ((from != from_i) || (to < 0) || (to >= num)) { return; }
+        if (conns[to]) { mp_send(conns[to], MP_MSG_TEAM_STANCE, blob, dl); }
     }
 }
 /* each barrier iteration: promote fully-joined sessions to OPEN (sends SESSION_OPEN to both) */

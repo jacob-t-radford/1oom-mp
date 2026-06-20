@@ -99,9 +99,16 @@ static void ui_starmap_draw_cb1(void *vptr)
     /* 1oom-mp: non-interrupting notification that another human requests an audience -- press A when ready. */
     if (ui_mp_turn_active && ui_mp_turn_active()) {
         int dfrom = ui_mp_diplo_invite_pending();
+        int tvote = ui_mp_team_vote_pending();
         if ((dfrom >= 0) && (dfrom < d->g->players)) {
             char dnb[80];
             lib_sprintf(dnb, sizeof(dnb), "%s REQUEST AN AUDIENCE - PRESS A", game_str_tbl_race[d->g->eto[dfrom].race]);
+            ui_draw_filled_rect(20, 10, 299, 18, 0 /*black*/, ui_scale);
+            lbxfont_select(2, 0xd /*bright*/, 0, 0);
+            lbxfont_print_str_center(160, 11, dnb, UI_SCREEN_W, ui_scale);
+        } else if ((tvote >= 0) && (tvote < d->g->players)) { /* 1oom-mp teams: an ally seeks your assent to a stance */
+            char dnb[80];
+            lib_sprintf(dnb, sizeof(dnb), "%s SEEK YOUR ASSENT - PRESS A", game_str_tbl_race[d->g->eto[tvote].race]);
             ui_draw_filled_rect(20, 10, 299, 18, 0 /*black*/, ui_scale);
             lbxfont_select(2, 0xd /*bright*/, 0, 0);
             lbxfont_print_str_center(160, 11, dnb, UI_SCREEN_W, ui_scale);
@@ -758,8 +765,8 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
                 oi_b = uiobj_add_mousearea(272, 59, 312, 67, MOO_KEY_b);
             }
             oi_c = uiobj_add_inputkey(MOO_KEY_c);
-            if (ui_mp_turn_active && ui_mp_turn_active() && (ui_mp_diplo_invite_pending() >= 0)) {
-                oi_diplo = uiobj_add_inputkey(MOO_KEY_a); /* 1oom-mp: answer a pending audience request */
+            if (ui_mp_turn_active && ui_mp_turn_active() && ((ui_mp_diplo_invite_pending() >= 0) || (ui_mp_team_vote_pending() >= 0))) {
+                oi_diplo = uiobj_add_inputkey(MOO_KEY_a); /* 1oom-mp: answer a pending audience request or team stance vote */
             }
             ui_starmap_add_oi_bottom_buttons(&d);
             ui_starmap_add_oi_misc(&d);

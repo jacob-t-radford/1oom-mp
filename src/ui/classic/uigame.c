@@ -355,8 +355,12 @@ static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player
                 if ((tr == TREATY_NONE) || (tr == TREATY_NONAGGRESSION)) { opts[n] = "Alliance"; verbs[n] = MP_DIPLO_PROPOSE_ALLIANCE; ++n; }
             }
         } else { /* cat == 3: break / declare (unilateral) */
-            if (tr != TREATY_WAR) { opts[n] = "Declare war"; verbs[n] = MP_DIPLO_DECLARE_WAR; ++n; }
-            if ((tr == TREATY_NONAGGRESSION) || (tr == TREATY_ALLIANCE)) { opts[n] = "Break treaty"; verbs[n] = MP_DIPLO_BREAK_TREATY; ++n; }
+            /* 1oom-mp teams: never offer hostile acts against a teammate -- the alliance is locked.
+               (Only the per-empire trade agreement can still be broken.) War/break-treaty against an
+               ENEMY is routed through team consensus, not applied unilaterally from here. */
+            bool teammate = (g->mp_team[pi] != 0) && (g->mp_team[pi] == g->mp_team[pa]);
+            if ((tr != TREATY_WAR) && !teammate) { opts[n] = "Declare war"; verbs[n] = MP_DIPLO_DECLARE_WAR; ++n; }
+            if (((tr == TREATY_NONAGGRESSION) || (tr == TREATY_ALLIANCE)) && !teammate) { opts[n] = "Break treaty"; verbs[n] = MP_DIPLO_BREAK_TREATY; ++n; }
             if (g->eto[pi].trade_bc[pa] != 0) { opts[n] = "Break trade agreement"; verbs[n] = MP_DIPLO_BREAK_TRADE; ++n; }
         }
         if (n == 0) { au.buf = "There is nothing to propose."; ui_audience_show1(&au); ui_audience_end(&au); return; }
@@ -486,6 +490,70 @@ static void ui_mp_diplo_initiate(struct game_s *g, player_id_t pi, player_id_t o
 /* incoming invite waiting for me to answer (proposer id), -1 = none. A notification, not a breakout. */
 static int s_mp_diplo_invite_from = -1;
 
+/* ---- 1oom-mp teams: foreign policy by consensus -------------------------------------------------
+   A human's stance change toward an enemy (peace / NAP / break-treaty; war on a human enemy) is
+   offered to every HUMAN teammate as a proposal -- AI teammates auto-follow. It enacts only on
+   unanimous assent, then applies team-wide via the stage-1 sync inside the diplo primitives.
+   Messages ride MP_MSG_TEAM_STANCE (byte 4 = kind) through the same inbox/pump as the p2p audience. */
+#define MP_TEAM_KIND_PROPOSE 0
+#define MP_TEAM_KIND_VOTE    1
+#define MP_TEAM_KIND_ENACT   2
+static void team_stance_send(int kind, int from, int to, int enemy, int stance, int accept) {
+    uint8_t p[8] = { (uint8_t)(from >> 8), (uint8_t)from, (uint8_t)(to >> 8), (uint8_t)to,
+                     (uint8_t)kind, (uint8_t)enemy, (uint8_t)stance, (uint8_t)accept };
+    diplo_cl_send(MP_MSG_TEAM_STANCE, p, 8);
+}
+/* proposer side: my pending outgoing proposal + the bitmask of teammates I still await a vote from. */
+static int s_team_prop_enemy = -1;
+static uint8_t s_team_prop_stance = 0;
+static uint32_t s_team_prop_await = 0;
+static int s_team_prop_result = 0;   /* 1 approved, 2 rejected, 0 none -> a pump breakout for _handle */
+static int s_team_prop_announce = -1;/* enemy to confirm "proposal sent" once back on the starmap (avoids a nested modal), -1 none */
+/* teammate side: an incoming proposal to vote on (drives the starmap banner). */
+static int s_team_vote_from = -1, s_team_vote_enemy = -1;
+static uint8_t s_team_vote_stance = 0;
+/* teammate side: an approved proposal to apply locally this frame (deferred from _pump, needs g). */
+static int s_team_enact_from = -1, s_team_enact_enemy = -1;
+static uint8_t s_team_enact_stance = 0;
+
+static void mp_team_stance_apply(struct game_s *g, player_id_t actor, player_id_t enemy, uint8_t stance) {
+    switch (stance) {
+        case MP_TEAM_STANCE_PEACE: game_diplo_stop_war(g, actor, enemy); break;
+        case MP_TEAM_STANCE_NAP:   game_diplo_set_treaty(g, actor, enemy, TREATY_NONAGGRESSION); break;
+        case MP_TEAM_STANCE_BREAK:  game_diplo_break_treaty(g, actor, enemy); break;
+        case MP_TEAM_STANCE_WAR:    game_diplo_start_war(g, actor, enemy); break;
+        default: break;
+    }
+}
+static uint8_t team_stance_to_diplo_verb(uint8_t stance) {
+    switch (stance) {
+        case MP_TEAM_STANCE_PEACE: return MP_DIPLO_PROPOSE_PEACE;
+        case MP_TEAM_STANCE_NAP:   return MP_DIPLO_PROPOSE_NAP;
+        case MP_TEAM_STANCE_BREAK:  return MP_DIPLO_BREAK_TREATY;
+        case MP_TEAM_STANCE_WAR:    return MP_DIPLO_DECLARE_WAR;
+        default: return MP_DIPLO_NONE;
+    }
+}
+/* installed as g_mp_team_stance_propose_hook. Relays the stance to each human teammate and returns
+   true (captured) so the caller does NOT apply it; false when there is nobody to consult. */
+static bool mp_team_stance_propose(struct game_s *g, player_id_t pi, player_id_t enemy, mp_team_stance_t stance) {
+    uint32_t await = 0;
+    if (!g_mp_cl_diplo_send) { return false; }   /* not a live MP turn */
+    if (g->mp_team[pi] == 0) { return false; }    /* not on a team */
+    if (s_team_prop_enemy >= 0) { s_team_prop_announce = enemy; return true; } /* one at a time: re-confirm, don't apply */
+    for (player_id_t t = PLAYER_0; t < g->players; ++t) {
+        if ((t == pi) || (g->mp_team[t] != g->mp_team[pi]) || (!IS_HUMAN(g, t))) { continue; }
+        await |= (1u << t);
+    }
+    if (await == 0) { return false; }             /* no human teammates -> caller applies (AI auto-follows) */
+    for (player_id_t t = PLAYER_0; t < g->players; ++t) {
+        if (await & (1u << t)) { team_stance_send(MP_TEAM_KIND_PROPOSE, (int)pi, (int)t, (int)enemy, (int)stance, 0); }
+    }
+    s_team_prop_enemy = enemy; s_team_prop_stance = (uint8_t)stance; s_team_prop_await = await; s_team_prop_result = 0;
+    s_team_prop_announce = enemy; /* confirmation is shown after the audience closes (a nested modal would be unsafe) */
+    return true;
+}
+
 /* async p2p diplo pump: called each starmap frame. Drains the inbox and advances the invite handshake
    WITHOUT interrupting play. A pending incoming invite becomes a notification; READY auto-joins (only
    as the proposer); SESSION_OPEN is captured to enter next. Returns true ONLY when the main loop must
@@ -514,14 +582,35 @@ bool ui_mp_diplo_pump(int pi)
                 s_mp_diplo_invite_from = -1; s_mp_diplo_invite_to = -1;
             } else if (id == MP_MSG_DIPLO_CANCEL) {
                 s_mp_diplo_invite_from = -1; s_mp_diplo_invite_to = -1;
+            } else if (id == MP_MSG_TEAM_STANCE) {
+                int tfrom = (n >= 2) ? ((buf[0] << 8) | buf[1]) : -1;
+                int tto   = (n >= 4) ? ((buf[2] << 8) | buf[3]) : -1;
+                int tkind = (n >= 5) ? buf[4] : 0;
+                int tenemy= (n >= 6) ? buf[5] : -1;
+                int tst   = (n >= 7) ? buf[6] : 0;
+                int tacc  = (n >= 8) ? buf[7] : 0;
+                if (tto != pi) { /* not addressed to me */ }
+                else if (tkind == MP_TEAM_KIND_PROPOSE) {                 /* a teammate asks me to vote */
+                    s_team_vote_from = tfrom; s_team_vote_enemy = tenemy; s_team_vote_stance = (uint8_t)tst;
+                } else if (tkind == MP_TEAM_KIND_VOTE) {                  /* a vote on my proposal (proposer side) */
+                    if ((s_team_prop_enemy == tenemy) && (s_team_prop_stance == (uint8_t)tst) && (s_team_prop_result == 0)) {
+                        if (!tacc) { s_team_prop_result = 2; s_team_prop_await = 0; }              /* any refusal kills it */
+                        else { s_team_prop_await &= ~(1u << tfrom); if (s_team_prop_await == 0) { s_team_prop_result = 1; } }
+                    }
+                } else if (tkind == MP_TEAM_KIND_ENACT) {                 /* my proposal passed; apply locally (needs g -> _handle) */
+                    s_team_enact_from = tfrom; s_team_enact_enemy = tenemy; s_team_enact_stance = (uint8_t)tst;
+                }
             }
         }
     }
-    return s_mp_diplo_sess_open || (s_mp_diplo_invite_result != 0);
+    return s_mp_diplo_sess_open || (s_mp_diplo_invite_result != 0) || (s_team_prop_result != 0) || (s_team_enact_from >= 0) || (s_team_prop_announce >= 0);
 }
 
 /* starmap: proposer id of a pending incoming audience request (for the notification banner), else -1. */
 int ui_mp_diplo_invite_pending(void) { return s_mp_diplo_invite_from; }
+
+/* starmap: proposer id of a pending TEAM stance proposal awaiting my vote (notification banner), else -1. */
+int ui_mp_team_vote_pending(void) { return s_team_vote_from; }
 
 /* main-loop entry: reached when ui_mp_diplo_pump asked to break out, OR when the player answered the
    invite notification on the starmap. Routes by state: a just-opened session -> run it; my invite
@@ -529,6 +618,52 @@ int ui_mp_diplo_invite_pending(void) { return s_mp_diplo_invite_from; }
    captures SESSION_OPEN and enters the session next tick). */
 void ui_mp_diplo_handle(struct game_s *g, int pi)
 {
+    if (s_team_prop_announce >= 0) {             /* confirm a just-sent proposal, now that the audience has closed */
+        player_id_t e = (player_id_t)s_team_prop_announce; s_team_prop_announce = -1;
+        ui_mp_diplo_msgbox(g, pi, e, "Our envoy will consult our allies; we shall have their answer soon.");
+        return;
+    }
+    if (s_team_enact_from >= 0) {                /* a teammate's proposal passed -> apply it on my client too */
+        player_id_t a = (player_id_t)s_team_enact_from, e = (player_id_t)s_team_enact_enemy; uint8_t st = s_team_enact_stance;
+        s_team_enact_from = -1;
+        mp_team_stance_apply(g, a, e, st);
+        ui_mp_diplo_msgbox(g, pi, e, "Our alliance has agreed a new course; it is done.");
+        return;
+    }
+    if (s_team_prop_result != 0) {               /* my proposal resolved (proposer side) */
+        int res = s_team_prop_result; player_id_t e = (player_id_t)s_team_prop_enemy; uint8_t st = s_team_prop_stance;
+        s_team_prop_result = 0; s_team_prop_enemy = -1; s_team_prop_await = 0;
+        if (res == 1) {
+            mp_team_stance_apply(g, (player_id_t)pi, e, st);                                       /* optimistic + team-wide */
+            if (IS_HUMAN(g, e)) { game_mp_diplo_record((player_id_t)pi, e, team_stance_to_diplo_verb(st), 0); } /* authoritative for a human enemy */
+            for (player_id_t t = PLAYER_0; t < g->players; ++t) {
+                if ((t != (player_id_t)pi) && (g->mp_team[t] == g->mp_team[pi]) && IS_HUMAN(g, t)) {
+                    team_stance_send(MP_TEAM_KIND_ENACT, (int)pi, (int)t, (int)e, (int)st, 0);     /* teammates apply same-turn */
+                }
+            }
+            ui_mp_diplo_msgbox(g, pi, e, "Our allies assent. It is done.");
+        } else {
+            ui_mp_diplo_msgbox(g, pi, e, "Our allies refuse; the proposal is withdrawn.");
+        }
+        return;
+    }
+    if (s_team_vote_from >= 0) {                  /* an ally asks me to assent to a stance (teammate side) */
+        int from = s_team_vote_from; player_id_t e = (player_id_t)s_team_vote_enemy; uint8_t st = s_team_vote_stance;
+        s_team_vote_from = -1;
+        const char *act = (st == MP_TEAM_STANCE_PEACE) ? "make peace with"
+                        : (st == MP_TEAM_STANCE_NAP)   ? "sign a non-aggression pact with"
+                        : (st == MP_TEAM_STANCE_WAR)   ? "declare war on"
+                        :                                "break our treaty with";
+        struct audience_s au = {0}; char msg[200];
+        au.g = g; au.ph = pi; au.pa = (player_id_t)from;
+        ui_audience_start(&au);
+        lib_sprintf(msg, sizeof(msg), "Our ally proposes that we %s the %s. Do you assent?", act, game_str_tbl_race[g->eto[e].race]);
+        au.buf = msg; au.strtbl[0] = "Assent"; au.strtbl[1] = "Refuse"; au.strtbl[2] = NULL;
+        int16_t sel = ui_audience_ask4(&au);
+        ui_audience_end(&au);
+        team_stance_send(MP_TEAM_KIND_VOTE, (int)pi, from, (int)e, (int)st, (sel == 0) ? 1 : 0);
+        return;
+    }
     if (s_mp_diplo_sess_open) {
         s_mp_diplo_sess_open = false;
         ui_mp_diplo_run_session(g, pi, s_mp_diplo_sess_buf, s_mp_diplo_sess_len);
@@ -937,6 +1072,7 @@ static bool s_mp_ui_ready = false; /* 1oom-mp: true once the game UI (incl. font
 void ui_game_start(struct game_s *g)
 {
     s_mp_ui_ready = true;
+    g_mp_team_stance_propose_hook = mp_team_stance_propose; /* 1oom-mp teams: enemy-stance changes route through team consensus */
     ui_mp_tech_notify_reset(); /* MP: re-baseline the completed-tech diff for a fresh game */
     ui_mp_contact_notify_reset(); /* MP: re-baseline first-contact tracking for a fresh game */
     for (int i = 0; i < g->nebula_num; ++i) {

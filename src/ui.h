@@ -108,6 +108,7 @@ extern int ui_mp_lobby_run(int my_id);
    The proposer side runs inline from the AUDIENCE action. NULL transport (single-player) is a no-op. */
 extern bool ui_mp_diplo_pump(int pi);
 extern void ui_mp_diplo_handle(struct game_s *g, int pi);
+extern int ui_mp_team_vote_pending(void); /* 1oom-mp teams: proposer id of a teammate's stance proposal awaiting my vote (starmap notification), else -1 */
 /* 1oom-mp live teammate visibility: _tick streams my plan to teammates each planning frame; the
    starmap overlay reads teammates' relayed fleets via _active / _fleet_total / _fleet_get. */
 extern void ui_mp_team_plan_tick(void);

@@ -19,6 +19,17 @@ const int16_t game_diplo_tbl_reldiff[6] = { -50, -30, -20, 0, 10, 20 };
 
 /* -------------------------------------------------------------------------- */
 
+/* 1oom-mp: stances are team-to-team. game_diplo_team_sync_stance() mirrors a just-changed treaty
+   between two empires onto every cross-team member pair, so war/peace/NAP is whole-team-vs-whole-team
+   (trade stays per-empire). It is called from the diplo primitives below and re-enters them for the
+   teammate pairs; s_diplo_in_team_sync makes those re-entrant calls skip their own sync, so one
+   top-level call converges every pair exactly once. No-op outside team games. */
+static bool s_diplo_in_team_sync = false;
+static void game_diplo_team_sync_stance(struct game_s *g, player_id_t pi, player_id_t pi2);
+
+/* 1oom-mp teams: foreign-policy-by-consensus hook (see game_diplo.h). Installed by the classic UI. */
+bool (*g_mp_team_stance_propose_hook)(struct game_s *g, player_id_t proposer, player_id_t enemy, mp_team_stance_t stance) = NULL;
+
 /* -------------------------------------------------------------------------- */
 
 void game_diplo_act(struct game_s *g, int dv, player_id_t pi, player_id_t pi2, int dtype, uint8_t pli1, int16_t dp2)
@@ -198,6 +209,7 @@ void game_diplo_break_treaty(struct game_s *g, player_id_t breaker, player_id_t 
     ev->mood_trade[breaker] = -200;
     ev->mood_tech[breaker] = -200;
     ev->mood_peace[breaker] = -200;
+    game_diplo_team_sync_stance(g, breaker, victim); /* 1oom-mp: break it with their whole team */
 }
 
 void game_diplo_start_war(struct game_s *g, player_id_t pi, player_id_t pi2)
@@ -237,6 +249,7 @@ void game_diplo_start_war(struct game_s *g, player_id_t pi, player_id_t pi2)
     e2->mood_trade[pi] = -200;
     e2->mood_tech[pi] = -200;
     e2->mood_peace[pi] = -130;
+    game_diplo_team_sync_stance(g, pi, pi2); /* 1oom-mp: war is whole-team-vs-whole-team */
 }
 
 void game_diplo_start_war_swap(struct game_s *g, player_id_t pi, player_id_t pi2)
@@ -370,6 +383,7 @@ void game_diplo_set_treaty(struct game_s *g, player_id_t p1, player_id_t p2, tre
     }
     e1->treaty[p2] = treaty;
     e2->treaty[p1] = treaty;
+    game_diplo_team_sync_stance(g, p1, p2); /* 1oom-mp: peace/NAP propagate to the whole teams too */
 }
 
 void game_diplo_set_trade(struct game_s *g, player_id_t p1, player_id_t p2, int bc)
@@ -483,4 +497,67 @@ bool game_diplo_is_gone(struct game_s *g, player_id_t api, player_id_t pi)
         }
     }
     return false;
+}
+
+/* 1oom-mp: see the forward declaration near the top. After a stance between pi and pi2 changes,
+   mirror the resulting treaty onto every (member-of-pi's-team, member-of-pi2's-team) pair so the
+   whole teams share it. Reuses the primitives (so each mirrored pair gets correct relations/mood),
+   guarded by s_diplo_in_team_sync so the primitives' own sync calls no-op while we run. A solo
+   empire is its own team of one. Trade is intentionally not mirrored; FINAL_WAR is left alone. */
+static void game_diplo_team_sync_stance(struct game_s *g, player_id_t pi, player_id_t pi2)
+{
+    uint8_t ta, tb;
+    treaty_t tr;
+    if (s_diplo_in_team_sync) {
+        return; /* a primitive we just called is reporting back -- the top-level loop already has it */
+    }
+    if ((pi >= g->players) || (pi2 >= g->players) || (pi == pi2)) {
+        return;
+    }
+    if (g->end == GAME_END_FINAL_WAR) {
+        return; /* leave the endgame all-vs-all machinery alone */
+    }
+    ta = g->mp_team[pi];
+    tb = g->mp_team[pi2];
+    if ((ta == 0) && (tb == 0)) {
+        return; /* neither empire is on a team -> nothing to mirror */
+    }
+    tr = g->eto[pi].treaty[pi2];
+    if (tr == TREATY_FINAL_WAR) {
+        return;
+    }
+    s_diplo_in_team_sync = true;
+    for (player_id_t tx = PLAYER_0; tx < g->players; ++tx) {
+        if (!((tx == pi) || ((ta != 0) && (g->mp_team[tx] == ta)))) {
+            continue; /* tx is not pi and not on pi's team */
+        }
+        for (player_id_t ty = PLAYER_0; ty < g->players; ++ty) {
+            treaty_t cur;
+            if (!((ty == pi2) || ((tb != 0) && (g->mp_team[ty] == tb)))) {
+                continue; /* ty is not pi2 and not on pi2's team */
+            }
+            if (tx == ty) {
+                continue;
+            }
+            if ((tx == pi) && (ty == pi2)) {
+                continue; /* the originating pair, already set */
+            }
+            if ((g->mp_team[tx] != 0) && (g->mp_team[tx] == g->mp_team[ty])) {
+                continue; /* never alter a stance within a team */
+            }
+            cur = g->eto[tx].treaty[ty];
+            if (cur == tr) {
+                continue; /* already matches */
+            }
+            if (tr == TREATY_WAR) {
+                game_diplo_start_war(g, tx, ty);
+            } else {
+                if (cur == TREATY_WAR) {
+                    game_diplo_stop_war(g, tx, ty); /* leave war cleanly (relations/ceasefire) first */
+                }
+                game_diplo_set_treaty(g, tx, ty, tr);
+            }
+        }
+    }
+    s_diplo_in_team_sync = false;
 }

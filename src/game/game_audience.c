@@ -582,7 +582,12 @@ static void audience_menu_treaty(struct audience_s *au)
                 si = game_audience_sweeten(au, si);
             }
             if (si == 3) {
-                game_diplo_set_treaty(g, ph, pa, TREATY_NONAGGRESSION);
+                /* 1oom-mp teams: a NAP with an enemy is a team stance -> offer it for consensus first. */
+                if (g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_NAP)) {
+                    si = 1; /* captured -> applies on consensus; suppress the AI's "agreed" reaction below */
+                } else {
+                    game_diplo_set_treaty(g, ph, pa, TREATY_NONAGGRESSION);
+                }
             }
             dtype = 62;
             break;
@@ -602,7 +607,13 @@ static void audience_menu_treaty(struct audience_s *au)
                 si = game_audience_sweeten(au, si);
             }
             if (si == 3) {
-                game_diplo_stop_war(g, ph, pa);
+                /* 1oom-mp teams: making peace with an enemy is a team stance -> consensus first
+                   (no separate peace). The AI has already agreed; now our allies must. */
+                if (g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_PEACE)) {
+                    si = 1; /* captured -> applies on consensus; suppress the AI's "agreed" reaction below */
+                } else {
+                    game_diplo_stop_war(g, ph, pa);
+                }
             }
             game_diplo_annoy(g, ph, pa, 2);
             dtype = 65;

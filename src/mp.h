@@ -39,6 +39,7 @@ enum mp_msg_e {
     MP_MSG_DIPLO_SESSION_END   = 0x29, /* both: [u16 sid][u8 outcome][u8 verb][u8 arg] = the audience finished */
     MP_MSG_DIPLO_CANCEL        = 0x2a, /* both: [u16 sid][u8 why] = aborted (esc/disconnect) */
     MP_MSG_TEAM_PLAN           = 0x2b, /* C->S->C (planning): a teammate's live plan snapshot (fleets + colonizes + planet sliders) */
+    MP_MSG_TEAM_STANCE         = 0x2c, /* C->S->C (planning): [u16 from][u16 to][u8 kind][u8 enemy][u8 verb][u8 accept] = team foreign-policy consensus; kind 0=propose,1=vote,2=enact. Server forwards to 'to'. */
     MP_MSG_DECISION_REQ = 0x30, /* S->C: [u16 dtype][req] = a mid-resolution interactive decision the server is blocking on */
     MP_MSG_DECISION_RESP= 0x31, /* C->S: [u16 dtype][resp] = the human's answer */
     MP_MSG_GAME_OVER = 0x40, /* S->C: session ended */
