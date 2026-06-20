@@ -106,6 +106,7 @@ extern int ui_mp_lobby_run(int my_id);
    The proposer side runs inline from the AUDIENCE action. NULL transport (single-player) is a no-op. */
 extern bool ui_mp_diplo_pump(int pi);
 extern void ui_mp_diplo_handle(struct game_s *g, int pi);
+extern int ui_mp_diplo_invite_pending(void); /* 1oom-mp: proposer id of a pending incoming audience request (starmap notification), else -1 */
 
 /* 1oom-mp: true when this classic UI is running as a networked client (set by game.c's
    game_mp_join). Used to enable client-side turn-start prompts that the headless server

@@ -459,37 +459,34 @@ static void ui_mp_diplo_run_session(struct game_s *g, player_id_t pi, const uint
     diplo_cl_end(sid);
 }
 
-/* proposer entry: fired from the AUDIENCE action when the target is human. Sends the invite, then
-   blocks (net-pumping) through the handshake and the live session. Fire-and-cancel via Esc. */
+/* 1oom-mp: live p2p audience handshake is NON-INTERRUPTING. An incoming request becomes a starmap
+   notification (ui_mp_diplo_invite_pending) the player answers when ready; the proposer doesn't block.
+   ui_mp_diplo_pump advances both sides each frame and the main loop only breaks out to enter the
+   (still synchronous) session, or to report that my own invite bounced. */
+static int s_mp_diplo_invite_to = -1;       /* proposer: who I invited (names a bounce notice), -1 none */
+static int s_mp_diplo_invite_result = 0;    /* proposer: 1 busy / 2 declined / 3 expired; 0 = none */
+static bool s_mp_diplo_sess_open = false;   /* a session opened for me -> enter it */
+static uint8_t s_mp_diplo_sess_buf[MP_DIPLO_CL_MSGMAX];
+static int s_mp_diplo_sess_len = 0;
+
+/* proposer entry: fired from the AUDIENCE action when the target is human. Sends the invite and
+   returns immediately -- the player keeps playing; the pump pulls them into the session once the
+   target accepts, or surfaces a bounce notice. */
 static void ui_mp_diplo_initiate(struct game_s *g, player_id_t pi, player_id_t opponi)
 {
     if (!g_mp_cl_diplo_send) { return; } /* not a live MP turn */
-    ui_cursor_setup_area(1, &ui_cursor_area_tbl[0]); /* normal pointer for the wait modals */
     diplo_cl_invite(pi, opponi);
-    for (;;) {
-        uint8_t buf[MP_DIPLO_CL_MSGMAX]; int len = sizeof(buf);
-        int id = ui_mp_diplo_wait("Requesting an audience...", buf, &len);
-        if (id <= 0) { return; } /* cancelled / link dead */
-        if (id == MP_MSG_DIPLO_INVITE_RESULT) {
-            int status = (len >= 5) ? buf[4] : 0;
-            if (status == 0) { continue; } /* 0 = pending ack; keep waiting */
-            ui_mp_diplo_msgbox(g, pi, opponi,
-                (status == 1) ? "They are engaged in another audience." :
-                (status == 2) ? "They declined to receive our envoy." :
-                                "The moment passed. Try again next turn.");
-            return;
-        }
-        if (id == MP_MSG_DIPLO_READY) { diplo_cl_join(); continue; } /* accepted -> I join, await open */
-        if (id == MP_MSG_DIPLO_SESSION_OPEN) { ui_mp_diplo_run_session(g, pi, buf, len); return; }
-        if (id == MP_MSG_DIPLO_CANCEL) { return; }
-        /* stray (e.g. a NOTIFY from a third player): ignore, keep waiting */
-    }
+    s_mp_diplo_invite_to = opponi;
+    ui_mp_diplo_msgbox(g, pi, opponi, "Our envoy is dispatched; they will receive us when they are ready.");
 }
 
-/* responder pump: called each starmap frame. Drains the diplo inbox; if an invite is pending for
-   me, stash the proposer and return true so the starmap breaks out to UI_MAIN_LOOP_MP_DIPLO. */
+/* incoming invite waiting for me to answer (proposer id), -1 = none. A notification, not a breakout. */
 static int s_mp_diplo_invite_from = -1;
 
+/* async p2p diplo pump: called each starmap frame. Drains the inbox and advances the invite handshake
+   WITHOUT interrupting play. A pending incoming invite becomes a notification; READY auto-joins (only
+   as the proposer); SESSION_OPEN is captured to enter next. Returns true ONLY when the main loop must
+   break out -- to enter an opened session, or to report that my own invite bounced. */
 bool ui_mp_diplo_pump(int pi)
 {
     if (g_mp_cl_diplo_recv) {
@@ -497,19 +494,55 @@ bool ui_mp_diplo_pump(int pi)
         while ((n = g_mp_cl_diplo_recv(&id, buf, sizeof(buf))) >= 0) {
             if (id == MP_MSG_DIPLO_INVITE_NOTIFY) {
                 int from = (n >= 2) ? ((buf[0] << 8) | buf[1]) : -1;
-                int to = (n >= 4) ? ((buf[2] << 8) | buf[3]) : -1;
+                int to   = (n >= 4) ? ((buf[2] << 8) | buf[3]) : -1;
                 if ((to == pi) && (from >= 0)) { s_mp_diplo_invite_from = from; }
+            } else if (id == MP_MSG_DIPLO_INVITE_RESULT) {
+                int status = (n >= 5) ? buf[4] : 0;
+                if (status != 0) { s_mp_diplo_invite_result = status; } /* my invite bounced */
+            } else if (id == MP_MSG_DIPLO_READY) {
+                int proposer = (n >= 2) ? ((buf[0] << 8) | buf[1]) : -1;
+                if (proposer == pi) { diplo_cl_join(); } /* proposer joins; both await SESSION_OPEN */
+            } else if (id == MP_MSG_DIPLO_SESSION_OPEN) {
+                int cp = (n > (int)sizeof(s_mp_diplo_sess_buf)) ? (int)sizeof(s_mp_diplo_sess_buf) : n;
+                if (cp < 0) { cp = 0; }
+                if (cp > 0) { memcpy(s_mp_diplo_sess_buf, buf, (size_t)cp); }
+                s_mp_diplo_sess_len = cp;
+                s_mp_diplo_sess_open = true;
+                s_mp_diplo_invite_from = -1; s_mp_diplo_invite_to = -1;
+            } else if (id == MP_MSG_DIPLO_CANCEL) {
+                s_mp_diplo_invite_from = -1; s_mp_diplo_invite_to = -1;
             }
-            /* RESULT/READY/SESSION_OPEN are only expected inside initiate (not running now): ignore */
         }
     }
-    return (s_mp_diplo_invite_from >= 0);
+    return s_mp_diplo_sess_open || (s_mp_diplo_invite_result != 0);
 }
 
-/* responder handler: invoked from the main loop when ui_mp_diplo_pump flagged a pending invite.
-   Prompts to receive now / decline; on accept, joins the session and runs it. */
+/* starmap: proposer id of a pending incoming audience request (for the notification banner), else -1. */
+int ui_mp_diplo_invite_pending(void) { return s_mp_diplo_invite_from; }
+
+/* main-loop entry: reached when ui_mp_diplo_pump asked to break out, OR when the player answered the
+   invite notification on the starmap. Routes by state: a just-opened session -> run it; my invite
+   bounced -> notice; an incoming invite I chose to answer -> receive/decline (accept -> the pump
+   captures SESSION_OPEN and enters the session next tick). */
 void ui_mp_diplo_handle(struct game_s *g, int pi)
 {
+    if (s_mp_diplo_sess_open) {
+        s_mp_diplo_sess_open = false;
+        ui_mp_diplo_run_session(g, pi, s_mp_diplo_sess_buf, s_mp_diplo_sess_len);
+        return;
+    }
+    if (s_mp_diplo_invite_result != 0) {
+        int st = s_mp_diplo_invite_result; s_mp_diplo_invite_result = 0;
+        player_id_t pa = (s_mp_diplo_invite_to >= 0) ? (player_id_t)s_mp_diplo_invite_to : (player_id_t)pi;
+        s_mp_diplo_invite_to = -1;
+        if (pa != (player_id_t)pi) {
+            ui_mp_diplo_msgbox(g, pi, pa,
+                (st == 1) ? "They are engaged in another audience." :
+                (st == 2) ? "They declined to receive our envoy." :
+                            "The moment passed. Try again next turn.");
+        }
+        return;
+    }
     int from = s_mp_diplo_invite_from;
     s_mp_diplo_invite_from = -1;
     if ((from < 0) || (from >= g->players) || (from == pi)) { return; }
@@ -521,15 +554,7 @@ void ui_mp_diplo_handle(struct game_s *g, int pi)
     int16_t sel = ui_audience_ask4(&au);
     ui_audience_end(&au);
     if (sel != 0) { diplo_cl_accept(from, pi, 0); return; } /* decline */
-    diplo_cl_accept(from, pi, 1); /* accept -> server opens the session; I am the responder */
-    for (;;) {
-        uint8_t buf[MP_DIPLO_CL_MSGMAX]; int len = sizeof(buf);
-        int id = ui_mp_diplo_wait("Connecting...", buf, &len);
-        if (id <= 0) { return; }
-        if (id == MP_MSG_DIPLO_SESSION_OPEN) { ui_mp_diplo_run_session(g, pi, buf, len); return; }
-        if (id == MP_MSG_DIPLO_CANCEL) { return; }
-        /* ignore strays */
-    }
+    diplo_cl_accept(from, pi, 1); /* accept -> server opens -> pump captures SESSION_OPEN -> enter next */
 }
 
 /* 1oom-mp: a human's colony ships wait in orbit (the server doesn't auto-colonize);
@@ -854,6 +879,8 @@ ui_turn_action_t ui_game_turn(struct game_s *g, int *load_game_i_ptr, int pi)
                 if (IS_PLAYER(g, opponi) && (opponi != pi)) {
                     if (IS_HUMAN(g, opponi)) {
                         ui_mp_diplo_initiate(g, pi, opponi); /* human-to-human: live audience */
+                        ui_data.ui_main_loop_action = UI_MAIN_LOOP_STARMAP; /* 1oom-mp: back to the map so the async diplo pump drives the handshake + pulls me into the session */
+                        break;
                     } else {
                         game_audience(g, pi, opponi);        /* vs AI: normal audience */
                     }
