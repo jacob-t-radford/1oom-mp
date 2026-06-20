@@ -90,7 +90,7 @@ struct battle_missile_s {
     uint8_t speed;
 };
 
-#define BATTLE_SIDE_PARTIES_MAX 4 /* 1oom-mp: max allied empires sharing one side in a combined-fleet battle */
+#define BATTLE_SIDE_PARTIES_MAX 2 /* 1oom-mp: max empires per side (lead + 1 ally); 2 sides * 2 * NUM_SHIPDESIGNS + planet fits BATTLE_ITEM_MAX */
 struct battle_side_s {
     int party;                            /* lead empire of this side (commands; owns the ship-type table below) */
     int parties[BATTLE_SIDE_PARTIES_MAX]; /* 1oom-mp: every empire on this side (party + allied teammates) */

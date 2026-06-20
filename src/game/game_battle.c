@@ -66,7 +66,7 @@ static void game_battle_item_from_parsed(struct battle_item_s *b, const shippars
     COPY_BOOL_TO_INT(b, cloak, CLOAK);
 }
 
-static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, battle_side_i_t side)
+static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, battle_side_i_t side, int owner)
 {
     struct battle_item_s *b;
     int itemi, shiptbli;
@@ -96,13 +96,13 @@ static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, ba
             shiptbli = bt->s[SIDE_R].items - 1;
             break;
     }
+    b->owner = owner; /* 1oom-mp: the empire owning this stack (planet or ship; per-stack for combined fleets) */
     if (side != SIDE_NONE/*planet*/) {
         game_battle_item_from_parsed(b, sp);
         if (b->sbmask & (1 << SHIP_SPECIAL_BOOL_SCANNER)) {
             bt->s[side].flag_have_scan = true;
         }
         b->side = side;
-        b->owner = bt->s[side].party; /* 1oom-mp: this stack belongs to the side's empire (per-stack for future combined fleets) */
         b->gfx = ui_gfx_get_ship(b->look);
         b->shiptbli = shiptbli;
     }
@@ -172,26 +172,27 @@ static void game_battle_prepare_p1(struct battle_s *bt, battle_side_i_t side, pl
     bt->s[side].race = e->race;
 }
 
-static void game_battle_prepare_add_ships(struct battle_s *bt, battle_side_i_t side, planet_id_t planet_i)
+static void game_battle_prepare_add_ships(struct battle_s *bt, battle_side_i_t side, int party, planet_id_t planet_i)
 {
     const struct game_s *g = bt->g;
-    const empiretechorbit_t *e = &(g->eto[bt->s[side].party]);
-    const shipdesign_t *sd = &(g->srd[bt->s[side].party].design[0]);
+    const empiretechorbit_t *e = &(g->eto[party]);
+    const shipdesign_t *sd = &(g->srd[party].design[0]);
+    race_t race = g->eto[party].race; /* 1oom-mp: the ADDING empire's race -- an ally may differ from the side's lead */
     bool flag_shield_disable = (g->planet[planet_i].battlebg == 0);
     shipparsed_t sp[1];
-    int num_types = 0;
+    int num_types = bt->s[side].num_types; /* 1oom-mp: accumulate -- allies append to whatever the side already has */
     for (int i = 0; i < e->shipdesigns_num; ++i) {
         shipcount_t s;
         s = e->orbit[planet_i].ships[i];
         if (s > 0) {
             bt->s[side].tbl_ships[num_types] = s;
             bt->s[side].tbl_shiptype[num_types] = i;
-            bt->s[side].tbl_owner[num_types] = bt->s[side].party; /* 1oom-mp: this entry's empire (per-empire once allies join) */
+            bt->s[side].tbl_owner[num_types] = party; /* 1oom-mp: this entry's empire */
             game_parsed_from_design(sp, &sd[i], s);
-            if (bt->s[side].race == RACE_MRRSHAN) {
+            if (race == RACE_MRRSHAN) {
                 sp->complevel += 4;
             }
-            if (bt->s[side].race == RACE_ALKARI) {
+            if (race == RACE_ALKARI) {
                 sp->defense += 3;
                 sp->misdefense += 3;
             }
@@ -200,13 +201,12 @@ static void game_battle_prepare_add_ships(struct battle_s *bt, battle_side_i_t s
                 sp->absorb = 0;
                 sp->shield = 0;
             }
-            game_battle_item_add(bt, sp, side);
+            game_battle_item_add(bt, sp, side, party);
             ++num_types;
         }
     }
     bt->s[side].num_types = num_types;
-    bt->s[side].flag_human = IS_HUMAN(g, bt->s[side].party);
-    bt->s[side].flag_auto = !bt->s[side].flag_human;
+    /* flag_human/flag_auto are set by the caller from the side's LEAD (so an AI ally can't flip them). */
 }
 
 /* -------------------------------------------------------------------------- */
@@ -245,27 +245,28 @@ void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_i
             bt->planet_side = (owner == party_l) ? SIDE_L : SIDE_R;
             bt->bases = p->missile_bases;
             game_parsed_from_planet(sp, g, p);
-            game_battle_item_add(bt, sp, SIDE_NONE/*planet*/);
-            bt->item[0].owner = owner; /* 1oom-mp: the planet stack belongs to its owner */
+            game_battle_item_add(bt, sp, SIDE_NONE/*planet*/, owner);
         } else {
             bt->planet_side = SIDE_NONE;
         }
     }
-    game_battle_prepare_add_ships(bt, SIDE_L, planet_i);
+    game_battle_prepare_add_ships(bt, SIDE_L, party_l, planet_i);
+    bt->s[SIDE_L].flag_human = IS_HUMAN(g, party_l); bt->s[SIDE_L].flag_auto = !bt->s[SIDE_L].flag_human;
     if (party_r >= PLAYER_NUM) {
         monster_id_t mi;
         mi = party_r - PLAYER_NUM;
         memcpy(sp, &tbl_monster[mi][g->difficulty], sizeof(*sp));
         strncpy(sp->name, game_str_tbl_monsh_names[mi], SHIP_NAME_LEN);
         sp->name[SHIP_NAME_LEN - 1] = 0;
-        game_battle_item_add(bt, sp, SIDE_R);
+        game_battle_item_add(bt, sp, SIDE_R, party_r);
         bt->s[SIDE_R].num_types = 1;
         /* BUG? these were uninitialized */
         bt->s[SIDE_R].tbl_ships[0] = 1;
         bt->s[SIDE_R].tbl_shiptype[0] = 0;
         bt->s[SIDE_R].tbl_owner[0] = party_r; /* 1oom-mp: the monster owns its own stack (>= PLAYER_NUM, skipped in writeback) */
     } else {
-        game_battle_prepare_add_ships(bt, SIDE_R, planet_i);
+        game_battle_prepare_add_ships(bt, SIDE_R, party_r, planet_i);
+        bt->s[SIDE_R].flag_human = IS_HUMAN(g, party_r); bt->s[SIDE_R].flag_auto = !bt->s[SIDE_R].flag_human;
     }
 }
 
