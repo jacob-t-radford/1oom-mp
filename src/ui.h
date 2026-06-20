@@ -79,6 +79,8 @@ enum ui_mp_spec_e {
     UI_MP_SPEC_COUNCIL,     /* council frame: [kind][struct election_s] — the shared council view, relayed to ALL humans */
     UI_MP_SPEC_COUNCIL_END, /* council adjourned: [kind] only — tear down the spectator's council view */
     UI_MP_SPEC_MISSILE,     /* missile flight: [kind][i16 missilei,x,y,tx,ty][struct battle_missile_s] — animate the missile traveling (the struct rides along since missiles launch after the last snapshot) */
+    UI_MP_SPEC_BATTLE_INIT, /* observer arena setup: [kind][struct battle_s] — a teammate loads the arena to WATCH a fight (no auto-resolve prompt, submits nothing) */
+    UI_MP_SPEC_BATTLE_END,  /* observer arena teardown: [kind][struct battle_s][u8 colony_destroyed][i32 winner] */
 };
 
 /* 1oom-mp: glide a ship from its current hex to (sx,sy) on the spectator's battle screen (replays
@@ -173,6 +175,7 @@ typedef enum {
 } ui_battle_bomb_t;
 
 extern ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt);
+extern void ui_battle_init_spectate(struct battle_s *bt); /* 1oom-mp: load the arena for a teammate OBSERVING (no prompt, no orders); no-op in headless/cmdline UIs */
 extern void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner);
 
 /* 1oom-mp: end-of-turn consolidated combat report. One record per auto-resolved space battle, carrying

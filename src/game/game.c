@@ -1384,6 +1384,30 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
         s_mp_council_active = true;
         return;
     }
+    if ((data[0] == UI_MP_SPEC_BATTLE_INIT) && (len >= 1 + (int)sizeof(struct battle_s))) {
+        /* 1oom-mp: a teammate's fight is starting -> load the arena so we can WATCH the streamed frames
+           (handled before the battle gate: an observer has no ctx yet). Submits nothing. */
+        memcpy(&s_mp_battle, data + 1, sizeof(s_mp_battle));
+        s_mp_battle.uictx = NULL;
+        mp_battle_fixup(g, &s_mp_battle);
+        ui_battle_init_spectate(&s_mp_battle);
+        s_mp_battle_uictx = s_mp_battle.uictx;
+        s_mp_battle_auto = false;
+        return;
+    }
+    if ((data[0] == UI_MP_SPEC_BATTLE_END) && (len >= 1 + (int)sizeof(struct battle_s) + 5)) {
+        /* 1oom-mp: the teammate's fight ended -> tear down our observer arena. */
+        if (s_mp_battle_uictx) {
+            uint8_t colony = data[1 + sizeof(struct battle_s)];
+            int32_t winner; memcpy(&winner, data + 1 + sizeof(struct battle_s) + 1, 4);
+            memcpy(&s_mp_battle, data + 1, sizeof(s_mp_battle));
+            mp_battle_fixup(g, &s_mp_battle);
+            s_mp_battle.uictx = s_mp_battle_uictx;
+            ui_battle_shutdown(&s_mp_battle, colony != 0, winner);
+            s_mp_battle_uictx = NULL;
+        }
+        return;
+    }
     if (!s_mp_battle_uictx || s_mp_battle_auto) { return; } /* not in a battle, or auto-resolved it (ctx half-built, no gfx_bg): can't render the streamed animations */
     if (len == (int)sizeof(struct battle_s)) {
         /* a full snapshot: refresh the spectator's battle (the wait loop redraws it) */

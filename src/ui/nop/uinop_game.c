@@ -138,6 +138,9 @@ static uint16_t mp_battle_item_num(const struct battle_s *bt, int side, int look
     return total;
 }
 
+/* 1oom-mp: stream a battle event to teammates of either combatant (observers); defined below. */
+static void mp_spec_send_observers(const struct battle_s *bt, const void *data, int len, int reliable);
+
 ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
 {
     /* snapshot the initial ship stacks (item[0] is the planet, so start at 1) for the loss diff */
@@ -186,6 +189,14 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
                         }
                     }
                 }
+                if (result == UI_BATTLE_AUTORESOLVE_OFF) {
+                    /* 1oom-mp: the fight will be played live -> tell observing teammates to load the
+                       arena and watch (reliable: must arrive before the frames it precedes). */
+                    static uint8_t ibuf[1 + sizeof(struct battle_s)];
+                    ibuf[0] = UI_MP_SPEC_BATTLE_INIT;
+                    memcpy(ibuf + 1, bt, sizeof(struct battle_s));
+                    mp_spec_send_observers(bt, ibuf, 1 + (int)sizeof(struct battle_s), 1);
+                }
                 return result;
             }
         }
@@ -213,6 +224,14 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
             buf[sizeof(struct battle_s)] = colony_destroyed ? 1 : 0;
             memcpy(buf + sizeof(struct battle_s) + 1, &w, 4);
             g_mp_decision_hook_multi(players, n, MP_DEC_BATTLE_END, buf, (int)sizeof(struct battle_s) + 5, resp, 1);
+            /* 1oom-mp: tear down any OBSERVING teammate's arena too (reliable: else the finished battle
+               keeps rendering on their screen forever). Prefix the same [battle_s][colony][winner] buf. */
+            {
+                static uint8_t ebuf[1 + sizeof(struct battle_s) + 8];
+                ebuf[0] = UI_MP_SPEC_BATTLE_END;
+                memcpy(ebuf + 1, buf, sizeof(struct battle_s) + 5);
+                mp_spec_send_observers(bt, ebuf, 1 + (int)sizeof(struct battle_s) + 5, 1);
+            }
             if (bt->autoresolve) {
                 /* auto-resolved: send each involved human the per-design losses for both sides, for the
                    consolidated end-of-turn combat report (the per-battle result screen is suppressed). */
@@ -272,6 +291,8 @@ void ui_battle_draw_basic(const struct battle_s *bt)
                 g_mp_spectate_hook(bt->s[side].party, bt, (int)sizeof(*bt), 0/*best-effort: full snapshot self-heals*/);
             }
         }
+        /* 1oom-mp: + teammates observing the fight (not actor-gated: an observer needs every frame). */
+        mp_spec_send_observers(bt, bt, (int)sizeof(*bt), 0/*best-effort: full snapshot self-heals*/);
     }
 }
 
@@ -298,6 +319,7 @@ void ui_battle_draw_missile(const struct battle_s *bt, int missilei, int x, int 
         for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
             if (bt->s[side].flag_human) { g_mp_spectate_hook(bt->s[side].party, b, p, 1/*reliable: missile flight*/); }
         }
+        mp_spec_send_observers(bt, b, p, 1/*reliable: missile flight*/);
     }
 }
 
@@ -315,6 +337,24 @@ void ui_battle_draw_item(const struct battle_s *bt, int itemi, int x, int y)
 
 /* 1oom-mp: push a small battle animation event to the human(s) NOT currently acting (same audience
    as the draw_basic snapshot) so a spectator sees the attack play out. args are sent as int16. */
+/* 1oom-mp: stream a battle event to teammates of either combatant who aren't themselves fighting,
+   so they OBSERVE the fight live. NOT actor-gated -- an observer isn't acting, so it needs every
+   frame. Each observer is sent at most once. */
+static void mp_spec_send_observers(const struct battle_s *bt, const void *data, int len, int reliable)
+{
+    const struct game_s *g = bt->g;
+    int pl, pr;
+    if (!g_mp_spectate_hook || !g) { return; }
+    pl = bt->s[SIDE_L].party; pr = bt->s[SIDE_R].party;
+    for (int p = 0; p < g->players; ++p) {
+        bool obs;
+        if ((p == pl) || (p == pr) || !IS_HUMAN(g, p)) { continue; }
+        obs = ((pl >= 0) && (g->mp_team[pl] != 0) && (g->mp_team[p] == g->mp_team[pl]))
+           || ((pr >= 0) && (g->mp_team[pr] != 0) && (g->mp_team[p] == g->mp_team[pr]));
+        if (obs) { g_mp_spectate_hook(p, data, len, reliable); }
+    }
+}
+
 static void mp_spec_send(const struct battle_s *bt, uint8_t kind, const int *args, int nargs)
 {
     if (!g_mp_spectate_hook) { return; }
@@ -330,6 +370,7 @@ static void mp_spec_send(const struct battle_s *bt, uint8_t kind, const int *arg
                 g_mp_spectate_hook(bt->s[side].party, b, 1 + nargs * 2, 1/*reliable: one-shot battle animation (beam/damage/retreat/...)*/);
             }
         }
+        mp_spec_send_observers(bt, b, 1 + nargs * 2, 1/*reliable: one-shot battle animation*/);
     }
 }
 
@@ -986,6 +1027,11 @@ void ui_mp_battle_spectate(const struct battle_s *bt)
 void ui_mp_battle_glide(struct battle_s *bt, int itemi, int sx, int sy)
 {
     (void)bt; (void)itemi; (void)sx; (void)sy; /* headless: client-only */
+}
+
+void ui_battle_init_spectate(struct battle_s *bt)
+{
+    (void)bt; /* headless: the server never renders/observes */
 }
 
 int ui_mp_lobby_run(int my_id)

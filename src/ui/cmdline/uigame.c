@@ -146,6 +146,11 @@ void ui_mp_battle_glide(struct battle_s *bt, int itemi, int sx, int sy)
     (void)bt; (void)itemi; (void)sx; (void)sy; /* cmdline: no battle render */
 }
 
+void ui_battle_init_spectate(struct battle_s *bt)
+{
+    (void)bt; /* cmdline: no battle render */
+}
+
 int ui_mp_lobby_run(int my_id)
 {
     /* cmdline client: no interactive lobby UI -- auto-pick a race by slot, ready up, and wait. */
