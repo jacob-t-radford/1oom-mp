@@ -799,6 +799,11 @@ ui_turn_action_t ui_game_turn(struct game_s *g, int *load_game_i_ptr, int pi)
 {
     int scrapi = -1;
     int opponi = -1;
+    /* 1oom-mp teams: a stance proposal lives for one turn. Clear any that didn't resolve so a
+       disconnected / AFK / just-eliminated ally can't leave the proposer stuck awaiting a vote that
+       will never come (mirrors how an unanswered audience invite lapses at the turn boundary). */
+    s_team_prop_enemy = -1; s_team_prop_stance = 0; s_team_prop_await = 0; s_team_prop_result = 0; s_team_prop_announce = -1;
+    s_team_vote_from = -1; s_team_enact_from = -1;
     if (g->gaux->local_players > 1) {
         while (ui_switch_1_opts(g, pi)) {
             switch (ui_gameopts(g, load_game_i_ptr)) {
