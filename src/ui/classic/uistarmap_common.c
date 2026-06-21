@@ -510,13 +510,18 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         }
         tx = (p->x - x) * 2 + 14;
         ty = (p->y - y) * 2 + 22;
-        if (p->owner == PLAYER_NONE) {
+        /* 1oom-mp: a teammate settling this world this turn owns it in the live overlay but not yet in
+           my synced state -> render its name as THEIR colony (banner colour, and actually shown) now,
+           instead of a bare unowned star until the turn resolves. */
+        player_id_t eff_owner = p->owner;
+        if (eff_owner == PLAYER_NONE) { int cz = ui_mp_team_plan_colonizer(pi); if (cz >= 0) { eff_owner = (player_id_t)cz; } }
+        if (eff_owner == PLAYER_NONE) {
             lbxfont_select(2, 7, 0, 0);
         } else if (visible || (pi == g->evn.planet_orion_i)) {
-            lbxfont_select(2, tbl_banner_fontparam[g->eto[p->owner].banner], 0, 0);
-        } else if (BOOLVEC_IS1(g->eto[d->api].contact, p->owner) || (p->within_frange[d->api] == 1)) {
+            lbxfont_select(2, tbl_banner_fontparam[g->eto[eff_owner].banner], 0, 0);
+        } else if (BOOLVEC_IS1(g->eto[d->api].contact, eff_owner) || (p->within_frange[d->api] == 1)) {
             lbxfont_select(2, 0, 0, 0);
-            lbxfont_set_color0(tbl_banner_color[g->eto[p->owner].banner]);
+            lbxfont_set_color0(tbl_banner_color[g->eto[eff_owner].banner]);
         } else {
             lbxfont_select(2, 7, 0, 0);
         }
@@ -562,7 +567,7 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                         || (pi == g->evn.planet_orion_i)
                         || (BOOLVEC_IS1(g->eto[d->api].contact, p->owner))
                         || (p->within_frange[d->api] == 1);
-            if (p->owner != PLAYER_NONE && do_print) {
+            if (eff_owner != PLAYER_NONE && do_print) {
                 lbxfont_print_str_center_limit(tx, ty, p->name, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
             }
         }
