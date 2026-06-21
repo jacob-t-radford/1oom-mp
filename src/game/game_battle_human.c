@@ -84,7 +84,13 @@ static void game_battle_with_human_init_sub1(struct battle_s *bt)
 
 static void game_battle_place_items(struct battle_s *bt)
 {
-    const int8_t tbl_starty[NUM_SHIPDESIGNS] = { 3, 4, 2, 5, 1, 6 };
+    /* 1oom-mp: a combined-fleet side can hold up to NUM_SHIPDESIGNS*BATTLE_SIDE_PARTIES_MAX (18) stacks,
+       but a single starting column is only BATTLE_AREA_H (8) tall -- the classic 6-row table overflowed
+       (garbage row -> out-of-bounds area[sy][sx] write -> crash) and would also stack ships on one cell.
+       Fill the side's edge column top-to-bottom, then spill into the next column inward; the classic
+       <=6-ship case is unchanged (column 0, original rows). 18 stacks need 3 columns, which fit on each
+       flank of the 10-wide arena without the two sides overlapping. */
+    const int8_t tbl_starty[BATTLE_AREA_H] = { 3, 4, 2, 5, 1, 6, 0, 7 };
     {
         int x = 1, y = 3;
         switch (bt->item[0].side) {
@@ -102,12 +108,12 @@ static void game_battle_place_items(struct battle_s *bt)
         bt->item[0].sy = y;
     }
     for (int i = 1; i <= bt->s[SIDE_L].items; ++i) {
-        bt->item[i].sx = 0;
-        bt->item[i].sy = tbl_starty[i - 1];
+        bt->item[i].sx = (i - 1) / BATTLE_AREA_H;                                            /* columns 0,1,2 */
+        bt->item[i].sy = tbl_starty[(i - 1) % BATTLE_AREA_H];
     }
     for (int i = 1; i <= bt->s[SIDE_R].items; ++i) {
-        bt->item[i + bt->s[SIDE_L].items].sx = 9;
-        bt->item[i + bt->s[SIDE_L].items].sy = tbl_starty[i - 1];
+        bt->item[i + bt->s[SIDE_L].items].sx = (BATTLE_AREA_W - 1) - (i - 1) / BATTLE_AREA_H; /* columns 9,8,7 */
+        bt->item[i + bt->s[SIDE_L].items].sy = tbl_starty[(i - 1) % BATTLE_AREA_H];
     }
     for (int i = 0; i < bt->num_rocks; ++i) {
         struct battle_rock_s *r = &(bt->rock[i]);
@@ -516,7 +522,11 @@ static void game_battle_with_human_init(struct battle_s *bt)
             /* already zeroed */
             break;
     }
-    for (int i = 0; i < NUM_SHIPDESIGNS; ++i) {
+    /* 1oom-mp: clear the WHOLE per-side ship table, not just the first NUM_SHIPDESIGNS slots. This
+       pre-zero is what makes a destroyed stack's slot read 0 in game_battle_finish (the end-of-battle
+       writeback only updates surviving items). For a combined-fleet side (up to NUM_SHIPDESIGNS*
+       BATTLE_SIDE_PARTIES_MAX stacks), leaving slots 6..17 stale resurrected destroyed allied ships. */
+    for (int i = 0; i < TBLLEN(bt->s[SIDE_L].tbl_ships); ++i) {
         bt->s[SIDE_L].tbl_ships[i] = 0;
         bt->s[SIDE_R].tbl_ships[i] = 0;
     }
@@ -865,7 +875,10 @@ static void game_battle_pulsar(struct battle_s *bt, int attacker_i, int ptype)
 {
     struct battle_item_s *b = &(bt->item[attacker_i]);
     int ndiv, rbase;
-    uint32_t dmgtbl[NUM_SHIPDESIGNS * 2 + 1/*planet*/];
+    /* 1oom-mp: was NUM_SHIPDESIGNS*2+1 (one empire per side). A combined-fleet side can have many more
+       stacks; the loop below indexes dmgtbl[0..items_num] and the client reads the same range, so this
+       MUST be sized to the item table or a >6-type side overflows the stack and crashes. */
+    uint32_t dmgtbl[BATTLE_ITEM_MAX];
     memset(dmgtbl, 0, sizeof(dmgtbl));
     if (ptype == 0) {
         ndiv = 2;
