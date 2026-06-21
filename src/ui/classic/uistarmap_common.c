@@ -710,6 +710,22 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                 ty = (p->y - y) * 2 + i * 6 + 8;
                 lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
             }
+            /* 1oom-mp teams: stacked-fleet indicator. When more than one fleet (typically your own +
+               a teammate's, or two teammates') sits at the same star, the small badges overlap and
+               are easy to miss -- draw a little count chit to the right of the stack, in the top
+               owner's banner colour, so it's visibly stacked and you know to click each row. */
+            if (num > 1) {
+                uint8_t bc = tbl_banner_color[g->eto[tblorbit[0]].banner];
+                int bx = tx + 7;
+                int by = (p->y - y) * 2 + 8;
+                char nb[8];
+                ui_draw_box1(bx - 1, by - 1, bx + 5, by + 5, 0, 0, starmap_scale);
+                ui_draw_filled_rect(bx, by, bx + 4, by + 4, bc, starmap_scale);
+                lib_sprintf(nb, sizeof(nb), "%d", num);
+                lbxfont_select(2, 0, 0, 0);
+                lbxfont_set_color0(0);
+                lbxfont_print_str_center_limit(bx + 2, by, nb, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+            }
         }
     }
 }
@@ -1033,6 +1049,15 @@ void ui_starmap_fill_oi_tbls(struct starmap_data_s *d)
             for (int j = 0; j < g->players; ++j) {
                 const fleet_orbit_t *r = &(g->eto[j].orbit[i]);
                 if (BOOLVEC_IS0(p->within_srange, d->api) && (j != d->api)) {
+                    continue;
+                }
+                /* 1oom-mp teams: the clickareas MUST line up row-for-row with the badges drawn in
+                   ui_starmap_draw_starmap (which is overlay-aware). For a teammate whose live plan is
+                   streaming, use their relayed orbit -- otherwise a fleet they sent en-route this turn
+                   still occupies an (invisible) orbit row here, shifting your own badge's clickarea down
+                   so clicking YOUR badge actually selects THEIR co-located fleet (wrong owner's ships). */
+                if (ui_mp_team_plan_active(j)) {
+                    if (ui_mp_team_plan_orbit_has(j, i)) { tblpl[numorbits++] = j; }
                     continue;
                 }
                 for (int k = 0; k < g->eto[j].shipdesigns_num; ++k) {
