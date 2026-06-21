@@ -398,7 +398,11 @@ static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player
 static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
 {
     uint8_t buf[MP_DIPLO_CL_MSGMAX]; int len = sizeof(buf);
+    struct audience_s wa = {0}; /* 1oom-mp: keep the alien's portrait up while awaiting their envoy (no black/map frame) */
+    wa.g = g; wa.ph = pi; wa.pa = pa;
+    ui_audience_start(&wa);
     int id = ui_mp_diplo_wait("Receiving their envoy...", buf, &len);
+    ui_audience_end(&wa);
     if (id != MP_MSG_DIPLO_PROPOSAL) { return; } /* session ended / cancelled without an offer */
     uint8_t verb = (len >= 3) ? buf[2] : MP_DIPLO_NONE;
     uint8_t pp[4] = { 0, 0, 0, 0 };
@@ -690,9 +694,17 @@ void ui_mp_diplo_handle(struct game_s *g, int pi)
     au.buf = "They request an audience. Will you receive their envoy now?";
     au.strtbl[0] = "Receive now"; au.strtbl[1] = "Decline"; au.strtbl[2] = NULL;
     int16_t sel = ui_audience_ask4(&au);
-    ui_audience_end(&au);
-    if (sel != 0) { diplo_cl_accept(from, pi, 0); return; } /* decline */
-    diplo_cl_accept(from, pi, 1); /* accept -> server opens -> pump captures SESSION_OPEN -> enter next */
+    if (sel != 0) { ui_audience_end(&au); diplo_cl_accept(from, pi, 0); return; } /* decline */
+    diplo_cl_accept(from, pi, 1); /* accept */
+    /* 1oom-mp: keep the alien's audience screen up (no flicker out to the starmap) while the server
+       opens the session -- `au` stays active so ui_mp_diplo_wait paints the portrait -- then run the
+       session inline. (Consumes SESSION_OPEN here, so the pump's sess_open path won't double-enter.) */
+    {
+        uint8_t sbuf[MP_DIPLO_CL_MSGMAX]; int slen = sizeof(sbuf);
+        int id = ui_mp_diplo_wait("Receiving their envoy...", sbuf, &slen);
+        ui_audience_end(&au);
+        if (id == MP_MSG_DIPLO_SESSION_OPEN) { ui_mp_diplo_run_session(g, pi, sbuf, slen); }
+    }
 }
 
 /* 1oom-mp: a human's colony ships wait in orbit (the server doesn't auto-colonize);
