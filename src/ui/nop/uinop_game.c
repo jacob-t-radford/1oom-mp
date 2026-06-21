@@ -155,7 +155,7 @@ static int mp_battle_human_owners(const struct battle_s *bt, int *players, battl
             for (j = 0; j < n; ++j) { if (players[j] == p) { dup = true; break; } }
             if (dup) { continue; }
             players[n] = p; if (sides) { sides[n] = side; } ++n;
-            if (n >= 4) { return n; }
+            if (n >= 2 * BATTLE_SIDE_PARTIES_MAX) { return n; }
         }
     }
     return n;
@@ -168,7 +168,7 @@ static bool mp_battle_is_owner(const struct battle_s *bt, int p) {
 }
 /* send a battle frame to every human OWNER (combatant), optionally skipping one (the current actor). */
 static void mp_spec_send_owners(const struct battle_s *bt, const void *data, int len, int reliable, int except) {
-    int players[4]; int n, i;
+    int players[2 * BATTLE_SIDE_PARTIES_MAX]; int n, i;
     if (!g_mp_spectate_hook) { return; }
     n = mp_battle_human_owners(bt, players, NULL);
     for (i = 0; i < n; ++i) { if (players[i] != except) { g_mp_spectate_hook(players[i], data, len, reliable); } }
@@ -194,11 +194,11 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
        prompt + sets up its battle UI at the same time). Battle goes interactive if any
        human picks Continue. Default AUTO outside MP. */
     if (g_mp_decision_hook_multi) {
-        int players[4];
-        battle_side_i_t sides[4];
+        int players[2 * BATTLE_SIDE_PARTIES_MAX];
+        battle_side_i_t sides[2 * BATTLE_SIDE_PARTIES_MAX];
         int n = mp_battle_human_owners(bt, players, sides); /* 1oom-mp: every human combatant (each side's lead + its allies) */
         if (n > 0) {
-            uint8_t modes[4] = { UI_BATTLE_AUTORESOLVE_AUTO, UI_BATTLE_AUTORESOLVE_AUTO, UI_BATTLE_AUTORESOLVE_AUTO, UI_BATTLE_AUTORESOLVE_AUTO };
+            uint8_t modes[2 * BATTLE_SIDE_PARTIES_MAX]; memset(modes, UI_BATTLE_AUTORESOLVE_AUTO, sizeof(modes)); /* default before the per-owner prompt fills each */
             if (g_mp_decision_hook_multi(players, n, MP_DEC_BATTLE_INIT, bt, (int)sizeof(*bt), modes, 1) == 0) {
                 ui_battle_autoresolve_t result = UI_BATTLE_AUTORESOLVE_AUTO;
                 bool side_fights[2] = { false, false };
@@ -244,7 +244,7 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
        set forever, and then re-render that stale battle on every later combat-wait broadcast --
        even while completely uninvolved in someone else's fight. */
     if (g_mp_decision_hook_multi) {
-        int players[4];
+        int players[2 * BATTLE_SIDE_PARTIES_MAX];
         int n = mp_battle_human_owners(bt, players, NULL); /* 1oom-mp: tear down every human owner's battle UI */
         if (n > 0) {
             static uint8_t buf[sizeof(struct battle_s) + 8];

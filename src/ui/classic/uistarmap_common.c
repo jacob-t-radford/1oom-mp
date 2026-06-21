@@ -602,10 +602,11 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             if (g->eto[d->api].have_ia_scanner && (p->owner == d->api) && (r->owner != d->api) && (r->dest == g->planet_focus_i[d->api])) {
                 ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_red, 5, ui_data.starmap.line_anim_phase, starmap_scale);
             }
-            if (ui_extra_enabled && ui_data.starmap.flag_show_own_routes && d->show_planet_focus) {
-                if ((r->owner == d->api) && (r->dest == g->planet_focus_i[d->api])) {
-                    ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_green, 5, ui_data.starmap.line_anim_phase, starmap_scale);
-                }
+            if (ui_extra_enabled && (r->owner == d->api) && (r->dest < g->galaxy_stars)) {
+                /* 1oom-mp: show MY OWN fleets'/transports' destinations too (like teammates'), always
+                   (not just the focused planet), each line drawn in MY banner colour. */
+                const planet_t *pdst = &g->planet[r->dest];
+                ui_draw_line_limit(tx + 5, ty + 2, (pdst->x - x) * 2 + 14, (pdst->y - y) * 2 + 14, tbl_banner_color[g->eto[r->owner].banner], starmap_scale);
             }
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }
@@ -625,7 +626,7 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             tx = (fx - x) * 2 + 8;
             ty = (fy - y) * 2 + 8;
             if (pd->x < fx) { lbxgfx_set_new_frame(gfx, 1); } else { lbxgfx_set_frame_0(gfx); }
-            ui_draw_line_limit_ctbl(tx + 5, ty + 2, (pd->x - x) * 2 + 14, (pd->y - y) * 2 + 14, colortbl_line_green, 5, ui_data.starmap.line_anim_phase, starmap_scale);
+            ui_draw_line_limit(tx + 5, ty + 2, (pd->x - x) * 2 + 14, (pd->y - y) * 2 + 14, tbl_banner_color[g->eto[fo].banner], starmap_scale); /* 1oom-mp: teammate fleet route in THEIR banner colour */
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }
     }
@@ -645,10 +646,11 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             if (g->eto[d->api].have_ia_scanner && (p->owner == d->api) && (r->owner != d->api) && (r->dest == g->planet_focus_i[d->api])) {
                 ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_red, 5, ui_data.starmap.line_anim_phase, starmap_scale);
             }
-            if (ui_extra_enabled && ui_data.starmap.flag_show_own_routes && d->show_planet_focus) {
-                if ((r->owner == d->api) && (r->dest == g->planet_focus_i[d->api])) {
-                    ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_green, 5, ui_data.starmap.line_anim_phase, starmap_scale);
-                }
+            if (ui_extra_enabled && (r->owner == d->api) && (r->dest < g->galaxy_stars)) {
+                /* 1oom-mp: show MY OWN fleets'/transports' destinations too (like teammates'), always
+                   (not just the focused planet), each line drawn in MY banner colour. */
+                const planet_t *pdst = &g->planet[r->dest];
+                ui_draw_line_limit(tx + 5, ty + 2, (pdst->x - x) * 2 + 14, (pdst->y - y) * 2 + 14, tbl_banner_color[g->eto[r->owner].banner], starmap_scale);
             }
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }

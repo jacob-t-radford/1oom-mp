@@ -1306,6 +1306,7 @@ static void game_battle_with_human_do_sub3(struct battle_s *bt)
             flag_turn_done = false;
             while (!flag_turn_done) {
                 ui_battle_action_t act;
+                bool item_is_ai = (b->owner >= 0) && (b->owner < PLAYER_NUM) && !IS_HUMAN(bt->g, b->owner); /* 1oom-mp teams: per-stack control -- an AI-owned stack on a mixed (human+AI) side auto-moves */
                 if (!bt->autoresolve) {
                     ui_battle_turn_pre(bt);
                 }
@@ -1330,8 +1331,8 @@ static void game_battle_with_human_do_sub3(struct battle_s *bt)
                 b->selected = 1;
                 bt->flag_cur_item_destroyed = false;
                 bt->num_repulsed = 0;
-                if (bt->s[b->side].flag_auto || (b->retreat > 0)) {
-                    if (bt->s[b->side].flag_human && bt->autoretreat && (b->retreat == 0)) {
+                if (bt->s[b->side].flag_auto || (b->retreat > 0) || item_is_ai) {
+                    if (bt->s[b->side].flag_human && bt->autoretreat && (b->retreat == 0) && !item_is_ai) {
                         b->retreat = 1;
                     } else {
                         game_battle_with_human_do_turn_ai(bt);

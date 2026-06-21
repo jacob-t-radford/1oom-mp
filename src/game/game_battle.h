@@ -90,7 +90,7 @@ struct battle_missile_s {
     uint8_t speed;
 };
 
-#define BATTLE_SIDE_PARTIES_MAX 2 /* 1oom-mp: max empires per side (lead + 1 ally); 2 sides * 2 * NUM_SHIPDESIGNS + planet fits BATTLE_ITEM_MAX */
+#define BATTLE_SIDE_PARTIES_MAX 3 /* 1oom-mp: max empires per side (lead + 2 allies); 2 sides * 3 * NUM_SHIPDESIGNS + planet fits BATTLE_ITEM_MAX */
 struct battle_side_s {
     int party;                            /* lead empire of this side (commands; owns the ship-type table below) */
     int parties[BATTLE_SIDE_PARTIES_MAX]; /* 1oom-mp: every empire on this side (party + allied teammates) */
@@ -108,9 +108,9 @@ struct battle_side_s {
     int16_t flag_auto; /* HACK type is for uiobj */
 };
 
-/* 1oom-mp: was *2 (one empire per side). *4 lets a side hold several ALLIED empires for combined-fleet
-   battles (e.g. a 2v2); item indices stay within int8_t (4*NUM_SHIPDESIGNS+1 = 25). */
-#define BATTLE_ITEM_MAX (NUM_SHIPDESIGNS * 4 + 1/*planet*/)
+/* 1oom-mp: was *2 (one empire per side). *6 lets each side hold up to 3 ALLIED empires for combined-fleet
+   battles (e.g. a 3v3); item indices stay within int8_t (6*NUM_SHIPDESIGNS+1 = 37). */
+#define BATTLE_ITEM_MAX (NUM_SHIPDESIGNS * 6 + 1/*planet*/)
 
 struct battle_s {
     struct game_s *g;

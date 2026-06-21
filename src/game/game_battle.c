@@ -96,7 +96,6 @@ static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, ba
             shiptbli = bt->s[SIDE_R].items - 1;
             break;
     }
-    b->owner = owner; /* 1oom-mp: the empire owning this stack (planet or ship; per-stack for combined fleets) */
     if (side != SIDE_NONE/*planet*/) {
         game_battle_item_from_parsed(b, sp);
         if (b->sbmask & (1 << SHIP_SPECIAL_BOOL_SCANNER)) {
@@ -106,6 +105,22 @@ static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, ba
         b->gfx = ui_gfx_get_ship(b->look);
         b->shiptbli = shiptbli;
     }
+    b->owner = owner; /* 1oom-mp: the empire owning this stack (per-stack for combined fleets). MUST be
+                         set AFTER game_battle_item_from_parsed() above -- that fills the whole item from
+                         the parsed ship and clobbers owner, so setting it earlier left every ally/enemy
+                         stack attributed to player 0 (breaking the per-owner combat hand-off + loss
+                         writeback). The planet branch has no from_parsed after this, so it's fine too. */
+}
+
+/* 1oom-mp teams: a retreat haven is any planet the loser can fall back to -- its own, or (in a team
+   game) a teammate's. Because every co-side member computes the same nearest haven from the same
+   battle planet, a combined fleet rallies on ONE shared team world instead of scattering to each
+   member's own nearest planet. Non-team games fall back to own-planets-only (mp_team == 0). */
+static bool game_battle_retreat_haven(const struct game_s *g, player_id_t planet_owner, int loser)
+{
+    if ((int)planet_owner == loser) { return true; }
+    if (planet_owner >= g->players) { return false; } /* unowned / monster */
+    return (g->mp_team[loser] != 0) && (g->mp_team[planet_owner] == g->mp_team[loser]);
 }
 
 static void game_battle_post(struct game_s *g, int loser, int winner, planet_id_t from)
@@ -142,7 +157,7 @@ static void game_battle_post(struct game_s *g, int loser, int winner, planet_id_
         }
         for (int i = 0; i < g->galaxy_stars; ++i) {
             const planet_t *pt = &g->planet[i];
-            if ((i != from) && (pt->owner == loser)) {
+            if ((i != from) && game_battle_retreat_haven(g, pt->owner, loser)) {
                 int dist;
                 dist = util_math_dist_fast(pf->x, pf->y, pt->x, pt->y);
                 if (dist < mindist) {
@@ -156,6 +171,23 @@ static void game_battle_post(struct game_s *g, int loser, int winner, planet_id_
         }
         for (int i = 0; i < NUM_SHIPDESIGNS; ++i) {
             o->ships[i] = 0;
+        }
+    }
+}
+
+/* 1oom-mp teams: game_battle_post relocates only the empire it's handed (a side's LEAD). A combined
+   fleet's joined ALLIES must also pull their surviving stacks off the battle planet to their own
+   nearest world -- otherwise an ally's ships were left stranded on the enemy planet after the side
+   retreated/lost. Relocate every ally on the side whose lead == loser_lead (only the LOSING side
+   matches, so winners are untouched). */
+static void game_battle_post_side_allies(struct battle_s *bt, int loser_lead, int winner, planet_id_t from)
+{
+    struct game_s *g = bt->g;
+    for (battle_side_i_t bs = SIDE_L; bs <= SIDE_R; ++bs) {
+        if (bt->s[bs].parties[0] != loser_lead) { continue; }
+        for (int k = 1; k < (int)bt->s[bs].num_parties; ++k) {
+            int ally = bt->s[bs].parties[k];
+            if ((ally >= 0) && (ally < PLAYER_NUM)) { game_battle_post(g, ally, winner, from); }
         }
     }
 }
@@ -223,7 +255,7 @@ static void game_battle_prepare_add_allies(struct battle_s *bt, battle_side_i_t 
     for (player_id_t a = PLAYER_0; a < g->players; ++a) {
         bool has = false;
         const shipdesign_t *sd;
-        if ((a == (player_id_t)lead) || (g->mp_team[a] != g->mp_team[lead]) || (!IS_ALIVE(g, a)) || (!IS_HUMAN(g, a))) { continue; } /* 1oom-mp: combined fleets join HUMAN teammates (each drives their own ships); AI allies fight separately */
+        if ((a == (player_id_t)lead) || (g->mp_team[a] != g->mp_team[lead]) || (!IS_ALIVE(g, a))) { continue; } /* 1oom-mp: combined fleets join ANY alive teammate -- human OR AI (two AIs, or a mixed human+AI team, fight as one side). Human stacks hand off to their player; AI stacks auto-move (per-stack routing in the battle loop). */
         if (bt->s[side].num_parties >= BATTLE_SIDE_PARTIES_MAX) { break; }
         for (int i = 0; i < g->eto[a].shipdesigns_num; ++i) {
             if (g->eto[a].orbit[planet_i].ships[i] > 0) { has = true; break; }
@@ -231,6 +263,7 @@ static void game_battle_prepare_add_allies(struct battle_s *bt, battle_side_i_t 
         if (!has) { continue; } /* this teammate has no fleet here */
         game_battle_prepare_add_ships(bt, side, (int)a, planet_i);
         bt->s[side].parties[bt->s[side].num_parties++] = (int)a;
+        if (IS_HUMAN(g, a)) { bt->s[side].flag_human = true; bt->s[side].flag_auto = false; } /* 1oom-mp: a human ally makes the side interactive even when led by an AI */
         sd = &(g->srd[a].design[0]);
         for (int i = 0; i < g->eto[a].shipdesigns_num; ++i) {
             bt->s[side].apparent_force += (sd[i].hull + 1) * g->eto[a].orbit[planet_i].ships[i];
@@ -407,12 +440,14 @@ void game_battle_handle_all(struct game_s *g)
                         }
                     }
                     game_battle_post(g, party_att, party_def, pli);
+                    game_battle_post_side_allies(bt, party_att, party_def, pli); /* 1oom-mp teams: ally fleets retreat too */
                 } else {
                     /*11926*/
                     /* BUG? first check not in MOO1, reads past table if monster */
                     if ((party_att < PLAYER_NUM) && IS_AI(g, party_att) && (g->evn.ceasefire[party_def][party_att] > 0)) {
                         BOOLVEC_SET0(tbl_have_force, party_att);
                         game_battle_post(g, party_att, party_def, pli);
+                        game_battle_post_side_allies(bt, party_att, party_def, pli); /* 1oom-mp teams: ally fleets retreat too */
                     } else {
                         /*1195f*/
                         int party_l, party_r;
@@ -440,6 +475,7 @@ void game_battle_handle_all(struct game_s *g)
                             }
                         }
                         game_battle_post(g, party_r, party_l, pli);
+                        game_battle_post_side_allies(bt, party_r, party_l, pli); /* 1oom-mp teams: ally fleets retreat too */
                         /*v14 = 1;*/
                     }
                 }
