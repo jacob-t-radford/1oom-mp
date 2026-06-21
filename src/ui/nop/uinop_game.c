@@ -13,6 +13,7 @@
 #include "game_turn.h"
 #include "game_news.h"
 #include "mp.h"
+#include "log.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -138,8 +139,9 @@ static uint16_t mp_battle_item_num(const struct battle_s *bt, int side, int look
     return total;
 }
 
-/* 1oom-mp: stream a battle event to teammates of either combatant (observers); defined below. */
-static void mp_spec_send_observers(const struct battle_s *bt, const void *data, int len, int reliable);
+/* 1oom-mp: stream a battle event to teammates of either combatant (observers); defined below.
+   Returns the number of observer clients it sent to (0 if nobody qualifies / hook is off). */
+static int mp_spec_send_observers(const struct battle_s *bt, const void *data, int len, int reliable);
 
 /* 1oom-mp teams: per-owner battle control. The combatants are every HUMAN empire on either side (a
    side's lead + its joined allied teammates); EACH drives its OWN ships, while non-owner teammates
@@ -165,6 +167,22 @@ static bool mp_battle_is_owner(const struct battle_s *bt, int p) {
         for (int k = 0; k < (int)bt->s[side].num_parties; ++k) { if (bt->s[side].parties[k] == p) { return true; } }
     }
     return false;
+}
+/* 1oom-mp: count the human teammates who would be OFFERED the "press W to watch" prompt for this
+   battle -- i.e. a human on a lead's team who is NOT a combatant. Mirrors the filter in
+   mp_spec_send_observers exactly; used only for the diagnostic log line at the spectate gate so a
+   "the watch prompt never appeared" report can be told apart from "no eligible observers". */
+static int mp_battle_observer_count(const struct battle_s *bt) {
+    const struct game_s *g = bt->g;
+    int pl, pr, n = 0;
+    if (!g) { return 0; }
+    pl = bt->s[SIDE_L].party; pr = bt->s[SIDE_R].party;
+    for (int p = 0; p < g->players; ++p) {
+        if ((p == pl) || (p == pr) || !IS_HUMAN(g, p) || mp_battle_is_owner(bt, p)) { continue; }
+        if (((pl >= 0) && (g->mp_team[pl] != 0) && (g->mp_team[p] == g->mp_team[pl]))
+         || ((pr >= 0) && (g->mp_team[pr] != 0) && (g->mp_team[p] == g->mp_team[pr]))) { ++n; }
+    }
+    return n;
 }
 /* send a battle frame to every human OWNER (combatant), optionally skipping one (the current actor). */
 static void mp_spec_send_owners(const struct battle_s *bt, const void *data, int len, int reliable, int except) {
@@ -221,13 +239,27 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
                 for (int side = SIDE_L; side <= SIDE_R; ++side) {
                     if (bt->s[side].flag_human && !side_fights[side]) { bt->s[side].flag_auto = 1; }
                 }
-                if (result == UI_BATTLE_AUTORESOLVE_OFF) {
-                    /* 1oom-mp: the fight will be played live -> tell observing teammates to load the
-                       arena and watch (reliable: must arrive before the frames it precedes). */
-                    static uint8_t ibuf[1 + sizeof(struct battle_s)];
-                    ibuf[0] = UI_MP_SPEC_BATTLE_INIT;
-                    memcpy(ibuf + 1, bt, sizeof(struct battle_s));
-                    mp_spec_send_observers(bt, ibuf, 1 + (int)sizeof(struct battle_s), 1);
+                {
+                    /* 1oom-mp diagnostic: the observer "press W to watch" offer is sent ONLY when the
+                       fight goes interactive (result==OFF). An auto-resolved/retreated teammate battle
+                       builds no live arena and streams no frames, so observers correctly get the combat
+                       wait banner but NO watch prompt -- which looks like a bug. Log both the decision
+                       and how many teammates were eligible so a "watch prompt never appeared" report is
+                       conclusive: eligible>0 + interactive=no => auto-resolved (expected, nothing live);
+                       eligible==0 => a team/filter problem (no one to offer). */
+                    int eligible = mp_battle_observer_count(bt);
+                    int sent = 0;
+                    if (result == UI_BATTLE_AUTORESOLVE_OFF) {
+                        /* the fight will be played live -> tell observing teammates to load the arena and
+                           watch (reliable: must arrive before the frames it precedes). */
+                        static uint8_t ibuf[1 + sizeof(struct battle_s)];
+                        ibuf[0] = UI_MP_SPEC_BATTLE_INIT;
+                        memcpy(ibuf + 1, bt, sizeof(struct battle_s));
+                        sent = mp_spec_send_observers(bt, ibuf, 1 + (int)sizeof(struct battle_s), 1);
+                    }
+                    log_message("MP spectate: battle at planet %d leads L=%d R=%d interactive=%s watch-offer-eligible=%d offer-sent=%d\n",
+                                (int)bt->planet_i, bt->s[SIDE_L].party, bt->s[SIDE_R].party,
+                                (result == UI_BATTLE_AUTORESOLVE_OFF) ? "yes" : "no", eligible, sent);
                 }
                 return result;
             }
@@ -362,19 +394,20 @@ void ui_battle_draw_item(const struct battle_s *bt, int itemi, int x, int y)
 /* 1oom-mp: stream a battle event to teammates of either combatant who aren't themselves fighting,
    so they OBSERVE the fight live. NOT actor-gated -- an observer isn't acting, so it needs every
    frame. Each observer is sent at most once. */
-static void mp_spec_send_observers(const struct battle_s *bt, const void *data, int len, int reliable)
+static int mp_spec_send_observers(const struct battle_s *bt, const void *data, int len, int reliable)
 {
     const struct game_s *g = bt->g;
-    int pl, pr;
-    if (!g_mp_spectate_hook || !g) { return; }
+    int pl, pr, sent = 0;
+    if (!g_mp_spectate_hook || !g) { return 0; }
     pl = bt->s[SIDE_L].party; pr = bt->s[SIDE_R].party;
     for (int p = 0; p < g->players; ++p) {
         bool obs;
         if ((p == pl) || (p == pr) || !IS_HUMAN(g, p) || mp_battle_is_owner(bt, p)) { continue; } /* 1oom-mp: an ally OWNER is a combatant, not an observer */
         obs = ((pl >= 0) && (g->mp_team[pl] != 0) && (g->mp_team[p] == g->mp_team[pl]))
            || ((pr >= 0) && (g->mp_team[pr] != 0) && (g->mp_team[p] == g->mp_team[pr]));
-        if (obs) { g_mp_spectate_hook(p, data, len, reliable); }
+        if (obs) { g_mp_spectate_hook(p, data, len, reliable); ++sent; }
     }
+    return sent;
 }
 
 static void mp_spec_send(const struct battle_s *bt, uint8_t kind, const int *args, int nargs)

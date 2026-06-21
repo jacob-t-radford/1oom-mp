@@ -54,7 +54,7 @@ bool game_mp_diplo_record(player_id_t actor, player_id_t target, uint8_t verb, u
 
 /* ---- colonize requests (client records a planet to colonize, server resolves) ---- */
 #define MP_COLONIZE_MAX 16
-struct mp_colonize_req_s { player_id_t pi; planet_id_t pli; };
+struct mp_colonize_req_s { player_id_t pi; planet_id_t pli; char name[PLANET_NAME_LEN]; };
 static planet_id_t s_colonize_act[MP_COLONIZE_MAX];
 static int s_colonize_act_num = 0;
 static struct mp_colonize_req_s s_colonize_pending[MP_COLONIZE_MAX];
@@ -211,6 +211,8 @@ int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, i
         for (int i = 0; i < s_colonize_act_num; ++i) {
             uint16_t pli = (uint16_t)s_colonize_act[i];
             PUT(&pli, 2);
+            /* 1oom-mp: carry the name the player typed so a just-colonized planet keeps it */
+            PUT(g->planet[s_colonize_act[i]].name, PLANET_NAME_LEN);
             ++cnt;
         }
         memcpy(buf + cntpos, &cnt, 2);
@@ -374,10 +376,15 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         GET(&ccnt, 2);
         for (int i = 0; i < ccnt; ++i) {
             uint16_t pli;
+            char cname[PLANET_NAME_LEN];
             GET(&pli, 2);
+            /* 1oom-mp: read the carried name (must stay in sync with the PUT above) */
+            GET(cname, PLANET_NAME_LEN);
+            cname[PLANET_NAME_LEN - 1] = '\0';
             if ((pli < g->galaxy_stars) && (s_colonize_pending_num < MP_COLONIZE_MAX)) {
                 s_colonize_pending[s_colonize_pending_num].pi = pi;
                 s_colonize_pending[s_colonize_pending_num].pli = (planet_id_t)pli;
+                memcpy(s_colonize_pending[s_colonize_pending_num].name, cname, PLANET_NAME_LEN);
                 ++s_colonize_pending_num;
             }
         }
@@ -397,6 +404,10 @@ void game_mp_colonize_apply_pending(struct game_s *g)
     }
     for (int i = 0; i < s_colonize_pending_num; ++i) {
         game_planet_colonize_with_ship(g, s_colonize_pending[i].pi, s_colonize_pending[i].pli);
+        /* 1oom-mp: colonize set the default (star) name; restore the player's chosen name */
+        if (s_colonize_pending[i].name[0]) {
+            memcpy(g->planet[s_colonize_pending[i].pli].name, s_colonize_pending[i].name, PLANET_NAME_LEN);
+        }
     }
     s_colonize_pending_num = 0;
 }
