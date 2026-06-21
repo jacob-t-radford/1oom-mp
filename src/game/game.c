@@ -30,6 +30,7 @@
 #include "game_turn.h"
 #include "game_tech.h"
 #include "log.h"
+#include "hw.h"
 #include "mp.h"
 #include "net.h"
 #include "options.h"
@@ -1543,6 +1544,8 @@ static uint8_t *s_mp_orders_buf = NULL; /* the orders I last submitted (baseline
 static uint8_t *s_mp_orders_tmp = NULL; /* scratch: current orders, to compare against the baseline */
 static int s_mp_orders_cap = 0;
 static int s_mp_orders_len = 0;
+static bool s_mp_timer_active = false;      /* is a countdown currently running? */
+static int64_t s_mp_timer_deadline_us = 0;  /* hw_get_time_us() value at which we auto-submit */
 
 /* serialize my current orders, send them with the given ready flag, and remember them. */
 static void mp_submit_orders(bool ready) {
@@ -1571,14 +1574,34 @@ static bool mp_orders_changed(void) {
     return memcmp(s_mp_orders_tmp, s_mp_orders_buf, (size_t)n) != 0;
 }
 
+/* called by mp.c when TIMER_START (seconds >= 0) or TIMER_CANCEL (seconds < 0) arrives */
+static void mp_timer_notify_impl(int seconds) {
+    if (seconds < 0) {
+        s_mp_timer_active = false;
+    } else {
+        s_mp_timer_active = true;
+        s_mp_timer_deadline_us = hw_get_time_us() + (int64_t)seconds * 1000000LL;
+    }
+}
+
 static bool mp_turn_active_impl(void) { return g_mp_cl_poll != NULL; }
 static bool mp_turn_is_ready_impl(void) { return s_mp_ready; }
+/* returns remaining countdown seconds, or -1 when no timer is active */
+static int mp_turn_timer_remaining_s_impl(void) {
+    if (!s_mp_timer_active) { return -1; }
+    int64_t rem = s_mp_timer_deadline_us - hw_get_time_us();
+    if (rem <= 0) { return 0; }
+    return (int)(rem / 1000000LL);
+}
 /* "Next Turn": toggle my ready lock (submitting my current orders when I lock in). */
 static void mp_turn_set_ready_impl(int ready) { mp_submit_orders(ready != 0); }
-/* pump the socket once; while locked in, re-submit my orders if they changed (so the latest
-   state resolves). Returns true once the server signalled resolution (planning is over). */
+/* pump the socket once; if the countdown expired, auto-submit our orders; returns true once
+   the server signalled resolution (planning is over). */
 static bool mp_turn_poll_impl(void) {
     if (s_mp_ready && mp_orders_changed()) { mp_submit_orders(true); }
+    if (s_mp_timer_active && !s_mp_ready && hw_get_time_us() >= s_mp_timer_deadline_us) {
+        mp_submit_orders(true); /* timer expired: submit whatever we have */
+    }
     return g_mp_cl_poll ? (g_mp_cl_poll() != 0) : false;
 }
 
@@ -1586,6 +1609,7 @@ bool (*ui_mp_turn_active)(void) = mp_turn_active_impl;
 void (*ui_mp_turn_set_ready)(int ready) = mp_turn_set_ready_impl;
 bool (*ui_mp_turn_is_ready)(void) = mp_turn_is_ready_impl;
 bool (*ui_mp_turn_poll)(void) = mp_turn_poll_impl;
+int (*ui_mp_turn_timer_remaining_s)(void) = mp_turn_timer_remaining_s_impl;
 bool ui_mp_active = false; /* true while this process is a networked client (set in game_mp_join) */
 bool game_mp_is_server = false; /* true while this process is the headless MP server (set in game_mp_host) */
 
@@ -1595,6 +1619,7 @@ static int mp_if_write_orders(void *ctx, int player_id, uint8_t *buf, int buflen
     struct game_s *g = (struct game_s *)ctx;
     s_mp_my_pid = player_id;   /* soft-ready: who I am, for the Ready-submit hook */
     s_mp_ready = false;        /* a fresh turn starts un-readied */
+    s_mp_timer_active = false; /* any pending countdown from the previous turn is gone */
     game_mp_orders_reset();    /* clear last turn's queued diplo/colonize actions before this turn re-queues */
     if (getenv("MP_AUTOTECH")) {
         /* MP-DBG: pour everything into TECH (unlocked) to reproduce the slider issue */
@@ -1821,7 +1846,9 @@ static int game_mp_join(void) {
     log_message("MP: joining %s:%u\n", host, (unsigned)port);
     mp_game_iface_t gi = mp_make_iface();
     gi.advance_turn = NULL; /* the client does not resolve turns */
+    g_mp_cl_timer_notify = mp_timer_notify_impl;
     int rc = mp_client_run(host, port, 0 /*until game over*/, &gi);
+    g_mp_cl_timer_notify = NULL;
     game_aux_shutdown(&game_aux);
     return rc ? 1 : 0;
 }

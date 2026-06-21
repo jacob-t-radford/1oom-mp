@@ -19,6 +19,8 @@ enum mp_msg_e {
     MP_MSG_WELCOME   = 0x02, /* S->C: [u16 player_id][u16 num_players] */
     MP_MSG_LOBBY     = 0x03, /* S->C: [struct mp_lobby_s] = the shared lobby state (broadcast on change) */
     MP_MSG_LOBBY_PICK= 0x13, /* C->S: [u8 field][u8 value] = set one of my lobby fields (see mp_lobby_field_e) */
+    MP_MSG_TIMER_START  = 0x14, /* S->C: [u8 seconds] = arm countdown (only one un-ready human left) */
+    MP_MSG_TIMER_CANCEL = 0x15, /* S->C: (empty) = disarm countdown (condition reverted) */
     MP_MSG_GAME_DATA = 0x08, /* S->C: [state blob] (save-format, authoritative) */
     MP_MSG_TURN_MOVE = 0x09, /* S->C: [pre-movement state blob] = animate this turn's fleet movement, sent just before GAME_DATA */
     MP_MSG_SPECTATE  = 0x0a, /* S->C: [battle_s] = a battle update to re-render (no reply); for watching the other side's turn */
@@ -88,6 +90,7 @@ struct mp_lobby_s {
     uint8_t galaxy_size;  /* host-set: galaxy size (0..5) */
     uint8_t difficulty;   /* host-set: AI difficulty (0..4) — global, all AIs share it */
     uint8_t open_lobby;   /* 1 = open lobby: humans join freely up to the cap and the host clicks Start to begin */
+    uint8_t turn_timer_secs; /* host-set: per-turn countdown before auto-submit (0 = off, default 60) */
     struct {
         uint8_t race;     /* 0xff = not yet chosen */
         uint8_t banner;   /* 0xff = not yet chosen */
@@ -108,6 +111,7 @@ enum mp_lobby_field_e {
     MP_LOBBY_F_DIFFICULTY = 6, /* host only: value = difficulty 0..4 */
     MP_LOBBY_F_TEAM = 7,       /* value = (slot << 4) | team -- set a player's team (own slot, or host any) */
     MP_LOBBY_F_START = 8,      /* open lobby, host (slot 0) only: value ignored -- begin the game with whoever has joined */
+    MP_LOBBY_F_TIMER = 9,      /* host only: per-turn countdown in seconds (0 = off) */
 };
 
 /* The game, abstracted. ctx is opaque (the real impl passes a struct game_s *). */
@@ -203,6 +207,11 @@ extern void (*g_mp_cl_lobby_set)(int field, int value);
    and sets *id_out, or -1 if none are queued. _send transmits one diplo message to the server. */
 extern int (*g_mp_cl_diplo_recv)(uint16_t *id_out, uint8_t *buf, int buflen);
 extern void (*g_mp_cl_diplo_send)(uint16_t id, const uint8_t *data, int len);
+
+/* client-side turn timer callback, wired by game.c to update the client's deadline state.
+   Called by cl_poll_impl when TIMER_START (seconds >= 0) or TIMER_CANCEL (seconds < 0) arrives.
+   NULL outside an active client session. */
+extern void (*g_mp_cl_timer_notify)(int seconds);
 
 /* on_wait reason codes */
 #define MP_WAIT_LOBBY  0 /* waiting for the game to start / other players to join */

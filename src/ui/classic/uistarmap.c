@@ -90,11 +90,26 @@ static void ui_starmap_draw_cb1(void *vptr)
     if (d->g->gaux->flag_cheat_elections) {
         ui_draw_text_overlay(0, 10, game_str_no_elections);
     }
-    /* 1oom-mp soft-ready: a banner while I'm locked in and waiting for the other players. */
-    if (ui_mp_turn_active && ui_mp_turn_active() && ui_mp_turn_is_ready && ui_mp_turn_is_ready()) {
-        ui_draw_filled_rect(40, 0, 279, 8, 0 /*black*/, ui_scale);
-        lbxfont_select(2, 0xd /*bright*/, 0, 0);
-        lbxfont_print_str_center(160, 1, "READY - WAITING FOR OTHER PLAYERS", UI_SCREEN_W, ui_scale);
+    /* 1oom-mp soft-ready: status banner for the planning phase.
+       Shows the ready/waiting state for locked-in players, the countdown for the straggler,
+       or both combined when there's a timer and we're already locked in. */
+    if (ui_mp_turn_active && ui_mp_turn_active()) {
+        int rem = ui_mp_turn_timer_remaining_s ? ui_mp_turn_timer_remaining_s() : -1;
+        bool is_ready = ui_mp_turn_is_ready && ui_mp_turn_is_ready();
+        if (is_ready || rem >= 0) {
+            char tbuf[48];
+            ui_draw_filled_rect(40, 0, 279, 8, 0 /*black*/, ui_scale);
+            lbxfont_select(2, 0xd /*bright*/, 0, 0);
+            if (is_ready && rem >= 0) {
+                lib_sprintf(tbuf, sizeof(tbuf), "READY - TURN ENDS IN %d", rem);
+                lbxfont_print_str_center(160, 1, tbuf, UI_SCREEN_W, ui_scale);
+            } else if (is_ready) {
+                lbxfont_print_str_center(160, 1, "READY - WAITING FOR OTHER PLAYERS", UI_SCREEN_W, ui_scale);
+            } else {
+                lib_sprintf(tbuf, sizeof(tbuf), "TURN ENDS IN: %d", rem);
+                lbxfont_print_str_center(160, 1, tbuf, UI_SCREEN_W, ui_scale);
+            }
+        }
     }
     /* 1oom-mp: non-interrupting notification that another human requests an audience -- press A when ready. */
     if (ui_mp_turn_active && ui_mp_turn_active()) {

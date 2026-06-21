@@ -1006,6 +1006,15 @@ static int lobby_next_free(const struct mp_lobby_s *lob, int my_id, int cur, int
     return (cur >= count) ? 0 : cur;
 }
 
+/* cycle through allowed timer values (0=Off, 30, 45, 60, 90, 120) */
+static uint8_t lobby_next_timer(uint8_t cur)
+{
+    static const uint8_t opts[] = { 0, 30, 45, 60, 90, 120 };
+    static const int n = 6;
+    for (int i = 0; i < n - 1; ++i) { if (opts[i] == cur) { return opts[i + 1]; } }
+    return opts[0]; /* unknown value or last -> wrap to Off */
+}
+
 /* 1oom-mp: interactive pre-game lobby. Runs before the game (and its palette) exist, so it sets up
    the palette itself, then loops drawing the shared state and sending the player's edits, pumping
    the network each frame via g_mp_cl_lobby_poll/_set. Returns 0 when the game starts, <0 on quit. */
@@ -1049,7 +1058,7 @@ int ui_mp_lobby_run(int my_id)
     while (!done) {
         int16_t oi;
         int16_t oi_my_race = UIOBJI_INVALID, oi_my_flag = UIOBJI_INVALID, oi_ready = UIOBJI_INVALID, oi_leave = UIOBJI_INVALID, oi_start = UIOBJI_INVALID;
-        int16_t oi_galaxy = UIOBJI_INVALID, oi_diff = UIOBJI_INVALID, oi_ai = UIOBJI_INVALID;
+        int16_t oi_galaxy = UIOBJI_INVALID, oi_diff = UIOBJI_INVALID, oi_ai = UIOBJI_INVALID, oi_timer = UIOBJI_INVALID;
         int16_t oi_ai_race[MP_MAX_PLAYERS], oi_team[MP_MAX_PLAYERS];
         for (int k = 0; k < MP_MAX_PLAYERS; ++k) { oi_ai_race[k] = UIOBJI_INVALID; oi_team[k] = UIOBJI_INVALID; }
         char buf[64];
@@ -1121,25 +1130,31 @@ int ui_mp_lobby_run(int my_id)
             }
         }
 
-        /* settings strip: galaxy size, AI difficulty, AI count as black-filled boxes (so the bright
-           text always has contrast); the host clicks a box to cycle its value. Font 2 (small) so all
-           three fit on one row -- white here via the forced ramp 0xf set above. */
+        /* settings strip: galaxy size, AI difficulty, AI count, turn timer.
+           Galaxy and Diff keep their original widths (Diff needs 120px for "Diff: Impossible").
+           The original AI box (x=232..318) is split into AI (x=232..271) and Timer (x=275..318).
+           Host clicks a box to cycle its value; "T:" prefix keeps Timer label short enough. */
         {
-            char gv[40], dv[40], av[24];
+            char gv[40], dv[40], av[24], tv[24];
             lib_sprintf(gv, sizeof(gv), "Galaxy: %s", (lob.galaxy_size < GALAXY_SIZE_NUM) ? game_str_tbl_gsize[lob.galaxy_size] : "?");
             lib_sprintf(dv, sizeof(dv), "Diff: %s", (lob.difficulty < DIFFICULTY_NUM) ? game_str_tbl_diffic[lob.difficulty] : "?");
             lib_sprintf(av, sizeof(av), "AI: %d", lob.num_ai);
-            ui_draw_filled_rect(3, 159, 103, 171, 0, ui_scale);   ui_draw_box1(2, 158, 104, 172, 0x9b, 0x9b, ui_scale);
+            if (lob.turn_timer_secs == 0) { lib_sprintf(tv, sizeof(tv), "T: Off"); }
+            else { lib_sprintf(tv, sizeof(tv), "T: %ds", lob.turn_timer_secs); }
+            ui_draw_filled_rect(  3, 159, 103, 171, 0, ui_scale); ui_draw_box1(  2, 158, 104, 172, 0x9b, 0x9b, ui_scale);
             ui_draw_filled_rect(109, 159, 227, 171, 0, ui_scale); ui_draw_box1(108, 158, 228, 172, 0x9b, 0x9b, ui_scale);
-            ui_draw_filled_rect(233, 159, 317, 171, 0, ui_scale); ui_draw_box1(232, 158, 318, 172, 0x9b, 0x9b, ui_scale);
+            ui_draw_filled_rect(233, 159, 270, 171, 0, ui_scale); ui_draw_box1(232, 158, 271, 172, 0x9b, 0x9b, ui_scale);
+            ui_draw_filled_rect(276, 159, 317, 171, 0, ui_scale); ui_draw_box1(275, 158, 318, 172, 0x9b, 0x9b, ui_scale);
             lbxfont_select(2, 0xf, 0, 0);
-            lbxfont_print_str_center(53, 161, gv, UI_SCREEN_W, ui_scale);
+            lbxfont_print_str_center( 53, 161, gv, UI_SCREEN_W, ui_scale);
             lbxfont_print_str_center(168, 161, dv, UI_SCREEN_W, ui_scale);
-            lbxfont_print_str_center(275, 161, av, UI_SCREEN_W, ui_scale);
+            lbxfont_print_str_center(252, 161, av, UI_SCREEN_W, ui_scale);
+            lbxfont_print_str_center(297, 161, tv, UI_SCREEN_W, ui_scale);
             if (is_host) {
-                oi_galaxy = uiobj_add_mousearea(2, 158, 104, 172, MOO_KEY_UNKNOWN);
-                oi_diff = uiobj_add_mousearea(108, 158, 228, 172, MOO_KEY_UNKNOWN);
-                oi_ai = uiobj_add_mousearea(232, 158, 318, 172, MOO_KEY_UNKNOWN);
+                oi_galaxy = uiobj_add_mousearea(  2, 158, 104, 172, MOO_KEY_UNKNOWN);
+                oi_diff   = uiobj_add_mousearea(108, 158, 228, 172, MOO_KEY_UNKNOWN);
+                oi_ai     = uiobj_add_mousearea(232, 158, 271, 172, MOO_KEY_UNKNOWN);
+                oi_timer  = uiobj_add_mousearea(275, 158, 318, 172, MOO_KEY_UNKNOWN);
             }
         }
 
@@ -1174,6 +1189,7 @@ int ui_mp_lobby_run(int my_id)
         else if (is_host && oi_galaxy != UIOBJI_INVALID && oi == oi_galaxy) { g_mp_cl_lobby_set(MP_LOBBY_F_GALAXY, (lob.galaxy_size + 1) % GALAXY_SIZE_SEL_NUM); } /* 1oom-mp: hide Enormous/Galactic (larger-maps branch) */
         else if (is_host && oi_diff != UIOBJI_INVALID && oi == oi_diff) { g_mp_cl_lobby_set(MP_LOBBY_F_DIFFICULTY, (lob.difficulty + 1) % DIFFICULTY_NUM); }
         else if (is_host && oi_ai != UIOBJI_INVALID && oi == oi_ai) { int mx = MP_MAX_PLAYERS - lob.num_humans; g_mp_cl_lobby_set(MP_LOBBY_F_NUM_AI, (lob.num_ai >= mx) ? 0 : lob.num_ai + 1); }
+        else if (is_host && oi_timer != UIOBJI_INVALID && oi == oi_timer) { g_mp_cl_lobby_set(MP_LOBBY_F_TIMER, lobby_next_timer(lob.turn_timer_secs)); }
         else { /* per-slot clicks: AI portrait cycles its race (host); team tag cycles team (own/host) */
             for (int j = 0; j < total; ++j) {
                 if (is_host && (oi_ai_race[j] != UIOBJI_INVALID) && (oi == oi_ai_race[j])) {

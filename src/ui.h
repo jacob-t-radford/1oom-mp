@@ -94,6 +94,7 @@ extern bool (*ui_mp_turn_active)(void);          /* is a soft-ready MP turn in p
 extern void (*ui_mp_turn_set_ready)(int ready);  /* submit current orders + set/clear my ready */
 extern bool (*ui_mp_turn_is_ready)(void);        /* am I currently locked in (for the banner)? */
 extern bool (*ui_mp_turn_poll)(void);            /* pump the net once; true once the turn resolved */
+extern int (*ui_mp_turn_timer_remaining_s)(void); /* remaining countdown seconds, or -1 if inactive */
 
 /* 1oom-mp interactive pre-game lobby: pick race/color, ready up, and (host = slot 0) set the AI
    count and galaxy size. Loops until the game starts, pumping the shared state via g_mp_cl_lobby_*.

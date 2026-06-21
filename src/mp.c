@@ -131,6 +131,7 @@ static void cl_diplo_send_impl(uint16_t id, const uint8_t *data, int len) {
 }
 int (*g_mp_cl_diplo_recv)(uint16_t *, uint8_t *, int) = NULL;
 void (*g_mp_cl_diplo_send)(uint16_t, const uint8_t *, int) = NULL;
+void (*g_mp_cl_timer_notify)(int) = NULL;
 
 /* client: service the socket once during planning. The server is silent until everyone is
    ready, then sends RESOLVE_START; returns 1 once that arrives (or the link drops), which
@@ -144,6 +145,8 @@ static int cl_poll_impl(void) {
     if (r == 1) {
         if (id == MP_MSG_RESOLVE_START) { s_cl_resolving = true; return 1; }
         if (id == MP_MSG_GAME_OVER) { s_cl_game_over = true; return 1; }
+        if (id == MP_MSG_TIMER_START) { if (g_mp_cl_timer_notify) { g_mp_cl_timer_notify((dl >= 1) ? (int)s_cl_blob[0] : 60); } return 0; }
+        if (id == MP_MSG_TIMER_CANCEL) { if (g_mp_cl_timer_notify) { g_mp_cl_timer_notify(-1); } return 0; }
         if ((id >= MP_MSG_DIPLO_INVITE) && (id <= MP_MSG_DIPLO_CANCEL)) { cl_diplo_stash(id, s_cl_blob, dl); return 0; }
         /* nothing else is expected before resolution; ignore */
     }
@@ -355,6 +358,11 @@ static bool mp_lobby_apply(struct mp_lobby_s *lob, int slot, uint8_t field, uint
             lob->slot[aidx].race = (uint8_t)r;
             return true;
         }
+        case MP_LOBBY_F_TIMER:
+            if (slot != 0) { return false; } /* host only */
+            if (lob->turn_timer_secs == value) { return false; }
+            lob->turn_timer_secs = value;
+            return true; /* no ready-reset: timer change doesn't affect strategic decisions */
         default:
             return false;
     }
@@ -522,6 +530,10 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         uint8_t w[4] = { (uint8_t)(i >> 8), (uint8_t)i, (uint8_t)(num_clients >> 8), (uint8_t)num_clients };
         if (mp_send(conns[i], MP_MSG_WELCOME, w, 4) != 0) { rc = -1; goto done; }
     }
+    /* per-game turn timer (host-set in lobby; settable via MP_TIMER env for no-lobby mode too) */
+    uint8_t turn_timer_secs = 60;
+    { const char *e; if ((e = getenv("MP_TIMER"))) { int v = atoi(e); if ((v >= 0) && (v <= 255)) { turn_timer_secs = (uint8_t)v; } } }
+
     /* --- lobby: maintain a shared state every client edits live (race/color/ready, plus the
        host's AI count & galaxy size). Re-broadcast on each change; once all clients are ready,
        build the game from it. --- */
@@ -533,6 +545,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         lob.galaxy_size = 1;                                 /* default medium */
         lob.difficulty = 2;                                  /* default average (DIFFICULTY_AVERAGE) */
         lob.open_lobby = open_lobby ? 1 : 0;
+        lob.turn_timer_secs = turn_timer_secs;               /* default from env/hardcoded; host can adjust in lobby UI */
         { const char *e; /* host-launch overrides for the lobby defaults (still editable in the lobby UI) */
           if ((e = getenv("MP_GSIZE"))) { int v = atoi(e); if ((v >= 0) && (v <= 3)) { lob.galaxy_size = (uint8_t)v; } }
           if ((e = getenv("MP_DIFF")))  { int v = atoi(e); if ((v >= 0) && (v <= 4)) { lob.difficulty = (uint8_t)v; } }
@@ -596,8 +609,9 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
             if (!started) { usleep(2000); }
         }
         if (open_lobby) { lob.slot[0].ready = 1; } /* the host's Start stands in for a Ready */
+        turn_timer_secs = lob.turn_timer_secs; /* take the host's final choice */
         if (gi->setup_game(gi->ctx, &lob) != 0) { MP_ERR("server: setup_game failed\n"); rc = -1; goto done; }
-        MP_MSG("server: game created from lobby (humans=%d ai=%d gsize=%d)\n", lob.num_humans, lob.num_ai, lob.galaxy_size);
+        MP_MSG("server: game created from lobby (humans=%d ai=%d gsize=%d timer=%ds)\n", lob.num_humans, lob.num_ai, lob.galaxy_size, turn_timer_secs);
     }
     s_mp_num_conns = num_clients; /* an open lobby may have grown the human count -- lock it in for the decision/spectate hooks */
     {
@@ -621,6 +635,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         for (int i = 0; i < num_clients; ++i) { porders_len[i] = 0; }
         mp_diplo_expire_invites(conns, num_clients);     /* un-accepted invites from last turn lapse (decision #1) */
         bool all_ready = false;
+        bool timer_sent = false; /* have we broadcast TIMER_START this turn? */
         while (!all_ready) {
             for (int i = 0; i < num_clients; ++i) {
                 uint16_t id; uint32_t dl;
@@ -645,10 +660,27 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 }
             }
             mp_diplo_server_tick(conns, num_clients);    /* promote fully-joined sessions to OPEN */
+            /* count ready (not diplo-busy) players; determine if only one straggler remains */
             all_ready = true;
-            /* a player in an OPEN diplo session is held un-ready until it ends (decision #2) */
-            for (int i = 0; i < num_clients; ++i) { if (!ready[i] || s_diplo_busy[i]) { all_ready = false; break; } }
-            if (!all_ready) { usleep(2000); }
+            int nready = 0;
+            for (int i = 0; i < num_clients; ++i) {
+                if (ready[i] && !s_diplo_busy[i]) { ++nready; } else { all_ready = false; }
+            }
+            if (!all_ready) {
+                /* arm/cancel the countdown: fire when exactly one player hasn't readied up yet */
+                if (turn_timer_secs > 0 && num_clients >= 2) {
+                    bool one_left = (nready == num_clients - 1);
+                    if (one_left && !timer_sent) {
+                        uint8_t secs = turn_timer_secs;
+                        for (int i = 0; i < num_clients; ++i) { mp_send(conns[i], MP_MSG_TIMER_START, &secs, 1); }
+                        timer_sent = true;
+                    } else if (!one_left && timer_sent) {
+                        for (int i = 0; i < num_clients; ++i) { mp_send(conns[i], MP_MSG_TIMER_CANCEL, NULL, 0); }
+                        timer_sent = false;
+                    }
+                }
+                usleep(2000);
+            }
         }
         /* everyone is ready: end the clients' planning phase, then apply orders + resolve */
         for (int i = 0; i < num_clients; ++i) {
