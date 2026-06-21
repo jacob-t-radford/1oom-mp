@@ -264,6 +264,11 @@ int ui_election_vote(struct election_s *el, int player_i)
             break;
         }
         ui_election_draw_cb(d);
+        /* 1oom-mp: an unmistakable cue that the council is waiting on YOU right now. In MP the voter's
+           el->str is zeroed in transport, so otherwise there's no on-screen prompt at all -- just the
+           bare candidate buttons -- and it's easy to miss that it became your turn. */
+        lbxfont_select(3, 1, 0, 0);
+        lbxfont_print_str_center(160, 2, "CAST YOUR VOTE", UI_SCREEN_W, ui_scale);
         ui_delay_ticks_or_click(3);
         ui_draw_finish();
     }
@@ -287,7 +292,10 @@ bool ui_election_accept(struct election_s *el, int player_i)
     lib_sprintf(buf[1], 0x20, "%s %s", game_str_el_bull, game_str_el_no2);
     uiobj_table_clear();
     lbxfont_select_set_12_1(3, 0, 0, 0);
-    if (lbxfont_calc_str_width(el->str) >= (160 - 10)) {
+    /* 1oom-mp: el->str is NULL in the MP accept decision (game.c zeroes the struct's pointers for
+       transport), so this width check was an unguarded NULL deref -- it SIGSEGV'd on the first MP
+       council that reached a human "accept the verdict" prompt. Guard it. */
+    if (el->str && (lbxfont_calc_str_width(el->str) >= (160 - 10))) {
         y += 10;
     }
     lbxfont_select(3, 1, 0, 0);
@@ -310,6 +318,9 @@ bool ui_election_accept(struct election_s *el, int player_i)
             flag_done = true;
         }
         ui_election_draw_cb(d);
+        /* 1oom-mp: same as the vote -- a clear cue that the council is waiting on YOUR answer. */
+        lbxfont_select(3, 1, 0, 0);
+        lbxfont_print_str_center(160, 2, "YOUR DECISION", UI_SCREEN_W, ui_scale);
         ui_delay_ticks_or_click(3);
         ui_draw_finish();
     }

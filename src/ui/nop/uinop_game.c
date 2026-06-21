@@ -5,6 +5,7 @@
 #include "ui.h"
 #include "types.h"
 #include "game.h"
+#include "lib.h"
 #include "game_planet.h"
 #include "game_audience.h"
 #include "game_battle.h"
@@ -587,7 +588,9 @@ ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_
 
 int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
 {
-    /* 1oom-mp: show the sabotage result ONLY to the saboteur, never the victim. The victim's screen
+    /* 1oom-mp: this BLOCKING result is for the saboteur ONLY, never the victim here -- the victim is
+       notified via the non-blocking ui_spy_sabotage_show path instead (MP_DEC_SPY_RESULT_SHOW, buffered
+       + replayed at their turn start). It can't be relayed here because the victim's screen
        (game_spy_sab_human's second loop) is a blocking popup on a passive player; relaying it deadlocks
        resolution waiting for a "continue" ack that can't come (it renders black), and it fires bogusly
        for an incited revolt. Discriminate by `target`: the saboteur views the TARGET empire's planet
@@ -964,6 +967,17 @@ void ui_election_delay(struct election_s *el, int delay)
 int ui_election_vote(struct election_s *el, int player_i)
 {
     if (g_mp_decision_hook) {
+        /* 1oom-mp: the vote is a private RPC, so the shared chamber would otherwise freeze on the last
+           narration while this human decides -- spectators can't tell who they're waiting on. Stream a
+           clear "Awaiting <Empire>..." frame to everyone first (cur_i already marks the voter). */
+        if (g_mp_spectate_hook && el->g) {
+            char wbuf[80];
+            const char *saved = el->str;
+            lib_sprintf(wbuf, sizeof(wbuf), "Awaiting the vote of %s...", el->g->emperor_names[player_i]);
+            el->str = wbuf;
+            mp_election_relay(el, UI_MP_SPEC_COUNCIL);
+            el->str = saved;
+        }
         struct election_s e = *el;
         e.g = NULL; e.uictx = NULL; e.buf = NULL; e.str = NULL;
         uint8_t req[sizeof(struct election_s) + 4];

@@ -923,7 +923,12 @@ void game_spy_sab_human(struct game_s *g)
                     spy2 = PLAYER_NONE;
                 }
                 act = g->evn.sabotage_is_bases[player][spy] ? UI_SABOTAGE_BASES : UI_SABOTAGE_FACT;
-                ui_spy_sabotage_done(g, player, spy2, player, act, PLAYER_NONE, PLAYER_NONE, planet, snum);
+                /* 1oom-mp: notify the human VICTIM via the buffered, non-blocking _show path (relays
+                   MP_DEC_SPY_RESULT_SHOW, replayed at the victim's own turn start). The blocking _done
+                   used here before was suppressed in MP because relaying it deadlocked resolution
+                   (the passive victim can't ack mid-resolution), so sabotage of your own bases/factories
+                   went completely unreported. _show is the same screen, just buffered. */
+                ui_spy_sabotage_show(g, player, spy2, player, act, PLAYER_NONE, PLAYER_NONE, planet, snum);
             }
         }
     }

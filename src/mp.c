@@ -452,6 +452,7 @@ static void mp_diplo_server_handle(net_conn_t **conns, int num, int from_i, uint
         int peer = (from_i == prop) ? resp : prop;
         if ((peer >= 0) && (peer < num)) { mp_send(conns[peer], id, blob, dl); } /* forward to peer */
         s_diplo_busy[prop] = false; s_diplo_busy[resp] = false; s_diplo_sess[s].active = false;
+        MP_MSG("server DIAG: diplo_busy CLEARED players %d,%d (session ended)\n", prop, resp);
     } else if (id == MP_MSG_TEAM_STANCE) {
         /* 1oom-mp teams: store-and-forward a foreign-policy consensus message to its addressee. */
         if (dl < 4) { return; }
@@ -466,6 +467,7 @@ static void mp_diplo_server_tick(net_conn_t **conns, int num) {
         struct mp_diplo_sess_s *s = &s_diplo_sess[i];
         if (s->active && (!s->open) && s->joined_p && s->joined_r) {
             s->open = true; s_diplo_busy[s->proposer] = true; s_diplo_busy[s->responder] = true;
+            MP_MSG("server DIAG: diplo_busy SET players %d,%d (session opened)\n", s->proposer, s->responder);
             for (int role = 0; role < 2; ++role) {
                 int who = role ? s->responder : s->proposer;
                 if ((who >= 0) && (who < num) && conns[who]) {
@@ -647,6 +649,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         for (int i = 0; i < num_clients; ++i) { porders_len[i] = 0; }
         mp_diplo_expire_invites(conns, num_clients);     /* un-accepted invites from last turn lapse (decision #1) */
         bool all_ready = false;
+        int wait_log = 0; /* DIAG: throttle the "waiting" log to ~once/2s while stuck */
         while (!all_ready) {
             for (int i = 0; i < num_clients; ++i) {
                 uint16_t id; uint32_t dl;
@@ -659,12 +662,14 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                     if (olen > blobcap) { olen = blobcap; }
                     if (olen > 0) { memcpy(porders[i], blob + 2, (size_t)olen); }
                     porders_len[i] = olen; ready[i] = true;
+                    MP_MSG("server DIAG: turn %d TURN_INPUT from player %d (ready, %d B)\n", turn, i, olen);
                 } else if (id == MP_MSG_READY) {         /* [u16 pid][u8 ready][orders] */
                     if (dl >= 3) {
                         int olen = (int)dl - 3;
                         if (olen > blobcap) { olen = blobcap; }
                         if (olen > 0) { memcpy(porders[i], blob + 3, (size_t)olen); }
                         porders_len[i] = olen; ready[i] = (blob[2] != 0);
+                        MP_MSG("server DIAG: turn %d READY from player %d = %d (%d B)\n", turn, i, blob[2] != 0, olen);
                     }
                 } else if (id == MP_MSG_TEAM_PLAN) {     /* live teammate-plan snapshot -> relay to teammates */
                     mp_team_plan_server_handle(conns, num_clients, i, blob, dl, gi);
@@ -674,9 +679,13 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
             }
             mp_diplo_server_tick(conns, num_clients);    /* promote fully-joined sessions to OPEN */
             all_ready = true;
+            int block_i = -1;
             /* a player in an OPEN diplo session is held un-ready until it ends (decision #2) */
-            for (int i = 0; i < num_clients; ++i) { if (!ready[i] || s_diplo_busy[i]) { all_ready = false; break; } }
-            if (!all_ready) { usleep(2000); }
+            for (int i = 0; i < num_clients; ++i) { if (!ready[i] || s_diplo_busy[i]) { all_ready = false; block_i = i; break; } }
+            if (!all_ready) {
+                if ((wait_log++ % 1000) == 0) { MP_MSG("server DIAG: turn %d WAITING -- player %d blocking (ready=%d diplo_busy=%d)\n", turn, block_i, ready[block_i] ? 1 : 0, s_diplo_busy[block_i] ? 1 : 0); }
+                usleep(2000);
+            }
         }
         /* everyone is ready: end the clients' planning phase, then apply orders + resolve */
         for (int i = 0; i < num_clients; ++i) {
