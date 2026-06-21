@@ -299,6 +299,13 @@ void ui_starmap_draw_basic(struct starmap_data_s *d)
             owner = g->seen[d->api][pi].owner;
         }
         if (owner == PLAYER_NONE) {
+            /* 1oom-mp: a teammate that just settled here this turn owns it in their LIVE overlay but
+               not yet in my synced state -> adopt their ownership so the panel shows THEIR colony now,
+               instead of "No Colony" until the turn resolves. */
+            const planet_t *tpc = ui_mp_team_plan_planet(pi);
+            if (tpc && (tpc->owner < g->players)) { owner = tpc->owner; }
+        }
+        if (owner == PLAYER_NONE) {
             lbxgfx_draw_frame(224, 5, ui_data.gfx.starmap.no_colny, UI_SCREEN_W, ui_scale);
             ui_data.gfx.colonies.current = ui_data.gfx.colonies.d[p->type * 2];
             lbxgfx_draw_frame(227, 73, ui_data.gfx.colonies.current, UI_SCREEN_W, ui_scale);
