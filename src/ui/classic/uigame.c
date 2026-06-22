@@ -209,15 +209,24 @@ static void mp_diplo_apply_local(struct game_s *g, player_id_t a, player_id_t b,
     }
 }
 
-/* relay already sent; block for the responder's live answer. Returns 1 accepted, 0 rejected,
-   -1 if they departed / the link dropped (a "departed" message is shown in that case). */
-static int mp_diplo_await_answer(struct game_s *g, player_id_t pi, player_id_t pa)
+/* 1oom-mp: show a one-line notice on the SHARED session audience and wait for a click. The alien's
+   portrait stays up the whole time (no end/start), so the conversation never blanks to black. */
+static void diplo_au_msg(struct audience_s *au, const char *msg)
+{
+    au->buf = msg;
+    ui_audience_show1(au);
+}
+
+/* relay already sent; block for the responder's live answer. Returns 1 accepted, 0 rejected, -1 if
+   they departed / the link dropped (a "departed" notice is shown in that case). The shared session
+   audience stays on screen throughout -- the wait loop keeps the portrait up instead of a black frame. */
+static int mp_diplo_await_answer(struct audience_s *au)
 {
     uint8_t buf[MP_DIPLO_CL_MSGMAX]; int len = sizeof(buf);
     int id = ui_mp_diplo_wait("Awaiting their decision...", buf, &len);
     if (id == MP_MSG_DIPLO_RESPONSE) { return ((len >= 3) && buf[2]) ? 1 : 0; }
     if (id == MP_MSG_DIPLO_CANCEL || id == MP_MSG_DIPLO_SESSION_END) {
-        ui_mp_diplo_msgbox(g, pi, pa, "They have departed.");
+        diplo_au_msg(au, "They have departed.");
     }
     return -1;
 }
@@ -225,17 +234,16 @@ static int mp_diplo_await_answer(struct game_s *g, player_id_t pi, player_id_t p
 /* "Form Trade Agreement": offer a BC/year amount (scaled to the smaller economy, exactly like the
    AI audience menu), relay it, and on a live accept set the trade locally (server confirms at
    resolution from the responder's ACCEPT record). */
-static void mp_diplo_propose_trade(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
+static void mp_diplo_propose_trade(struct game_s *g, player_id_t pi, player_id_t pa, int sid, struct audience_s *au)
 {
     int cur = (int)g->eto[pi].trade_bc[pa];
     int prod = (int)((g->eto[pi].total_production_bc < g->eto[pa].total_production_bc) ? g->eto[pi].total_production_bc : g->eto[pa].total_production_bc);
     int want, num = 0;
     uint16_t bctbl[AUDIENCE_BC_MAX];
     char strbuf[AUDIENCE_BC_MAX][32];
-    struct audience_s au = {0};
     prod /= 4; if (prod > 32000) { prod = 32000; }
     want = (prod / 25) * 25 - cur;
-    if (want <= 0) { ui_mp_diplo_msgbox(g, pi, pa, "There is no room for a larger trade agreement."); return; }
+    if (want <= 0) { diplo_au_msg(au, "There is no room for a larger trade agreement."); return; }
     if (want < 125) {
         num = want / 25;
         for (int i = 0; i < num; ++i) { bctbl[i] = (uint16_t)(cur + 25 * (i + 1)); }
@@ -248,26 +256,23 @@ static void mp_diplo_propose_trade(struct game_s *g, player_id_t pi, player_id_t
         bctbl[4] = (uint16_t)(want + cur);
     }
     if (num < 1) { return; }
-    au.g = g; au.ph = pi; au.pa = pa;
-    ui_audience_start(&au);
     for (int i = 0; i < num; ++i) {
         lib_sprintf(strbuf[i], sizeof(strbuf[i]), "%s %u %s", game_str_au_bull, bctbl[i], game_str_au_bcpery);
-        au.strtbl[i] = strbuf[i];
+        au->strtbl[i] = strbuf[i];
     }
-    au.strtbl[num] = "Forget it";
-    au.strtbl[num + 1] = NULL;
-    au.buf = "Propose a trade agreement of:";
-    int16_t sel = ui_audience_ask4(&au);
-    ui_audience_end(&au);
+    au->strtbl[num] = "Forget it";
+    au->strtbl[num + 1] = NULL;
+    au->buf = "Propose a trade agreement of:";
+    int16_t sel = ui_audience_ask4(au);
     if ((sel < 0) || (sel >= num)) { return; }
     {
         uint16_t amt = bctbl[sel];
         uint8_t pp[2] = { (uint8_t)(amt & 0xff), (uint8_t)(amt >> 8) };
         diplo_cl_proposal_p(sid, MP_DIPLO_PROPOSE_TRADE, pp, 2);
-        int acc = mp_diplo_await_answer(g, pi, pa);
+        int acc = mp_diplo_await_answer(au);
         if (acc >= 0) {
             if (acc) { game_diplo_set_trade(g, pi, pa, (int)amt); }
-            ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. So it is agreed." : "They refuse our offer.");
+            diplo_au_msg(au, acc ? "Excellent. So it is agreed." : "They refuse our offer.");
         }
     }
 }
@@ -275,10 +280,9 @@ static void mp_diplo_propose_trade(struct game_s *g, player_id_t pi, player_id_t
 /* "Exchange Technology": pick a tech to receive (one they have, we lack) and one to give in
    return (one we have, they lack), relay the swap, and on accept the techs transfer at the next
    state sync (granted server-side from the responder's ACCEPT record). */
-static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
+static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t pa, int sid, struct audience_s *au)
 {
     struct spy_esp_s s[1];
-    struct audience_s au = {0};
     tech_field_t want_f[TECH_SPY_MAX], give_f[TECH_SPY_MAX];
     uint8_t want_t[TECH_SPY_MAX], give_t[TECH_SPY_MAX];
     char namebuf[TECH_SPY_MAX][48];
@@ -293,30 +297,27 @@ static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t 
         give_num = (s->tnum < (AUDIENCE_STR_MAX - 2)) ? s->tnum : (AUDIENCE_STR_MAX - 2); /* leave room for "Forget it" + NULL */
         for (int i = 0; i < give_num; ++i) { give_f[i] = s->tbl_field[i]; give_t[i] = s->tbl_tech2[i]; }
     }
-    if (want_num == 0) { ui_mp_diplo_msgbox(g, pi, pa, "They have no technology we lack."); return; }
-    if (give_num == 0) { ui_mp_diplo_msgbox(g, pi, pa, "We have no technology they lack."); return; }
-    au.g = g; au.ph = pi; au.pa = pa;
-    ui_audience_start(&au);
-    for (int i = 0; i < want_num; ++i) { au.strtbl[i] = game_tech_get_name(g->gaux, want_f[i], want_t[i], namebuf[i], sizeof(namebuf[i])); }
-    au.strtbl[want_num] = "Forget it";
-    au.strtbl[want_num + 1] = NULL;
-    au.buf = "Which of their technologies do you desire?";
-    int16_t selw = ui_audience_ask4(&au);
-    if ((selw < 0) || (selw >= want_num)) { ui_audience_end(&au); return; }
-    for (int i = 0; i < give_num; ++i) { au.strtbl[i] = game_tech_get_name(g->gaux, give_f[i], give_t[i], namebuf[i], sizeof(namebuf[i])); }
-    au.strtbl[give_num] = "Forget it";
-    au.strtbl[give_num + 1] = NULL;
-    au.buf = "Which of ours will you give in exchange?";
-    int16_t selg = ui_audience_ask4(&au);
-    ui_audience_end(&au);
+    if (want_num == 0) { diplo_au_msg(au, "They have no technology we lack."); return; }
+    if (give_num == 0) { diplo_au_msg(au, "We have no technology they lack."); return; }
+    for (int i = 0; i < want_num; ++i) { au->strtbl[i] = game_tech_get_name(g->gaux, want_f[i], want_t[i], namebuf[i], sizeof(namebuf[i])); }
+    au->strtbl[want_num] = "Forget it";
+    au->strtbl[want_num + 1] = NULL;
+    au->buf = "Which of their technologies do you desire?";
+    int16_t selw = ui_audience_ask4(au);
+    if ((selw < 0) || (selw >= want_num)) { return; }
+    for (int i = 0; i < give_num; ++i) { au->strtbl[i] = game_tech_get_name(g->gaux, give_f[i], give_t[i], namebuf[i], sizeof(namebuf[i])); }
+    au->strtbl[give_num] = "Forget it";
+    au->strtbl[give_num + 1] = NULL;
+    au->buf = "Which of ours will you give in exchange?";
+    int16_t selg = ui_audience_ask4(au);
     if ((selg < 0) || (selg >= give_num)) { return; }
     {
         uint8_t pp[4] = { (uint8_t)want_f[selw], want_t[selw], (uint8_t)give_f[selg], give_t[selg] };
         diplo_cl_proposal_p(sid, MP_DIPLO_PROPOSE_TECH, pp, 4);
-        int acc = mp_diplo_await_answer(g, pi, pa);
+        int acc = mp_diplo_await_answer(au);
         if (acc >= 0) {
             if (acc) { game_tech_get_new(g, pi, (tech_field_t)pp[0], pp[1], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); } /* 1oom-mp: optimistic -- the tech we wanted is usable THIS turn (server re-grants authoritatively at resolution) */
-            ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. The exchange is agreed." : "They refuse our offer.");
+            diplo_au_msg(au, acc ? "Excellent. The exchange is agreed." : "They refuse our offer.");
         }
     }
 }
@@ -324,26 +325,23 @@ static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t 
 /* proposer side of an open session: a top-level menu mirroring the AI audience (propose treaty /
    form trade / exchange technology / break treaty or trade), one action per session. Consensual
    deals are relayed and applied by the responder's ACCEPT record; unilateral acts are recorded here. */
-static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
+static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player_id_t pa, int sid, struct audience_s *au)
 {
     treaty_t tr = g->eto[pi].treaty[pa];
-    struct audience_s au = {0};
     const char *mopts[6]; int mcat[6]; int mn = 0;
-    au.g = g; au.ph = pi; au.pa = pa;
-    ui_audience_start(&au);
     mopts[mn] = "Propose treaty"; mcat[mn] = 0; ++mn;
     mopts[mn] = "Form trade agreement"; mcat[mn] = 1; ++mn;
     mopts[mn] = "Exchange technology"; mcat[mn] = 2; ++mn;
     mopts[mn] = "Break treaty or trade"; mcat[mn] = 3; ++mn;
     mopts[mn] = "Forget it"; mcat[mn] = 4; ++mn;
-    for (int i = 0; i < mn; ++i) { au.strtbl[i] = mopts[i]; }
-    au.strtbl[mn] = NULL;
-    au.buf = "What is your will?";
-    int16_t msel = ui_audience_ask4(&au);
+    for (int i = 0; i < mn; ++i) { au->strtbl[i] = mopts[i]; }
+    au->strtbl[mn] = NULL;
+    au->buf = "What is your will?";
+    int16_t msel = ui_audience_ask4(au);
     int cat = ((msel >= 0) && (msel < mn)) ? mcat[msel] : 4;
-    if (cat == 1) { ui_audience_end(&au); mp_diplo_propose_trade(g, pi, pa, sid); return; }
-    if (cat == 2) { ui_audience_end(&au); mp_diplo_propose_tech(g, pi, pa, sid); return; }
-    if (cat == 4) { ui_audience_end(&au); return; }
+    if (cat == 1) { mp_diplo_propose_trade(g, pi, pa, sid, au); return; }
+    if (cat == 2) { mp_diplo_propose_tech(g, pi, pa, sid, au); return; }
+    if (cat == 4) { return; }
     {
         const char *opts[AUDIENCE_STR_MAX];
         uint8_t verbs[AUDIENCE_STR_MAX];
@@ -355,35 +353,36 @@ static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player
                 if ((tr == TREATY_NONE) || (tr == TREATY_NONAGGRESSION)) { opts[n] = "Alliance"; verbs[n] = MP_DIPLO_PROPOSE_ALLIANCE; ++n; }
             }
         } else { /* cat == 3: break / declare (unilateral) */
-            if (tr != TREATY_WAR) { opts[n] = "Declare war"; verbs[n] = MP_DIPLO_DECLARE_WAR; ++n; }
-            if ((tr == TREATY_NONAGGRESSION) || (tr == TREATY_ALLIANCE)) { opts[n] = "Break treaty"; verbs[n] = MP_DIPLO_BREAK_TREATY; ++n; }
+            /* 1oom-mp teams: never offer hostile acts against a teammate -- the alliance is locked.
+               (Only the per-empire trade agreement can still be broken.) War/break-treaty against an
+               ENEMY is routed through team consensus, not applied unilaterally from here. */
+            bool teammate = (g->mp_team[pi] != 0) && (g->mp_team[pi] == g->mp_team[pa]);
+            if ((tr != TREATY_WAR) && !teammate) { opts[n] = "Declare war"; verbs[n] = MP_DIPLO_DECLARE_WAR; ++n; }
+            if (((tr == TREATY_NONAGGRESSION) || (tr == TREATY_ALLIANCE)) && !teammate) { opts[n] = "Break treaty"; verbs[n] = MP_DIPLO_BREAK_TREATY; ++n; }
             if (g->eto[pi].trade_bc[pa] != 0) { opts[n] = "Break trade agreement"; verbs[n] = MP_DIPLO_BREAK_TRADE; ++n; }
         }
-        if (n == 0) { au.buf = "There is nothing to propose."; ui_audience_show1(&au); ui_audience_end(&au); return; }
+        if (n == 0) { diplo_au_msg(au, "There is nothing to propose."); return; }
         opts[n] = "Forget it"; verbs[n] = MP_DIPLO_NONE; ++n;
-        for (int i = 0; i < n; ++i) { au.strtbl[i] = opts[i]; }
-        au.strtbl[n] = NULL;
-        au.buf = "What is your will?";
-        int16_t sel = ui_audience_ask4(&au);
+        for (int i = 0; i < n; ++i) { au->strtbl[i] = opts[i]; }
+        au->strtbl[n] = NULL;
+        au->buf = "What is your will?";
+        int16_t sel = ui_audience_ask4(au);
         uint8_t verb = ((sel >= 0) && (sel < n)) ? verbs[sel] : MP_DIPLO_NONE;
-        if (verb == MP_DIPLO_NONE) { ui_audience_end(&au); return; }
+        if (verb == MP_DIPLO_NONE) { return; }
         if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY) || (verb == MP_DIPLO_BREAK_TRADE)) {
             game_mp_diplo_record(pi, pa, verb, 0); /* unilateral: applies at resolution */
             mp_diplo_apply_local(g, pi, pa, verb); /* and immediately, locally */
             diplo_cl_proposal(sid, verb); /* 1oom-mp: relay it so the TARGET is notified + applies it too (was: never relayed -> target saw nothing, war waited for next turn) */
-            au.buf = "It is done.";
-            ui_audience_show1(&au);
-            ui_audience_end(&au);
+            diplo_au_msg(au, "It is done.");
             return;
         }
-        /* consensual treaty proposal: relay + await the live answer */
-        ui_audience_end(&au);
+        /* consensual treaty proposal: relay + await the live answer (portrait stays up via the shared au) */
         diplo_cl_proposal(sid, verb);
         {
-            int acc = mp_diplo_await_answer(g, pi, pa);
+            int acc = mp_diplo_await_answer(au);
             if (acc >= 0) {
                 if (acc) { mp_diplo_apply_local(g, pi, pa, verb); }
-                ui_mp_diplo_msgbox(g, pi, pa, acc ? "Excellent. So it is agreed." : "They refuse our offer.");
+                diplo_au_msg(au, acc ? "Excellent. So it is agreed." : "They refuse our offer.");
             }
         }
     }
@@ -391,9 +390,11 @@ static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player
 
 /* responder side of an open session: wait for the proposer's offer, then accept/reject it live.
    On accept, record MP_DIPLO_ACCEPT so the treaty applies bilaterally at this turn's resolution. */
-static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player_id_t pa, int sid)
+static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player_id_t pa, int sid, struct audience_s *au)
 {
     uint8_t buf[MP_DIPLO_CL_MSGMAX]; int len = sizeof(buf);
+    /* 1oom-mp: the shared session audience is already on screen; the wait loop keeps the alien's
+       portrait up with this status line -- no black/map frame while we await their envoy. */
     int id = ui_mp_diplo_wait("Receiving their envoy...", buf, &len);
     if (id != MP_MSG_DIPLO_PROPOSAL) { return; } /* session ended / cancelled without an offer */
     uint8_t verb = (len >= 3) ? buf[2] : MP_DIPLO_NONE;
@@ -405,32 +406,29 @@ static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player
         /* 1oom-mp: a unilateral act, not a proposal -> apply it locally (live immediately, like the
            proposer) and show a notice on the alien portrait, instead of a bogus accept/reject prompt. */
         mp_diplo_apply_local(g, pi, pa, verb);
-        ui_mp_diplo_msgbox(g, pi, pa,
+        diplo_au_msg(au,
               (verb == MP_DIPLO_DECLARE_WAR)  ? "They have declared war upon us!"
             : (verb == MP_DIPLO_BREAK_TREATY) ? "They have broken our treaty!"
             :                                   "They have broken our trade agreement!");
         return;
     }
-    struct audience_s au = {0};
     char msg[200];
-    au.g = g; au.ph = pi; au.pa = pa;
-    ui_audience_start(&au);
     if (verb == MP_DIPLO_PROPOSE_TRADE) {
         lib_sprintf(msg, sizeof(msg), "They propose a trade agreement of %d %s. Do you accept?", pp[0] | (pp[1] << 8), game_str_au_bcpery);
-        au.buf = msg;
+        au->buf = msg;
     } else if (verb == MP_DIPLO_PROPOSE_TECH) {
         char wn[48], gn[48];
         game_tech_get_name(g->gaux, (tech_field_t)pp[0], pp[1], wn, sizeof(wn)); /* the tech they want from us */
         game_tech_get_name(g->gaux, (tech_field_t)pp[2], pp[3], gn, sizeof(gn)); /* the tech they offer us */
         lib_sprintf(msg, sizeof(msg), "They offer %s in exchange for your %s. Do you accept?", gn, wn);
-        au.buf = msg;
+        au->buf = msg;
     } else {
-        au.buf = (verb == MP_DIPLO_PROPOSE_PEACE) ? "They propose a peace treaty. Do you accept?"
+        au->buf = (verb == MP_DIPLO_PROPOSE_PEACE) ? "They propose a peace treaty. Do you accept?"
                : (verb == MP_DIPLO_PROPOSE_ALLIANCE) ? "They propose an alliance. Do you accept?"
                : "They propose a non-aggression pact. Do you accept?";
     }
-    au.strtbl[0] = "Accept"; au.strtbl[1] = "Reject"; au.strtbl[2] = NULL;
-    int16_t sel = ui_audience_ask4(&au);
+    au->strtbl[0] = "Accept"; au->strtbl[1] = "Reject"; au->strtbl[2] = NULL;
+    int16_t sel = ui_audience_ask4(au);
     int acc = (sel == 0) ? 1 : 0;
     diplo_cl_response(sid, acc, verb);
     if (acc) {
@@ -443,13 +441,11 @@ static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player
             mp_diplo_apply_local(g, pi, pa, verb);               /* and immediately, locally */
         }
     }
-    au.buf = acc ? "Excellent. So it is agreed." : "A pity.";
-    ui_audience_show1(&au);
-    ui_audience_end(&au);
+    diplo_au_msg(au, acc ? "Excellent. So it is agreed." : "A pity.");
 }
 
 /* enter an open session in the given role (0 = proposer, 1 = responder), then close it. */
-static void ui_mp_diplo_run_session(struct game_s *g, player_id_t pi, const uint8_t *buf, int len)
+static void ui_mp_diplo_run_session(struct game_s *g, player_id_t pi, const uint8_t *buf, int len, struct audience_s *existing_au)
 {
     int sid = (len >= 2) ? ((buf[0] << 8) | buf[1]) : 0;
     int proposer = (len >= 4) ? ((buf[2] << 8) | buf[3]) : pi;
@@ -457,8 +453,22 @@ static void ui_mp_diplo_run_session(struct game_s *g, player_id_t pi, const uint
     int role = (len >= 7) ? buf[6] : 0;
     player_id_t peer = (role == 0) ? (player_id_t)responder : (player_id_t)proposer;
     if (peer >= g->players) { diplo_cl_end(sid); return; }
-    if (role == 0) { ui_mp_diplo_session_propose(g, pi, peer, sid); }
-    else { ui_mp_diplo_session_respond(g, pi, peer, sid); }
+    /* 1oom-mp: ONE audience for the whole conversation -- single fade-in on entry, single fade-out on
+       exit; every step reuses this portrait so it never blacks out mid-talk. The RESPONDER reaches
+       here with the portrait ALREADY up + faded in (from accepting the envoy) and passes it in via
+       `existing_au` -- we must NOT start/end our own, because the end would fade to black and the
+       responder's next step is a wait (no fade-in step) so it would never come back. The PROPOSER
+       arrives from the starmap with no audience (existing_au == NULL), so we start + end one here. */
+    struct audience_s au_local = {0};
+    struct audience_s *au = existing_au;
+    if (!au) {
+        au_local.g = g; au_local.ph = pi; au_local.pa = peer;
+        ui_audience_start(&au_local);
+        au = &au_local;
+    }
+    if (role == 0) { ui_mp_diplo_session_propose(g, pi, peer, sid, au); }
+    else { ui_mp_diplo_session_respond(g, pi, peer, sid, au); }
+    if (!existing_au) { ui_audience_end(&au_local); }
     diplo_cl_end(sid);
 }
 
@@ -485,6 +495,71 @@ static void ui_mp_diplo_initiate(struct game_s *g, player_id_t pi, player_id_t o
 
 /* incoming invite waiting for me to answer (proposer id), -1 = none. A notification, not a breakout. */
 static int s_mp_diplo_invite_from = -1;
+
+/* ---- 1oom-mp teams: foreign policy by consensus -------------------------------------------------
+   A human's stance change toward an enemy (peace / NAP / break-treaty; war on a human enemy) is
+   offered to every HUMAN teammate as a proposal -- AI teammates auto-follow. It enacts only on
+   unanimous assent, then applies team-wide via the stage-1 sync inside the diplo primitives.
+   Messages ride MP_MSG_TEAM_STANCE (byte 4 = kind) through the same inbox/pump as the p2p audience. */
+#define MP_TEAM_KIND_PROPOSE 0
+#define MP_TEAM_KIND_VOTE    1
+#define MP_TEAM_KIND_ENACT   2
+static void team_stance_send(int kind, int from, int to, int enemy, int stance, int accept) {
+    uint8_t p[8] = { (uint8_t)(from >> 8), (uint8_t)from, (uint8_t)(to >> 8), (uint8_t)to,
+                     (uint8_t)kind, (uint8_t)enemy, (uint8_t)stance, (uint8_t)accept };
+    diplo_cl_send(MP_MSG_TEAM_STANCE, p, 8);
+}
+/* proposer side: my pending outgoing proposal + the bitmask of teammates I still await a vote from. */
+static int s_team_prop_enemy = -1;
+static uint8_t s_team_prop_stance = 0;
+static uint32_t s_team_prop_await = 0;
+static int s_team_prop_result = 0;   /* 1 approved, 2 rejected, 0 none -> a pump breakout for _handle */
+static int s_team_prop_announce = -1;/* enemy to confirm "proposal sent" once back on the starmap (avoids a nested modal), -1 none */
+/* teammate side: an incoming proposal to vote on (drives the starmap banner). */
+static int s_team_vote_from = -1, s_team_vote_enemy = -1;
+static uint8_t s_team_vote_stance = 0;
+/* teammate side: an approved proposal to apply locally this frame (deferred from _pump, needs g). */
+static int s_team_enact_from = -1, s_team_enact_enemy = -1;
+static uint8_t s_team_enact_stance = 0;
+
+static void mp_team_stance_apply(struct game_s *g, player_id_t actor, player_id_t enemy, uint8_t stance) {
+    switch (stance) {
+        case MP_TEAM_STANCE_PEACE: game_diplo_stop_war(g, actor, enemy); break;
+        case MP_TEAM_STANCE_NAP:   game_diplo_set_treaty(g, actor, enemy, TREATY_NONAGGRESSION); break;
+        case MP_TEAM_STANCE_BREAK:  game_diplo_break_treaty(g, actor, enemy); break;
+        case MP_TEAM_STANCE_WAR:    game_diplo_start_war(g, actor, enemy); break;
+        default: break;
+    }
+}
+static uint8_t team_stance_to_diplo_verb(uint8_t stance) {
+    switch (stance) {
+        case MP_TEAM_STANCE_PEACE: return MP_DIPLO_PROPOSE_PEACE;
+        case MP_TEAM_STANCE_NAP:   return MP_DIPLO_PROPOSE_NAP;
+        case MP_TEAM_STANCE_BREAK:  return MP_DIPLO_BREAK_TREATY;
+        case MP_TEAM_STANCE_WAR:    return MP_DIPLO_DECLARE_WAR;
+        default: return MP_DIPLO_NONE;
+    }
+}
+/* installed as g_mp_team_stance_propose_hook. Relays the stance to each human teammate and returns
+   true (captured) so the caller does NOT apply it; false when there is nobody to consult. */
+static bool mp_team_stance_propose(struct game_s *g, player_id_t pi, player_id_t enemy, mp_team_stance_t stance) {
+    uint32_t await = 0;
+    if (!g_mp_cl_diplo_send) { return false; }   /* not a live MP turn */
+    if (g->mp_team[pi] == 0) { return false; }    /* not on a team */
+    if (s_team_prop_enemy >= 0) { s_team_prop_announce = enemy; return true; } /* one at a time: re-confirm, don't apply */
+    for (player_id_t t = PLAYER_0; t < g->players; ++t) {
+        if ((t == pi) || (g->mp_team[t] != g->mp_team[pi]) || (!IS_HUMAN(g, t))) { continue; }
+        await |= (1u << t);
+    }
+    if (await == 0) { return false; }             /* no human teammates -> caller applies (AI auto-follows) */
+    for (player_id_t t = PLAYER_0; t < g->players; ++t) {
+        if (await & (1u << t)) { team_stance_send(MP_TEAM_KIND_PROPOSE, (int)pi, (int)t, (int)enemy, (int)stance, 0); }
+    }
+    s_team_prop_enemy = enemy; s_team_prop_stance = (uint8_t)stance; s_team_prop_await = await; s_team_prop_result = 0;
+    s_team_prop_announce = enemy; /* confirmation is shown after the audience closes (a nested modal would be unsafe) */
+    return true;
+}
+
 
 /* async p2p diplo pump: called each starmap frame. Drains the inbox and advances the invite handshake
    WITHOUT interrupting play. A pending incoming invite becomes a notification; READY auto-joins (only
@@ -514,14 +589,36 @@ bool ui_mp_diplo_pump(int pi)
                 s_mp_diplo_invite_from = -1; s_mp_diplo_invite_to = -1;
             } else if (id == MP_MSG_DIPLO_CANCEL) {
                 s_mp_diplo_invite_from = -1; s_mp_diplo_invite_to = -1;
+            } else if (id == MP_MSG_TEAM_STANCE) {
+                int tfrom = (n >= 2) ? ((buf[0] << 8) | buf[1]) : -1;
+                int tto   = (n >= 4) ? ((buf[2] << 8) | buf[3]) : -1;
+                int tkind = (n >= 5) ? buf[4] : 0;
+                int tenemy= (n >= 6) ? buf[5] : -1;
+                int tst   = (n >= 7) ? buf[6] : 0;
+                int tacc  = (n >= 8) ? buf[7] : 0;
+                if (tto != pi) { /* not addressed to me */ }
+                else if (tkind == MP_TEAM_KIND_PROPOSE) {                 /* a teammate asks me to vote */
+                    s_team_vote_from = tfrom; s_team_vote_enemy = tenemy; s_team_vote_stance = (uint8_t)tst;
+                } else if (tkind == MP_TEAM_KIND_VOTE) {                  /* a vote on my proposal (proposer side) */
+                    if ((s_team_prop_enemy == tenemy) && (s_team_prop_stance == (uint8_t)tst) && (s_team_prop_result == 0)) {
+                        if (!tacc) { s_team_prop_result = 2; s_team_prop_await = 0; }              /* any refusal kills it */
+                        else { s_team_prop_await &= ~(1u << tfrom); if (s_team_prop_await == 0) { s_team_prop_result = 1; } }
+                    }
+                } else if (tkind == MP_TEAM_KIND_ENACT) {                 /* my proposal passed; apply locally (needs g -> _handle) */
+                    s_team_enact_from = tfrom; s_team_enact_enemy = tenemy; s_team_enact_stance = (uint8_t)tst;
+                }
             }
         }
     }
-    return s_mp_diplo_sess_open || (s_mp_diplo_invite_result != 0);
+    return s_mp_diplo_sess_open || (s_mp_diplo_invite_result != 0) || (s_team_prop_result != 0) || (s_team_enact_from >= 0) || (s_team_prop_announce >= 0);
 }
 
 /* starmap: proposer id of a pending incoming audience request (for the notification banner), else -1. */
 int ui_mp_diplo_invite_pending(void) { return s_mp_diplo_invite_from; }
+
+/* starmap: proposer id of a pending TEAM stance proposal awaiting my vote (notification banner), else -1. */
+int ui_mp_team_vote_pending(void) { return s_team_vote_from; }
+
 
 /* main-loop entry: reached when ui_mp_diplo_pump asked to break out, OR when the player answered the
    invite notification on the starmap. Routes by state: a just-opened session -> run it; my invite
@@ -529,9 +626,55 @@ int ui_mp_diplo_invite_pending(void) { return s_mp_diplo_invite_from; }
    captures SESSION_OPEN and enters the session next tick). */
 void ui_mp_diplo_handle(struct game_s *g, int pi)
 {
+    if (s_team_prop_announce >= 0) {             /* confirm a just-sent proposal, now that the audience has closed */
+        player_id_t e = (player_id_t)s_team_prop_announce; s_team_prop_announce = -1;
+        ui_mp_diplo_msgbox(g, pi, e, "Our envoy will consult our allies; we shall have their answer soon.");
+        return;
+    }
+    if (s_team_enact_from >= 0) {                /* a teammate's proposal passed -> apply it on my client too */
+        player_id_t a = (player_id_t)s_team_enact_from, e = (player_id_t)s_team_enact_enemy; uint8_t st = s_team_enact_stance;
+        s_team_enact_from = -1;
+        mp_team_stance_apply(g, a, e, st);
+        ui_mp_diplo_msgbox(g, pi, e, "Our alliance has agreed a new course; it is done.");
+        return;
+    }
+    if (s_team_prop_result != 0) {               /* my proposal resolved (proposer side) */
+        int res = s_team_prop_result; player_id_t e = (player_id_t)s_team_prop_enemy; uint8_t st = s_team_prop_stance;
+        s_team_prop_result = 0; s_team_prop_enemy = -1; s_team_prop_await = 0;
+        if (res == 1) {
+            mp_team_stance_apply(g, (player_id_t)pi, e, st);                                       /* optimistic + team-wide */
+            if (IS_HUMAN(g, e)) { game_mp_diplo_record((player_id_t)pi, e, team_stance_to_diplo_verb(st), 0); } /* authoritative for a human enemy */
+            for (player_id_t t = PLAYER_0; t < g->players; ++t) {
+                if ((t != (player_id_t)pi) && (g->mp_team[t] == g->mp_team[pi]) && IS_HUMAN(g, t)) {
+                    team_stance_send(MP_TEAM_KIND_ENACT, (int)pi, (int)t, (int)e, (int)st, 0);     /* teammates apply same-turn */
+                }
+            }
+            ui_mp_diplo_msgbox(g, pi, e, "Our allies assent. It is done.");
+        } else {
+            ui_mp_diplo_msgbox(g, pi, e, "Our allies refuse; the proposal is withdrawn.");
+        }
+        return;
+    }
+    if (s_team_vote_from >= 0) {                  /* an ally asks me to assent to a stance (teammate side) */
+        int from = s_team_vote_from; player_id_t e = (player_id_t)s_team_vote_enemy; uint8_t st = s_team_vote_stance;
+        s_team_vote_from = -1;
+        const char *act = (st == MP_TEAM_STANCE_PEACE) ? "make peace with"
+                        : (st == MP_TEAM_STANCE_NAP)   ? "sign a non-aggression pact with"
+                        : (st == MP_TEAM_STANCE_WAR)   ? "declare war on"
+                        :                                "break our treaty with";
+        struct audience_s au = {0}; char msg[200];
+        au.g = g; au.ph = pi; au.pa = (player_id_t)from;
+        ui_audience_start(&au);
+        lib_sprintf(msg, sizeof(msg), "Our ally proposes that we %s the %s. Do you assent?", act, game_str_tbl_race[g->eto[e].race]);
+        au.buf = msg; au.strtbl[0] = "Assent"; au.strtbl[1] = "Refuse"; au.strtbl[2] = NULL;
+        int16_t sel = ui_audience_ask4(&au);
+        ui_audience_end(&au);
+        team_stance_send(MP_TEAM_KIND_VOTE, (int)pi, from, (int)e, (int)st, (sel == 0) ? 1 : 0);
+        return;
+    }
     if (s_mp_diplo_sess_open) {
         s_mp_diplo_sess_open = false;
-        ui_mp_diplo_run_session(g, pi, s_mp_diplo_sess_buf, s_mp_diplo_sess_len);
+        ui_mp_diplo_run_session(g, pi, s_mp_diplo_sess_buf, s_mp_diplo_sess_len, NULL); /* proposer: no audience up yet -> start + end one inside */
         return;
     }
     if (s_mp_diplo_invite_result != 0) {
@@ -555,9 +698,20 @@ void ui_mp_diplo_handle(struct game_s *g, int pi)
     au.buf = "They request an audience. Will you receive their envoy now?";
     au.strtbl[0] = "Receive now"; au.strtbl[1] = "Decline"; au.strtbl[2] = NULL;
     int16_t sel = ui_audience_ask4(&au);
-    ui_audience_end(&au);
-    if (sel != 0) { diplo_cl_accept(from, pi, 0); return; } /* decline */
-    diplo_cl_accept(from, pi, 1); /* accept -> server opens -> pump captures SESSION_OPEN -> enter next */
+    if (sel != 0) { ui_audience_end(&au); diplo_cl_accept(from, pi, 0); return; } /* decline */
+    diplo_cl_accept(from, pi, 1); /* accept */
+    /* 1oom-mp: keep the alien's audience screen up (no flicker out to the starmap) while the server
+       opens the session -- `au` stays active so ui_mp_diplo_wait paints the portrait. Then run the
+       session ON THIS SAME `au` (pass it in so run_session does NOT start/end its own -- otherwise it
+       fades to black with no fade-in before the proposal arrives, leaving the responder stuck on a
+       black screen) and fade out once afterwards. (Consumes SESSION_OPEN here, so the pump's
+       sess_open path won't double-enter.) */
+    {
+        uint8_t sbuf[MP_DIPLO_CL_MSGMAX]; int slen = sizeof(sbuf);
+        int id = ui_mp_diplo_wait("Receiving their envoy...", sbuf, &slen);
+        if (id == MP_MSG_DIPLO_SESSION_OPEN) { ui_mp_diplo_run_session(g, pi, sbuf, slen, &au); }
+        ui_audience_end(&au);
+    }
 }
 
 /* 1oom-mp: a human's colony ships wait in orbit (the server doesn't auto-colonize);
@@ -664,6 +818,11 @@ ui_turn_action_t ui_game_turn(struct game_s *g, int *load_game_i_ptr, int pi)
 {
     int scrapi = -1;
     int opponi = -1;
+    /* 1oom-mp teams: a stance proposal lives for one turn. Clear any that didn't resolve so a
+       disconnected / AFK / just-eliminated ally can't leave the proposer stuck awaiting a vote that
+       will never come (mirrors how an unanswered audience invite lapses at the turn boundary). */
+    s_team_prop_enemy = -1; s_team_prop_stance = 0; s_team_prop_await = 0; s_team_prop_result = 0; s_team_prop_announce = -1;
+    s_team_vote_from = -1; s_team_enact_from = -1;
     if (g->gaux->local_players > 1) {
         while (ui_switch_1_opts(g, pi)) {
             switch (ui_gameopts(g, load_game_i_ptr)) {
@@ -937,6 +1096,7 @@ static bool s_mp_ui_ready = false; /* 1oom-mp: true once the game UI (incl. font
 void ui_game_start(struct game_s *g)
 {
     s_mp_ui_ready = true;
+    g_mp_team_stance_propose_hook = mp_team_stance_propose; /* 1oom-mp teams: enemy-stance changes route through team consensus */
     ui_mp_tech_notify_reset(); /* MP: re-baseline the completed-tech diff for a fresh game */
     ui_mp_contact_notify_reset(); /* MP: re-baseline first-contact tracking for a fresh game */
     for (int i = 0; i < g->nebula_num; ++i) {
@@ -1215,6 +1375,29 @@ int ui_mp_lobby_run(int my_id)
 /* 1oom-mp: one frame of a "waiting for players" screen. Called repeatedly by the
    MP client while it blocks on the network — pumps SDL events (so the window stays
    alive / movable) and shows a status line instead of a frozen image. */
+/* 1oom-mp: one frame of the OPT-IN prompt shown while a teammate is in combat. Mirrors the diplo
+   wait's input frame (proven to work during the resolution wait, same as ui_mp_battle_spectate).
+   Returns 1 the frame the watch key (W) is pressed, so the caller loads the spectator arena. */
+int ui_mp_battle_watch_prompt(void)
+{
+    int16_t oi_w, oi;
+    if (!s_mp_ui_ready) { hw_event_handle(); return 0; }
+    ui_delay_prepare();
+    ui_draw_erase_buf();
+    lbxfont_select(2, 0xd, 0, 0);
+    lbxfont_print_str_center(160, 84, "A teammate has entered combat.", UI_SCREEN_W, ui_scale);
+    /* 1oom-mp: the call to action was color 6 -- too dim to read on the black prompt, so players saw
+       the headline but not the instruction. Use the same bright color as the headline. */
+    lbxfont_select(2, 0xd, 0, 0);
+    lbxfont_print_str_center(160, 98, "Press  W  to watch the battle", UI_SCREEN_W, ui_scale);
+    uiobj_table_clear();
+    oi_w = uiobj_add_inputkey(MOO_KEY_w);
+    uiobj_finish_frame();
+    oi = uiobj_handle_input_cond();
+    ui_delay_ticks_or_click(2);
+    return (oi == oi_w) ? 1 : 0;
+}
+
 void ui_mp_wait(int reason)
 {
     hw_event_handle();          /* poll input + ~10ms delay; keeps the window responsive */

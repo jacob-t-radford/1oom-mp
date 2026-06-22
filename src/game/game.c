@@ -890,6 +890,7 @@ static struct audience_s s_mp_audience; /* client's working copy of the relayed 
    can render the spectate/examine view from it). battle_s isn't fully self-contained, so we
    re-establish g + sprite pointers (read directly each draw) after every memcpy. */
 static struct battle_s s_mp_battle;
+static bool s_mp_battle_avail = false; /* 1oom-mp: a teammate's interactive battle is available to WATCH (opt-in); set on BATTLE_INIT, cleared on BATTLE_END. The observer loads the arena only if it presses the watch key. */
 
 /* 1oom-mp: turn-summary news relayed from the server (already filtered to this player). Buffered as
    it streams in during the server's turn resolution, then replayed as one GNN broadcast when the
@@ -978,6 +979,16 @@ static void mp_if_on_wait(void *ctx, int reason) {
            synchronous council view) rather than a waiting banner. */
         s_mp_election.uictx = s_mp_election_ctx;
         ui_election_spectate(&s_mp_election);
+        return;
+    }
+    if (s_mp_battle_avail) {
+        /* 1oom-mp: a teammate is in combat -> OPT-IN. Show the "press W to watch" prompt instead of
+           forcing the arena; load it (and switch to the spectate render next tick) only if pressed. */
+        if (ui_mp_battle_watch_prompt()) {
+            ui_battle_init_spectate(&s_mp_battle); /* s_mp_battle.g already set by BATTLE_INIT fixup */
+            s_mp_battle_uictx = s_mp_battle.uictx;
+            s_mp_battle_auto = false;
+        }
         return;
     }
     if (reason == MP_WAIT_COUNCIL) { s_mp_combat_hold = 0; } /* the council banner (fallback if no chamber stream) takes priority over a stale combat notice */
@@ -1385,6 +1396,30 @@ static void mp_if_on_spectate(void *ctx, const uint8_t *data, int len) {
         s_mp_council_active = true;
         return;
     }
+    if ((data[0] == UI_MP_SPEC_BATTLE_INIT) && (len >= 1 + (int)sizeof(struct battle_s))) {
+        /* 1oom-mp: a teammate's fight is starting -> OFFER it (opt-in). Stash the battle but DON'T
+           load the arena; the observer chooses to watch from the wait screen (mp_if_on_wait). The
+           fixup sets s_mp_battle.g so a later ui_battle_init_spectate works without g in hand. */
+        memcpy(&s_mp_battle, data + 1, sizeof(s_mp_battle));
+        s_mp_battle.uictx = NULL;
+        mp_battle_fixup(g, &s_mp_battle);
+        s_mp_battle_avail = true;
+        return;
+    }
+    if ((data[0] == UI_MP_SPEC_BATTLE_END) && (len >= 1 + (int)sizeof(struct battle_s) + 5)) {
+        /* 1oom-mp: the teammate's fight ended -> tear down our observer arena. */
+        if (s_mp_battle_uictx) {
+            uint8_t colony = data[1 + sizeof(struct battle_s)];
+            int32_t winner; memcpy(&winner, data + 1 + sizeof(struct battle_s) + 1, 4);
+            memcpy(&s_mp_battle, data + 1, sizeof(s_mp_battle));
+            mp_battle_fixup(g, &s_mp_battle);
+            s_mp_battle.uictx = s_mp_battle_uictx;
+            ui_battle_shutdown(&s_mp_battle, colony != 0, winner);
+            s_mp_battle_uictx = NULL;
+        }
+        s_mp_battle_avail = false; /* the fight is over: drop the watch offer / tear-down done */
+        return;
+    }
     if (!s_mp_battle_uictx || s_mp_battle_auto) { return; } /* not in a battle, or auto-resolved it (ctx half-built, no gfx_bg): can't render the streamed animations */
     if (len == (int)sizeof(struct battle_s)) {
         /* a full snapshot: refresh the spectator's battle (the wait loop redraws it) */
@@ -1452,6 +1487,7 @@ static int mp_if_apply_orders(void *ctx, int player_id, const uint8_t *buf, int 
 static void mp_if_on_state_loaded(void *ctx, int first) {
     struct game_s *g = (struct game_s *)ctx;
     mp_council_ctx_free(); /* a turn resolved: tear down any council view (safety net if COUNCIL_END was dropped) */
+    ui_mp_team_plan_reset(); /* a turn resolved: drop last turn's teammate overlay so stale fleets don't linger */
     if (first) {
         /* The client never ran game_aux_start, so the galaxy distance table is empty.
            Build it from the just-loaded star positions BEFORE game_start recomputes
@@ -1546,6 +1582,137 @@ static int s_mp_orders_cap = 0;
 static int s_mp_orders_len = 0;
 static bool s_mp_timer_active = false;      /* is a countdown currently running? */
 static int64_t s_mp_timer_deadline_us = 0;  /* hw_get_time_us() value at which we auto-submit */
+
+/* ---- 1oom-mp live teammate visibility: a teammate's relayed in-progress plan, for the overlay ---- */
+struct mp_team_plan_s {
+    bool active;
+    int fleet_num;
+    struct { uint16_t x, y, dest; } fleet[FLEET_ENROUTE_MAX];
+    int col_num;
+    uint16_t col[16];
+    int sl_num;
+    struct { uint16_t planet; planet_t p; } sl[PLANETS_MAX]; /* a teammate's owned worlds, full live state */
+    int orbit_num;
+    uint16_t orbit[PLANETS_MAX]; /* planets where this teammate has ships orbiting live this turn */
+    uint16_t ping;               /* 1oom-mp teams: a planet this teammate flagged for the team, PLANET_NONE = none */
+};
+static struct mp_team_plan_s s_team_plan[MP_MAX_PLAYERS];
+static uint8_t *s_team_plan_buf = NULL;
+static int s_team_plan_cap = 0;
+static int s_mp_my_ping = PLANET_NONE; /* 1oom-mp teams: the planet I've flagged for my team this turn */
+
+/* client: a teammate's plan snapshot arrived -> store it for the starmap overlay. */
+static void mp_team_plan_recv(const void *data, int len) {
+    const uint8_t *buf = (const uint8_t *)data;
+    int pos = 0;
+    uint16_t sender = 0, n = 0;
+#define TPGET(dst, nn) do { if (pos + (int)(nn) > len) { return; } memcpy((dst), buf + pos, (nn)); pos += (int)(nn); } while (0)
+    TPGET(&sender, 2);
+    if ((sender >= MP_MAX_PLAYERS) || (s_mp_my_pid < 0)) { return; }
+    if (!((game.mp_team[s_mp_my_pid] != 0) && (game.mp_team[s_mp_my_pid] == game.mp_team[sender]))) { return; }
+    struct mp_team_plan_s *tp = &s_team_plan[sender];
+    TPGET(&n, 2); tp->fleet_num = 0;
+    for (int i = 0; i < (int)n; ++i) {
+        uint16_t fx, fy, fd; TPGET(&fx, 2); TPGET(&fy, 2); TPGET(&fd, 2);
+        if (tp->fleet_num < FLEET_ENROUTE_MAX) { tp->fleet[tp->fleet_num].x = fx; tp->fleet[tp->fleet_num].y = fy; tp->fleet[tp->fleet_num].dest = fd; ++tp->fleet_num; }
+    }
+    TPGET(&n, 2); tp->col_num = 0;
+    for (int i = 0; i < (int)n; ++i) { uint16_t pli; TPGET(&pli, 2); if (tp->col_num < 16) { tp->col[tp->col_num++] = pli; } }
+    TPGET(&n, 2); tp->sl_num = 0;
+    for (int i = 0; i < (int)n; ++i) {
+        uint16_t pli; TPGET(&pli, 2);
+        if (tp->sl_num < PLANETS_MAX) {
+            tp->sl[tp->sl_num].planet = pli;
+            TPGET(&tp->sl[tp->sl_num].p, (int)sizeof(planet_t));
+            ++tp->sl_num;
+        } else {
+            if (pos + (int)sizeof(planet_t) > len) { return; }
+            pos += (int)sizeof(planet_t);
+        }
+    }
+    tp->orbit_num = 0;
+    TPGET(&n, 2);
+    for (int i = 0; i < (int)n; ++i) { uint16_t pli; TPGET(&pli, 2); if (tp->orbit_num < PLANETS_MAX) { tp->orbit[tp->orbit_num++] = pli; } }
+    tp->ping = (uint16_t)PLANET_NONE; /* 1oom-mp teams: optional trailing map-ping (back-compatible: absent -> none) */
+    { uint16_t pg; if (pos + 2 <= len) { memcpy(&pg, buf + pos, 2); pos += 2; tp->ping = pg; } }
+    tp->active = true;
+#undef TPGET
+    { static bool logged = false; if (!logged) { logged = true; log_message("MP: live team-plan relay active (first snapshot from P%d: %d fleets)\n", sender, tp->fleet_num); } }
+}
+
+/* client: called each planning frame -> stream my current plan to teammates (throttled). */
+void ui_mp_team_plan_tick(void) {
+    static int ctr = 0;
+    if (g_mp_team_plan_recv != mp_team_plan_recv) { g_mp_team_plan_recv = mp_team_plan_recv; }
+    if (!g_mp_cl_team_plan_send || (s_mp_my_pid < 0) || (game.mp_team[s_mp_my_pid] == 0)) { return; }
+    if (++ctr < 8) { return; }
+    ctr = 0;
+    if (!s_team_plan_buf) { s_team_plan_cap = game_save_blob_maxlen(&game); s_team_plan_buf = (uint8_t *)malloc(s_team_plan_cap); if (!s_team_plan_buf) { return; } }
+    {
+        int len = game_mp_write_team_plan(&game, (player_id_t)s_mp_my_pid, s_team_plan_buf, s_team_plan_cap);
+        if (len > 0) {
+            if (len + 2 <= s_team_plan_cap) { uint16_t pg = (uint16_t)s_mp_my_ping; memcpy(s_team_plan_buf + len, &pg, 2); len += 2; } /* 1oom-mp teams: append my map-ping */
+            g_mp_cl_team_plan_send(s_team_plan_buf, len);
+        }
+    }
+}
+
+/* starmap overlay accessors. */
+void ui_mp_team_plan_reset(void) { s_mp_my_ping = PLANET_NONE; for (int p = 0; p < MP_MAX_PLAYERS; ++p) { s_team_plan[p].active = false; } }
+/* 1oom-mp teams: flag/unflag a planet for my teammates (re-pinging the same one clears it). */
+void ui_mp_set_ping(int planet_i) { s_mp_my_ping = (s_mp_my_ping == planet_i) ? PLANET_NONE : planet_i; }
+/* the teammate (banner) who has flagged planet_i for the team this turn, else -1. */
+int ui_mp_team_plan_ping_at(int planet_i) {
+    if ((s_mp_my_ping == planet_i) && (s_mp_my_pid >= 0)) { return s_mp_my_pid; } /* my own ping, so I see what I flagged */
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) { if (s_team_plan[p].active && (s_team_plan[p].ping == (uint16_t)planet_i)) { return p; } }
+    return -1;
+}
+bool ui_mp_team_plan_active(int player) {
+    return (player >= 0) && (player < MP_MAX_PLAYERS) && s_team_plan[player].active;
+}
+/* true if this teammate's overlay is live AND they have ships orbiting planet_i right now. */
+bool ui_mp_team_plan_orbit_has(int player, int planet_i) {
+    if ((player < 0) || (player >= MP_MAX_PLAYERS) || !s_team_plan[player].active) { return false; }
+    for (int i = 0; i < s_team_plan[player].orbit_num; ++i) { if (s_team_plan[player].orbit[i] == planet_i) { return true; } }
+    return false;
+}
+int ui_mp_team_plan_fleet_total(void) {
+    int n = 0;
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) { if (s_team_plan[p].active) { n += s_team_plan[p].fleet_num; } }
+    return n;
+}
+bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest) {
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) {
+        if (!s_team_plan[p].active) { continue; }
+        if (idx < s_team_plan[p].fleet_num) {
+            if (owner) { *owner = p; }
+            if (x) { *x = s_team_plan[p].fleet[idx].x; }
+            if (y) { *y = s_team_plan[p].fleet[idx].y; }
+            if (dest) { *dest = s_team_plan[p].fleet[idx].dest; }
+            return true;
+        }
+        idx -= s_team_plan[p].fleet_num;
+    }
+    return false;
+}
+/* the teammate about to colonize planet_i this turn (their banner for the marker), else -1. */
+int ui_mp_team_plan_colonizer(int planet_i) {
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) {
+        if (!s_team_plan[p].active) { continue; }
+        for (int i = 0; i < s_team_plan[p].col_num; ++i) { if (s_team_plan[p].col[i] == planet_i) { return p; } }
+    }
+    return -1;
+}
+/* a teammate's live planet snapshot (full state, for the read-only panel); NULL if none. */
+const planet_t *ui_mp_team_plan_planet(int planet_i) {
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) {
+        if (!s_team_plan[p].active) { continue; }
+        for (int i = 0; i < s_team_plan[p].sl_num; ++i) {
+            if (s_team_plan[p].sl[i].planet == planet_i) { return &s_team_plan[p].sl[i].p; }
+        }
+    }
+    return NULL;
+}
 
 /* serialize my current orders, send them with the given ready flag, and remember them. */
 static void mp_submit_orders(bool ready) {
@@ -1660,9 +1827,15 @@ static int mp_if_write_orders(void *ctx, int player_id, uint8_t *buf, int buflen
 static int mp_if_setup_game(void *ctx, const struct mp_lobby_s *lobby);
 static int mp_if_run_lobby(void *ctx, int my_id);
 
+static int mp_if_get_team(void *ctx, int player) {
+    (void)ctx;
+    return ((player >= 0) && (player < (int)game.players)) ? game.mp_team[player] : 0;
+}
+
 static mp_game_iface_t mp_make_iface(void) {
     mp_game_iface_t gi;
     gi.ctx = &game;
+    gi.get_team = mp_if_get_team;
     gi.serialize = mp_if_serialize;
     gi.deserialize = mp_if_deserialize;
     gi.advance_turn = mp_if_advance;

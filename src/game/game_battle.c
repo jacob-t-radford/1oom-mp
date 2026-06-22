@@ -66,7 +66,7 @@ static void game_battle_item_from_parsed(struct battle_item_s *b, const shippars
     COPY_BOOL_TO_INT(b, cloak, CLOAK);
 }
 
-static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, battle_side_i_t side)
+static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, battle_side_i_t side, int owner)
 {
     struct battle_item_s *b;
     int itemi, shiptbli;
@@ -105,6 +105,22 @@ static void game_battle_item_add(struct battle_s *bt, const shipparsed_t *sp, ba
         b->gfx = ui_gfx_get_ship(b->look);
         b->shiptbli = shiptbli;
     }
+    b->owner = owner; /* 1oom-mp: the empire owning this stack (per-stack for combined fleets). MUST be
+                         set AFTER game_battle_item_from_parsed() above -- that fills the whole item from
+                         the parsed ship and clobbers owner, so setting it earlier left every ally/enemy
+                         stack attributed to player 0 (breaking the per-owner combat hand-off + loss
+                         writeback). The planet branch has no from_parsed after this, so it's fine too. */
+}
+
+/* 1oom-mp teams: a retreat haven is any planet the loser can fall back to -- its own, or (in a team
+   game) a teammate's. Because every co-side member computes the same nearest haven from the same
+   battle planet, a combined fleet rallies on ONE shared team world instead of scattering to each
+   member's own nearest planet. Non-team games fall back to own-planets-only (mp_team == 0). */
+static bool game_battle_retreat_haven(const struct game_s *g, player_id_t planet_owner, int loser)
+{
+    if ((int)planet_owner == loser) { return true; }
+    if (planet_owner >= g->players) { return false; } /* unowned / monster */
+    return (g->mp_team[loser] != 0) && (g->mp_team[planet_owner] == g->mp_team[loser]);
 }
 
 static void game_battle_post(struct game_s *g, int loser, int winner, planet_id_t from)
@@ -141,7 +157,7 @@ static void game_battle_post(struct game_s *g, int loser, int winner, planet_id_
         }
         for (int i = 0; i < g->galaxy_stars; ++i) {
             const planet_t *pt = &g->planet[i];
-            if ((i != from) && (pt->owner == loser)) {
+            if ((i != from) && game_battle_retreat_haven(g, pt->owner, loser)) {
                 int dist;
                 dist = util_math_dist_fast(pf->x, pf->y, pt->x, pt->y);
                 if (dist < mindist) {
@@ -159,6 +175,23 @@ static void game_battle_post(struct game_s *g, int loser, int winner, planet_id_
     }
 }
 
+/* 1oom-mp teams: game_battle_post relocates only the empire it's handed (a side's LEAD). A combined
+   fleet's joined ALLIES must also pull their surviving stacks off the battle planet to their own
+   nearest world -- otherwise an ally's ships were left stranded on the enemy planet after the side
+   retreated/lost. Relocate every ally on the side whose lead == loser_lead (only the LOSING side
+   matches, so winners are untouched). */
+static void game_battle_post_side_allies(struct battle_s *bt, int loser_lead, int winner, planet_id_t from)
+{
+    struct game_s *g = bt->g;
+    for (battle_side_i_t bs = SIDE_L; bs <= SIDE_R; ++bs) {
+        if (bt->s[bs].parties[0] != loser_lead) { continue; }
+        for (int k = 1; k < (int)bt->s[bs].num_parties; ++k) {
+            int ally = bt->s[bs].parties[k];
+            if ((ally >= 0) && (ally < PLAYER_NUM)) { game_battle_post(g, ally, winner, from); }
+        }
+    }
+}
+
 static void game_battle_prepare_p1(struct battle_s *bt, battle_side_i_t side, planet_id_t planet_i)
 {
     const struct game_s *g = bt->g;
@@ -171,25 +204,27 @@ static void game_battle_prepare_p1(struct battle_s *bt, battle_side_i_t side, pl
     bt->s[side].race = e->race;
 }
 
-static void game_battle_prepare_add_ships(struct battle_s *bt, battle_side_i_t side, planet_id_t planet_i)
+static void game_battle_prepare_add_ships(struct battle_s *bt, battle_side_i_t side, int party, planet_id_t planet_i)
 {
     const struct game_s *g = bt->g;
-    const empiretechorbit_t *e = &(g->eto[bt->s[side].party]);
-    const shipdesign_t *sd = &(g->srd[bt->s[side].party].design[0]);
+    const empiretechorbit_t *e = &(g->eto[party]);
+    const shipdesign_t *sd = &(g->srd[party].design[0]);
+    race_t race = g->eto[party].race; /* 1oom-mp: the ADDING empire's race -- an ally may differ from the side's lead */
     bool flag_shield_disable = (g->planet[planet_i].battlebg == 0);
     shipparsed_t sp[1];
-    int num_types = 0;
+    int num_types = bt->s[side].num_types; /* 1oom-mp: accumulate -- allies append to whatever the side already has */
     for (int i = 0; i < e->shipdesigns_num; ++i) {
         shipcount_t s;
         s = e->orbit[planet_i].ships[i];
         if (s > 0) {
             bt->s[side].tbl_ships[num_types] = s;
             bt->s[side].tbl_shiptype[num_types] = i;
+            bt->s[side].tbl_owner[num_types] = party; /* 1oom-mp: this entry's empire */
             game_parsed_from_design(sp, &sd[i], s);
-            if (bt->s[side].race == RACE_MRRSHAN) {
+            if (race == RACE_MRRSHAN) {
                 sp->complevel += 4;
             }
-            if (bt->s[side].race == RACE_ALKARI) {
+            if (race == RACE_ALKARI) {
                 sp->defense += 3;
                 sp->misdefense += 3;
             }
@@ -198,13 +233,42 @@ static void game_battle_prepare_add_ships(struct battle_s *bt, battle_side_i_t s
                 sp->absorb = 0;
                 sp->shield = 0;
             }
-            game_battle_item_add(bt, sp, side);
+            game_battle_item_add(bt, sp, side, party);
             ++num_types;
         }
     }
     bt->s[side].num_types = num_types;
-    bt->s[side].flag_human = IS_HUMAN(g, bt->s[side].party);
-    bt->s[side].flag_auto = !bt->s[side].flag_human;
+    /* flag_human/flag_auto are set by the caller from the side's LEAD (so an AI ally can't flip them). */
+}
+
+/* 1oom-mp teams: add every alive teammate of the side's lead that has a fleet at this planet onto the
+   side (combined fleets). Side-based targeting then makes them fight together without friendly fire;
+   losses attribute per item.owner; the battle loop drops them afterward so they don't re-fight. The lead
+   commands the whole side for now (per-owner control is the later networking phase). No-op off teams. */
+static void game_battle_prepare_add_allies(struct battle_s *bt, battle_side_i_t side, planet_id_t planet_i)
+{
+    struct game_s *g = bt->g;
+    int lead = bt->s[side].party;
+    if ((lead < 0) || (lead >= PLAYER_NUM) || (g->mp_team[lead] == 0)) {
+        return; /* monster / no team -> nobody to bring along */
+    }
+    for (player_id_t a = PLAYER_0; a < g->players; ++a) {
+        bool has = false;
+        const shipdesign_t *sd;
+        if ((a == (player_id_t)lead) || (g->mp_team[a] != g->mp_team[lead]) || (!IS_ALIVE(g, a))) { continue; } /* 1oom-mp: combined fleets join ANY alive teammate -- human OR AI (two AIs, or a mixed human+AI team, fight as one side). Human stacks hand off to their player; AI stacks auto-move (per-stack routing in the battle loop). */
+        if (bt->s[side].num_parties >= BATTLE_SIDE_PARTIES_MAX) { break; }
+        for (int i = 0; i < g->eto[a].shipdesigns_num; ++i) {
+            if (g->eto[a].orbit[planet_i].ships[i] > 0) { has = true; break; }
+        }
+        if (!has) { continue; } /* this teammate has no fleet here */
+        game_battle_prepare_add_ships(bt, side, (int)a, planet_i);
+        bt->s[side].parties[bt->s[side].num_parties++] = (int)a;
+        if (IS_HUMAN(g, a)) { bt->s[side].flag_human = true; bt->s[side].flag_auto = false; } /* 1oom-mp: a human ally makes the side interactive even when led by an AI */
+        sd = &(g->srd[a].design[0]);
+        for (int i = 0; i < g->eto[a].shipdesigns_num; ++i) {
+            bt->s[side].apparent_force += (sd[i].hull + 1) * g->eto[a].orbit[planet_i].ships[i];
+        }
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -222,6 +286,8 @@ void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_i
     bt->g = g;
     bt->s[SIDE_R].party = party_r;
     bt->s[SIDE_L].party = party_l;
+    bt->s[SIDE_R].parties[0] = party_r; bt->s[SIDE_R].num_parties = 1; /* 1oom-mp: one empire per side today */
+    bt->s[SIDE_L].parties[0] = party_l; bt->s[SIDE_L].num_parties = 1;
     bt->planet_i = planet_i;
     bt->pop = p->pop;
     bt->fact = p->factories;
@@ -241,25 +307,30 @@ void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_i
             bt->planet_side = (owner == party_l) ? SIDE_L : SIDE_R;
             bt->bases = p->missile_bases;
             game_parsed_from_planet(sp, g, p);
-            game_battle_item_add(bt, sp, SIDE_NONE/*planet*/);
+            game_battle_item_add(bt, sp, SIDE_NONE/*planet*/, owner);
         } else {
             bt->planet_side = SIDE_NONE;
         }
     }
-    game_battle_prepare_add_ships(bt, SIDE_L, planet_i);
+    game_battle_prepare_add_ships(bt, SIDE_L, party_l, planet_i);
+    bt->s[SIDE_L].flag_human = IS_HUMAN(g, party_l); bt->s[SIDE_L].flag_auto = !bt->s[SIDE_L].flag_human;
+    game_battle_prepare_add_allies(bt, SIDE_L, planet_i); /* 1oom-mp teams: co-located teammates join this side */
     if (party_r >= PLAYER_NUM) {
         monster_id_t mi;
         mi = party_r - PLAYER_NUM;
         memcpy(sp, &tbl_monster[mi][g->difficulty], sizeof(*sp));
         strncpy(sp->name, game_str_tbl_monsh_names[mi], SHIP_NAME_LEN);
         sp->name[SHIP_NAME_LEN - 1] = 0;
-        game_battle_item_add(bt, sp, SIDE_R);
+        game_battle_item_add(bt, sp, SIDE_R, party_r);
         bt->s[SIDE_R].num_types = 1;
         /* BUG? these were uninitialized */
         bt->s[SIDE_R].tbl_ships[0] = 1;
         bt->s[SIDE_R].tbl_shiptype[0] = 0;
+        bt->s[SIDE_R].tbl_owner[0] = party_r; /* 1oom-mp: the monster owns its own stack (>= PLAYER_NUM, skipped in writeback) */
     } else {
-        game_battle_prepare_add_ships(bt, SIDE_R, planet_i);
+        game_battle_prepare_add_ships(bt, SIDE_R, party_r, planet_i);
+        bt->s[SIDE_R].flag_human = IS_HUMAN(g, party_r); bt->s[SIDE_R].flag_auto = !bt->s[SIDE_R].flag_human;
+        game_battle_prepare_add_allies(bt, SIDE_R, planet_i); /* 1oom-mp teams: co-located teammates join this side */
     }
 }
 
@@ -360,13 +431,23 @@ void game_battle_handle_all(struct game_s *g)
                     }
                     /* _def won */
                     BOOLVEC_SET0(tbl_have_force, party_att);
+                    /* 1oom-mp teams: teammates that joined this combined battle have already fought ->
+                       drop them from the force list so the pairwise loop gives them no second battle.
+                       (Survivors re-join the next battle here via game_battle_prepare_add_allies.) */
+                    for (battle_side_i_t bs = SIDE_L; bs <= SIDE_R; ++bs) {
+                        for (int k = 1; k < bt->s[bs].num_parties; ++k) {
+                            if (bt->s[bs].parties[k] < PLAYER_NUM) { BOOLVEC_SET0(tbl_have_force, bt->s[bs].parties[k]); }
+                        }
+                    }
                     game_battle_post(g, party_att, party_def, pli);
+                    game_battle_post_side_allies(bt, party_att, party_def, pli); /* 1oom-mp teams: ally fleets retreat too */
                 } else {
                     /*11926*/
                     /* BUG? first check not in MOO1, reads past table if monster */
                     if ((party_att < PLAYER_NUM) && IS_AI(g, party_att) && (g->evn.ceasefire[party_def][party_att] > 0)) {
                         BOOLVEC_SET0(tbl_have_force, party_att);
                         game_battle_post(g, party_att, party_def, pli);
+                        game_battle_post_side_allies(bt, party_att, party_def, pli); /* 1oom-mp teams: ally fleets retreat too */
                     } else {
                         /*1195f*/
                         int party_l, party_r;
@@ -386,7 +467,15 @@ void game_battle_handle_all(struct game_s *g)
                         }
                         /* _l won */
                         BOOLVEC_SET0(tbl_have_force, party_r);
+                        /* 1oom-mp teams: drop teammates that already fought in this combined battle so
+                           the pairwise loop gives them no redundant second battle. */
+                        for (battle_side_i_t bs = SIDE_L; bs <= SIDE_R; ++bs) {
+                            for (int k = 1; k < bt->s[bs].num_parties; ++k) {
+                                if (bt->s[bs].parties[k] < PLAYER_NUM) { BOOLVEC_SET0(tbl_have_force, bt->s[bs].parties[k]); }
+                            }
+                        }
                         game_battle_post(g, party_r, party_l, pli);
+                        game_battle_post_side_allies(bt, party_r, party_l, pli); /* 1oom-mp teams: ally fleets retreat too */
                         /*v14 = 1;*/
                     }
                 }
@@ -415,18 +504,17 @@ void game_battle_finish(struct battle_s *bt)
         }
     }
     for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
-        if (bt->s[side].party < PLAYER_NUM) {
-            empiretechorbit_t *e = &(g->eto[bt->s[side].party]);
-            const shipdesign_t *sd = &(g->srd[bt->s[side].party].design[0]);
-            shipcount_t *os = &(e->orbit[bt->planet_i].ships[0]);
-            for (int i = 0; i < bt->s[side].num_types; ++i) {
-                uint8_t st;
-                shipcount_t n;
-                st = bt->s[side].tbl_shiptype[i];
-                n = bt->s[side].tbl_ships[i];
-                os[st] = n;
-                bt->s[side].apparent_force -= (sd[st].hull + 1) * n;
-            }
+        /* 1oom-mp: survivors return to THEIR owner's orbit (per stack), not the side's lead empire, so a
+           combined-fleet battle reduces each ally's own fleet. Identical today: one owner per side. */
+        for (int i = 0; i < bt->s[side].num_types; ++i) {
+            int owner = bt->s[side].tbl_owner[i];
+            uint8_t st;
+            shipcount_t n;
+            if (owner >= PLAYER_NUM) { continue; } /* monster / none */
+            st = bt->s[side].tbl_shiptype[i];
+            n = bt->s[side].tbl_ships[i];
+            g->eto[owner].orbit[bt->planet_i].ships[st] = n;
+            bt->s[side].apparent_force -= (g->srd[owner].design[st].hull + 1) * n;
         }
     }
     game_diplo_battle_finish(g, bt->s[SIDE_L].party, bt->s[SIDE_R].party, bt->pop - p->pop, bt->s[SIDE_L].apparent_force, bt->biodamage, bt->s[SIDE_R].apparent_force, bt->planet_i);
@@ -436,25 +524,23 @@ void game_battle_count_hulls(const struct battle_s *bt, shipsum_t force[2][SHIP_
 {
     const struct game_s *g = bt->g;
     for (int s = 0; s < 2; ++s) {
-        int party = bt->s[s].party;
         for (ship_hull_t h = 0; h < SHIP_HULL_NUM; ++h) {
             force[s][h] = 0;
         }
-        if (party < PLAYER_NUM) {
-            const shipcount_t *ships;
-            const shipdesign_t *sd;
-            sd = &(g->srd[party].design[0]);
-            ships = &(g->eto[party].orbit[bt->planet_i].ships[0]);
-            for (int i = 0; i < NUM_SHIPDESIGNS; ++i) {
-                shipcount_t n;
-                n = ships[i];
-                if (n) {
-                    force[s][sd[i].hull] += n;
+        /* 1oom-mp: sum across EVERY owner on the side -- a combined fleet has several allied empires. */
+        for (int k = 0; k < (int)bt->s[s].num_parties; ++k) {
+            int party = bt->s[s].parties[k];
+            if (party < PLAYER_NUM) {
+                const shipdesign_t *sd = &(g->srd[party].design[0]);
+                const shipcount_t *ships = &(g->eto[party].orbit[bt->planet_i].ships[0]);
+                for (int i = 0; i < NUM_SHIPDESIGNS; ++i) {
+                    shipcount_t n = ships[i];
+                    if (n) { force[s][sd[i].hull] += n; }
                 }
+            } else {
+                const struct battle_item_s *b = &(bt->item[bt->s[SIDE_L].items + 1]);
+                force[s][b->hull] += b->num;
             }
-        } else {
-            const struct battle_item_s *b = &(bt->item[bt->s[SIDE_L].items + 1]);
-            force[s][b->hull] += b->num;
         }
     }
 }

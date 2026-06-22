@@ -135,9 +135,16 @@ static void ui_starmap_draw_range_parsec(struct starmap_data_s *d, int y)
 static void ui_starmap_draw_sliders_and_prod(struct starmap_data_s *d)
 {
     const struct game_s *g = d->g;
-    const planet_t *p = &g->planet[g->planet_focus_i[d->api]];
+    int focus_i = g->planet_focus_i[d->api];
+    const planet_t *p = &g->planet[focus_i];
     int x = 311;
     char buf[64];
+    /* 1oom-mp: for a teammate's world, draw their full CURRENT (live-relayed) planet -- sliders AND
+       economy -- so the read-only panel's production figures match exactly what they see. */
+    if (p->owner != d->api) {
+        const planet_t *tp = ui_mp_team_plan_planet(focus_i);
+        if (tp) { p = tp; }
+    }
 
     for (planet_slider_i_t i = PLANET_SLIDER_SHIP; i < PLANET_SLIDER_NUM; ++i) {
         ui_draw_filled_rect(227, 81 + 11 * i, 244, 90 + 11 * i, p->slider_lock[i] ? 0x22 : 0, ui_scale);
@@ -287,8 +294,16 @@ void ui_starmap_draw_basic(struct starmap_data_s *d)
     } else {
         player_id_t owner = p->owner;
         int pi = g->planet_focus_i[d->api];
+        bool teammate_live = (ui_mp_team_plan_planet(pi) != NULL); /* 1oom-mp: a teammate's live plan -> show their read-only sliders, not the enemy-colony picture */
         if (BOOLVEC_IS0(p->within_srange, d->api) && !(ui_extra_enabled && g->gaux->flag_cheat_stars) && ((owner == PLAYER_NONE) || BOOLVEC_IS0(g->eto[d->api].contact, owner))) {
             owner = g->seen[d->api][pi].owner;
+        }
+        if (owner == PLAYER_NONE) {
+            /* 1oom-mp: a teammate that just settled here this turn owns it in their LIVE overlay but
+               not yet in my synced state -> adopt their ownership so the panel shows THEIR colony now,
+               instead of "No Colony" until the turn resolves. */
+            const planet_t *tpc = ui_mp_team_plan_planet(pi);
+            if (tpc && (tpc->owner < g->players)) { owner = tpc->owner; }
         }
         if (owner == PLAYER_NONE) {
             lbxgfx_draw_frame(224, 5, ui_data.gfx.starmap.no_colny, UI_SCREEN_W, ui_scale);
@@ -296,7 +311,7 @@ void ui_starmap_draw_basic(struct starmap_data_s *d)
             lbxgfx_draw_frame(227, 73, ui_data.gfx.colonies.current, UI_SCREEN_W, ui_scale);
             ui_draw_box1(227, 73, 310, 174, 0, 0, ui_scale);
             ui_starmap_draw_range_parsec(d, 80);
-        } else if (((owner != d->api) && !(ui_extra_enabled && g->gaux->flag_cheat_stars)) || (p->unrest == PLANET_UNREST_REBELLION)) {
+        } else if ((((owner != d->api) && !(ui_extra_enabled && g->gaux->flag_cheat_stars)) && !teammate_live) || (p->unrest == PLANET_UNREST_REBELLION)) {
             char buf[64];
             int pop, bases, range_y;
             lbxgfx_draw_frame(224, 5, ui_data.gfx.starmap.en_colny, UI_SCREEN_W, ui_scale);
@@ -324,19 +339,21 @@ void ui_starmap_draw_basic(struct starmap_data_s *d)
             ui_starmap_draw_range_parsec(d, range_y);
         } else {
             ui_starmap_draw_sliders_and_prod(d);
-            lbxgfx_set_frame_0(ui_data.gfx.starmap.col_butt_ship);
-            lbxgfx_set_frame_0(ui_data.gfx.starmap.col_butt_reloc);
-            if (p->buildship == BUILDSHIP_STARGATE) {
-                lbxgfx_set_frame(ui_data.gfx.starmap.col_butt_reloc, 1);
+            if (p->owner == d->api) { /* build / reloc / transport buttons are for your OWN world only -- a teammate's view is read-only */
+                lbxgfx_set_frame_0(ui_data.gfx.starmap.col_butt_ship);
+                lbxgfx_set_frame_0(ui_data.gfx.starmap.col_butt_reloc);
+                if (p->buildship == BUILDSHIP_STARGATE) {
+                    lbxgfx_set_frame(ui_data.gfx.starmap.col_butt_reloc, 1);
+                }
+                if ((g->evn.have_plague == 0) || (g->evn.plague_planet_i != g->planet_focus_i[d->api])) {
+                    lbxgfx_set_frame_0(ui_data.gfx.starmap.col_butt_trans);
+                } else {
+                    lbxgfx_set_frame(ui_data.gfx.starmap.col_butt_trans, 1);
+                }
+                lbxgfx_draw_frame(282, 140, ui_data.gfx.starmap.col_butt_ship, UI_SCREEN_W, ui_scale);
+                lbxgfx_draw_frame(282, 152, ui_data.gfx.starmap.col_butt_reloc, UI_SCREEN_W, ui_scale);
+                lbxgfx_draw_frame(282, 164, ui_data.gfx.starmap.col_butt_trans, UI_SCREEN_W, ui_scale);
             }
-            if ((g->evn.have_plague == 0) || (g->evn.plague_planet_i != g->planet_focus_i[d->api])) {
-                lbxgfx_set_frame_0(ui_data.gfx.starmap.col_butt_trans);
-            } else {
-                lbxgfx_set_frame(ui_data.gfx.starmap.col_butt_trans, 1);
-            }
-            lbxgfx_draw_frame(282, 140, ui_data.gfx.starmap.col_butt_ship, UI_SCREEN_W, ui_scale);
-            lbxgfx_draw_frame(282, 152, ui_data.gfx.starmap.col_butt_reloc, UI_SCREEN_W, ui_scale);
-            lbxgfx_draw_frame(282, 164, ui_data.gfx.starmap.col_butt_trans, UI_SCREEN_W, ui_scale);
         }
     }
     ui_starmap_draw_planetinfo(g, d->api, g->planet_focus_i[d->api], d->planet_draw_name);
@@ -467,6 +484,22 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             ty = (p->y - y) * 2 + 11;
         }
         gfx_aux_draw_frame_from_limit(tx, ty, &ui_data.starmap.star_aux, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
+        { /* 1oom-mp live teammate visibility: a teammate is about to colonize this world this turn --
+             mark it in their banner colour so you see their settling plans before the turn resolves. */
+            int cz = ui_mp_team_plan_colonizer(pi);
+            if (cz >= 0) {
+                ui_draw_filled_rect(tx - 1, ty - 6, tx + 3, ty - 2, tbl_banner_color[g->eto[cz].banner], starmap_scale);
+                ui_draw_box1(tx - 2, ty - 7, tx + 4, ty - 1, 0, 0, starmap_scale);
+            }
+        }
+        { /* 1oom-mp teams: a teammate flagged this world for the team ("look here") -> ring the star in their colour. */
+            int pgr = ui_mp_team_plan_ping_at(pi);
+            if (pgr >= 0) {
+                uint8_t bc = tbl_banner_color[g->eto[pgr].banner];
+                ui_draw_box1(tx - 4, ty - 4, tx + 6, ty + 6, 0, 0, starmap_scale);
+                ui_draw_box1(tx - 3, ty - 3, tx + 5, ty + 5, bc, bc, starmap_scale);
+            }
+        }
         if (d->anim_delay == 0) {
             if (anim_frame == 4) {
                 anim_frame = rnd_0_nm1(50, &ui_data.seed);
@@ -477,13 +510,18 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         }
         tx = (p->x - x) * 2 + 14;
         ty = (p->y - y) * 2 + 22;
-        if (p->owner == PLAYER_NONE) {
+        /* 1oom-mp: a teammate settling this world this turn owns it in the live overlay but not yet in
+           my synced state -> render its name as THEIR colony (banner colour, and actually shown) now,
+           instead of a bare unowned star until the turn resolves. */
+        player_id_t eff_owner = p->owner;
+        if (eff_owner == PLAYER_NONE) { int cz = ui_mp_team_plan_colonizer(pi); if (cz >= 0) { eff_owner = (player_id_t)cz; } }
+        if (eff_owner == PLAYER_NONE) {
             lbxfont_select(2, 7, 0, 0);
         } else if (visible || (pi == g->evn.planet_orion_i)) {
-            lbxfont_select(2, tbl_banner_fontparam[g->eto[p->owner].banner], 0, 0);
-        } else if (BOOLVEC_IS1(g->eto[d->api].contact, p->owner) || (p->within_frange[d->api] == 1)) {
+            lbxfont_select(2, tbl_banner_fontparam[g->eto[eff_owner].banner], 0, 0);
+        } else if (BOOLVEC_IS1(g->eto[d->api].contact, eff_owner) || (p->within_frange[d->api] == 1)) {
             lbxfont_select(2, 0, 0, 0);
-            lbxfont_set_color0(tbl_banner_color[g->eto[p->owner].banner]);
+            lbxfont_set_color0(tbl_banner_color[g->eto[eff_owner].banner]);
         } else {
             lbxfont_select(2, 7, 0, 0);
         }
@@ -529,7 +567,7 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                         || (pi == g->evn.planet_orion_i)
                         || (BOOLVEC_IS1(g->eto[d->api].contact, p->owner))
                         || (p->within_frange[d->api] == 1);
-            if (p->owner != PLAYER_NONE && do_print) {
+            if (eff_owner != PLAYER_NONE && do_print) {
                 lbxfont_print_str_center_limit(tx, ty, p->name, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
             }
         }
@@ -554,6 +592,7 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
     }
     for (int i = 0; i < g->enroute_num; ++i) {
         const fleet_enroute_t *r = &g->enroute[i];
+        if (ui_mp_team_plan_active(r->owner)) { continue; } /* teammate's live overlay replaces their stale committed fleets */
         if (BOOLVEC_IS1(r->visible, d->api)) {
             uint8_t *gfx = ui_data.gfx.starmap.smalship[g->eto[r->owner].banner];
             const planet_t *p = &g->planet[r->dest];
@@ -568,11 +607,31 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             if (g->eto[d->api].have_ia_scanner && (p->owner == d->api) && (r->owner != d->api) && (r->dest == g->planet_focus_i[d->api])) {
                 ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_red, 5, ui_data.starmap.line_anim_phase, starmap_scale);
             }
-            if (ui_extra_enabled && ui_data.starmap.flag_show_own_routes && d->show_planet_focus) {
-                if ((r->owner == d->api) && (r->dest == g->planet_focus_i[d->api])) {
-                    ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_green, 5, ui_data.starmap.line_anim_phase, starmap_scale);
-                }
+            if (ui_extra_enabled && (r->owner == d->api) && (r->dest < g->galaxy_stars)) {
+                /* 1oom-mp: show MY OWN fleets'/transports' destinations too (like teammates'), always
+                   (not just the focused planet), each line drawn in MY banner colour. */
+                const planet_t *pdst = &g->planet[r->dest];
+                ui_draw_line_limit(tx + 5, ty + 2, (pdst->x - x) * 2 + 14, (pdst->y - y) * 2 + 14, tbl_banner_color[g->eto[r->owner].banner], starmap_scale);
             }
+            lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
+        }
+    }
+    /* 1oom-mp live teammate visibility: overlay teammates' in-progress planned fleets (streamed each
+       frame during planning) so you see where they're sending ships before the turn resolves. Drawn
+       in the owner's banner colour with a green planned-route line to the destination. */
+    {
+        int tpn = ui_mp_team_plan_fleet_total();
+        for (int k = 0; k < tpn; ++k) {
+            int fo = 0, fx = 0, fy = 0, fdest = 0;
+            const planet_t *pd; uint8_t *gfx;
+            if (!ui_mp_team_plan_fleet_get(k, &fo, &fx, &fy, &fdest)) { break; }
+            if ((fdest < 0) || (fdest >= g->galaxy_stars)) { continue; }
+            pd = &g->planet[fdest];
+            gfx = ui_data.gfx.starmap.smalship[g->eto[fo].banner];
+            tx = (fx - x) * 2 + 8;
+            ty = (fy - y) * 2 + 8;
+            if (pd->x < fx) { lbxgfx_set_new_frame(gfx, 1); } else { lbxgfx_set_frame_0(gfx); }
+            ui_draw_line_limit(tx + 5, ty + 2, (pd->x - x) * 2 + 14, (pd->y - y) * 2 + 14, tbl_banner_color[g->eto[fo].banner], starmap_scale); /* 1oom-mp: teammate fleet route in THEIR banner colour */
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }
     }
@@ -592,10 +651,11 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             if (g->eto[d->api].have_ia_scanner && (p->owner == d->api) && (r->owner != d->api) && (r->dest == g->planet_focus_i[d->api])) {
                 ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_red, 5, ui_data.starmap.line_anim_phase, starmap_scale);
             }
-            if (ui_extra_enabled && ui_data.starmap.flag_show_own_routes && d->show_planet_focus) {
-                if ((r->owner == d->api) && (r->dest == g->planet_focus_i[d->api])) {
-                    ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_green, 5, ui_data.starmap.line_anim_phase, starmap_scale);
-                }
+            if (ui_extra_enabled && (r->owner == d->api) && (r->dest < g->galaxy_stars)) {
+                /* 1oom-mp: show MY OWN fleets'/transports' destinations too (like teammates'), always
+                   (not just the focused planet), each line drawn in MY banner colour. */
+                const planet_t *pdst = &g->planet[r->dest];
+                ui_draw_line_limit(tx + 5, ty + 2, (pdst->x - x) * 2 + 14, (pdst->y - y) * 2 + 14, tbl_banner_color[g->eto[r->owner].banner], starmap_scale);
             }
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }
@@ -625,10 +685,16 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                 if (BOOLVEC_IS0(p->within_srange, d->api) && (i != d->api)) {
                     continue;
                 }
-                for (int j = 0; j < e->shipdesigns_num; ++j) {
-                    if (e->orbit[pi].ships[j]) {
-                        tblorbit[num++] = i;
-                        break;
+                if (ui_mp_team_plan_active(i)) {
+                    /* teammate's overlay is live: use their relayed orbit so a ship they just
+                       sent en-route this turn stops showing in orbit too (no phantom duplicate). */
+                    if (ui_mp_team_plan_orbit_has(i, pi)) { tblorbit[num++] = i; }
+                } else {
+                    for (int j = 0; j < e->shipdesigns_num; ++j) {
+                        if (e->orbit[pi].ships[j]) {
+                            tblorbit[num++] = i;
+                            break;
+                        }
                     }
                 }
             }
@@ -643,6 +709,22 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                 lbxgfx_set_frame_0(gfx);
                 ty = (p->y - y) * 2 + i * 6 + 8;
                 lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
+            }
+            /* 1oom-mp teams: stacked-fleet indicator. When more than one fleet (typically your own +
+               a teammate's, or two teammates') sits at the same star, the small badges overlap and
+               are easy to miss -- draw a little count chit to the right of the stack, in the top
+               owner's banner colour, so it's visibly stacked and you know to click each row. */
+            if (num > 1) {
+                uint8_t bc = tbl_banner_color[g->eto[tblorbit[0]].banner];
+                int bx = tx + 7;
+                int by = (p->y - y) * 2 + 8;
+                char nb[8];
+                ui_draw_box1(bx - 1, by - 1, bx + 5, by + 5, 0, 0, starmap_scale);
+                ui_draw_filled_rect(bx, by, bx + 4, by + 4, bc, starmap_scale);
+                lib_sprintf(nb, sizeof(nb), "%d", num);
+                lbxfont_select(2, 0, 0, 0);
+                lbxfont_set_color0(0);
+                lbxfont_print_str_center_limit(bx + 2, by, nb, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
             }
         }
     }
@@ -967,6 +1049,15 @@ void ui_starmap_fill_oi_tbls(struct starmap_data_s *d)
             for (int j = 0; j < g->players; ++j) {
                 const fleet_orbit_t *r = &(g->eto[j].orbit[i]);
                 if (BOOLVEC_IS0(p->within_srange, d->api) && (j != d->api)) {
+                    continue;
+                }
+                /* 1oom-mp teams: the clickareas MUST line up row-for-row with the badges drawn in
+                   ui_starmap_draw_starmap (which is overlay-aware). For a teammate whose live plan is
+                   streaming, use their relayed orbit -- otherwise a fleet they sent en-route this turn
+                   still occupies an (invisible) orbit row here, shifting your own badge's clickarea down
+                   so clicking YOUR badge actually selects THEIR co-located fleet (wrong owner's ships). */
+                if (ui_mp_team_plan_active(j)) {
+                    if (ui_mp_team_plan_orbit_has(j, i)) { tblpl[numorbits++] = j; }
                     continue;
                 }
                 for (int k = 0; k < g->eto[j].shipdesigns_num; ++k) {

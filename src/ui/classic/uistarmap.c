@@ -122,6 +122,24 @@ static void ui_starmap_draw_cb1(void *vptr)
             lbxfont_print_str_center(160, 11, dnb, UI_SCREEN_W, ui_scale);
         }
     }
+    /* 1oom-mp: non-interrupting notification that another human requests an audience -- press A when ready. */
+    if (ui_mp_turn_active && ui_mp_turn_active()) {
+        int dfrom = ui_mp_diplo_invite_pending();
+        int tvote = ui_mp_team_vote_pending();
+        if ((dfrom >= 0) && (dfrom < d->g->players)) {
+            char dnb[80];
+            lib_sprintf(dnb, sizeof(dnb), "%s REQUEST AN AUDIENCE - PRESS A", game_str_tbl_race[d->g->eto[dfrom].race]);
+            ui_draw_filled_rect(20, 10, 299, 18, 0 /*black*/, ui_scale);
+            lbxfont_select(2, 0xd /*bright*/, 0, 0);
+            lbxfont_print_str_center(160, 11, dnb, UI_SCREEN_W, ui_scale);
+        } else if ((tvote >= 0) && (tvote < d->g->players)) { /* 1oom-mp teams: an ally seeks your assent to a stance */
+            char dnb[80];
+            lib_sprintf(dnb, sizeof(dnb), "%s SEEK YOUR ASSENT - PRESS A", game_str_tbl_race[d->g->eto[tvote].race]);
+            ui_draw_filled_rect(20, 10, 299, 18, 0 /*black*/, ui_scale);
+            lbxfont_select(2, 0xd /*bright*/, 0, 0);
+            lbxfont_print_str_center(160, 11, dnb, UI_SCREEN_W, ui_scale);
+        }
+    }
 }
 
 static void ui_starmap_planet_slider_cb(void *ctx, uint8_t i, int16_t value)
@@ -290,7 +308,7 @@ static void ui_starmap_do_help(struct game_s *g, player_id_t api)
 void ui_starmap_do(struct game_s *g, player_id_t active_player)
 {
     bool flag_done = false;
-    int16_t oi_b, oi_c, oi_starview1, oi_starview2, oi_shippic, oi_finished, oi_equals, oi_hash, oi_diplo,
+    int16_t oi_b, oi_c, oi_starview1, oi_starview2, oi_shippic, oi_finished, oi_equals, oi_hash, oi_diplo, oi_ping,
             oi_f2, oi_f3, oi_f4, oi_f5, oi_f6, oi_f7, oi_f8, oi_f9, oi_f10,
             oi_alt_galaxy, oi_alt_p, oi_alt_events,
             oi_wheelname, oi_wheelshippic, oi_search, oi_rename,
@@ -321,6 +339,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
         oi_equals = UIOBJI_INVALID; \
         oi_hash = UIOBJI_INVALID; \
         oi_diplo = UIOBJI_INVALID; \
+        oi_ping = UIOBJI_INVALID; \
         oi_wheelname = UIOBJI_INVALID; \
         oi_wheelshippic = UIOBJI_INVALID; \
         oi_rename = UIOBJI_INVALID; \
@@ -352,6 +371,8 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             oi1 = 0;
         }
         sm_drag_panned = false;
+        /* 1oom-mp live teammate visibility: stream my in-progress plan to teammates each frame. */
+        if (ui_mp_turn_active && ui_mp_turn_active()) { ui_mp_team_plan_tick(); }
         /* 1oom-mp soft-ready: pump the net each frame while browsing. Once the server says
            everyone is ready, leave the map; ui_game_turn then ends the turn for resolution. */
         if (ui_mp_turn_active && ui_mp_turn_active() && ui_mp_turn_poll && ui_mp_turn_poll()) {
@@ -401,6 +422,9 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
         } else if (oi1 == oi_b) {
             ui_data.ui_main_loop_action = UI_MAIN_LOOP_SCRAP_BASES;
             flag_done = true;
+            ui_sound_play_sfx_24();
+        } else if ((oi_ping != UIOBJI_INVALID) && (oi1 == oi_ping)) {
+            ui_mp_set_ping(g->planet_focus_i[active_player]); /* 1oom-mp teams: flag/unflag this world for allies (stays on the map) */
             ui_sound_play_sfx_24();
         } else if (oi1 == oi_c) {
             ui_data.ui_main_loop_action = UI_MAIN_LOOP_SPIES_CAUGHT;
@@ -770,9 +794,12 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             if ((p->owner == active_player) && p->missile_bases) {
                 oi_b = uiobj_add_mousearea(272, 59, 312, 67, MOO_KEY_b);
             }
+            if (ui_mp_turn_active && ui_mp_turn_active() && (g->mp_team[active_player] != 0)) {
+                oi_ping = uiobj_add_inputkey(MOO_KEY_p); /* 1oom-mp teams: flag the focused world for my allies */
+            }
             oi_c = uiobj_add_inputkey(MOO_KEY_c);
-            if (ui_mp_turn_active && ui_mp_turn_active() && (ui_mp_diplo_invite_pending() >= 0)) {
-                oi_diplo = uiobj_add_inputkey(MOO_KEY_a); /* 1oom-mp: answer a pending audience request */
+            if (ui_mp_turn_active && ui_mp_turn_active() && ((ui_mp_diplo_invite_pending() >= 0) || (ui_mp_team_vote_pending() >= 0))) {
+                oi_diplo = uiobj_add_inputkey(MOO_KEY_a); /* 1oom-mp: answer a pending audience request or team stance vote */
             }
             ui_starmap_add_oi_bottom_buttons(&d);
             ui_starmap_add_oi_misc(&d);

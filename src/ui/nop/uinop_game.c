@@ -5,6 +5,7 @@
 #include "ui.h"
 #include "types.h"
 #include "game.h"
+#include "lib.h"
 #include "game_planet.h"
 #include "game_audience.h"
 #include "game_battle.h"
@@ -139,6 +140,59 @@ static uint16_t mp_battle_item_num(const struct battle_s *bt, int side, int look
     return total;
 }
 
+/* 1oom-mp: stream a battle event to teammates of either combatant (observers); defined below.
+   Returns the number of observer clients it sent to (0 if nobody qualifies / hook is off). */
+static int mp_spec_send_observers(const struct battle_s *bt, const void *data, int len, int reliable);
+
+/* 1oom-mp teams: per-owner battle control. The combatants are every HUMAN empire on either side (a
+   side's lead + its joined allied teammates); EACH drives its OWN ships, while non-owner teammates
+   only observe. s_battle_owner_mode[p] is each owner's autoresolve choice (OFF=fight live, else flee). */
+static uint8_t s_battle_owner_mode[PLAYER_NUM];
+static int mp_battle_human_owners(const struct battle_s *bt, int *players, battle_side_i_t *sides) {
+    int n = 0;
+    for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
+        for (int k = 0; k < (int)bt->s[side].num_parties; ++k) {
+            int p = bt->s[side].parties[k], j;
+            bool dup = false;
+            if ((p < 0) || (p >= PLAYER_NUM) || !IS_HUMAN(bt->g, p)) { continue; }
+            for (j = 0; j < n; ++j) { if (players[j] == p) { dup = true; break; } }
+            if (dup) { continue; }
+            players[n] = p; if (sides) { sides[n] = side; } ++n;
+            if (n >= 2 * BATTLE_SIDE_PARTIES_MAX) { return n; }
+        }
+    }
+    return n;
+}
+static bool mp_battle_is_owner(const struct battle_s *bt, int p) {
+    for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
+        for (int k = 0; k < (int)bt->s[side].num_parties; ++k) { if (bt->s[side].parties[k] == p) { return true; } }
+    }
+    return false;
+}
+/* 1oom-mp: count the human teammates who would be OFFERED the "press W to watch" prompt for this
+   battle -- i.e. a human on a lead's team who is NOT a combatant. Mirrors the filter in
+   mp_spec_send_observers exactly; used only for the diagnostic log line at the spectate gate so a
+   "the watch prompt never appeared" report can be told apart from "no eligible observers". */
+static int mp_battle_observer_count(const struct battle_s *bt) {
+    const struct game_s *g = bt->g;
+    int pl, pr, n = 0;
+    if (!g) { return 0; }
+    pl = bt->s[SIDE_L].party; pr = bt->s[SIDE_R].party;
+    for (int p = 0; p < g->players; ++p) {
+        if ((p == pl) || (p == pr) || !IS_HUMAN(g, p) || mp_battle_is_owner(bt, p)) { continue; }
+        if (((pl >= 0) && (g->mp_team[pl] != 0) && (g->mp_team[p] == g->mp_team[pl]))
+         || ((pr >= 0) && (g->mp_team[pr] != 0) && (g->mp_team[p] == g->mp_team[pr]))) { ++n; }
+    }
+    return n;
+}
+/* send a battle frame to every human OWNER (combatant), optionally skipping one (the current actor). */
+static void mp_spec_send_owners(const struct battle_s *bt, const void *data, int len, int reliable, int except) {
+    int players[2 * BATTLE_SIDE_PARTIES_MAX]; int n, i;
+    if (!g_mp_spectate_hook) { return; }
+    n = mp_battle_human_owners(bt, players, NULL);
+    for (i = 0; i < n; ++i) { if (players[i] != except) { g_mp_spectate_hook(players[i], data, len, reliable); } }
+}
+
 ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
 {
     /* snapshot the initial ship stacks (item[0] is the planet, so start at 1) for the loss diff */
@@ -160,33 +214,54 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
        prompt + sets up its battle UI at the same time). Battle goes interactive if any
        human picks Continue. Default AUTO outside MP. */
     if (g_mp_decision_hook_multi) {
-        int players[2];
-        battle_side_i_t sides[2];
-        int n = 0;
-        for (int side = SIDE_L; side <= SIDE_R; ++side) {
-            if (bt->s[side].flag_human) { sides[n] = (battle_side_i_t)side; players[n] = bt->s[side].party; ++n; }
-        }
+        int players[2 * BATTLE_SIDE_PARTIES_MAX];
+        battle_side_i_t sides[2 * BATTLE_SIDE_PARTIES_MAX];
+        int n = mp_battle_human_owners(bt, players, sides); /* 1oom-mp: every human combatant (each side's lead + its allies) */
         if (n > 0) {
-            uint8_t modes[2] = { UI_BATTLE_AUTORESOLVE_AUTO, UI_BATTLE_AUTORESOLVE_AUTO };
+            uint8_t modes[2 * BATTLE_SIDE_PARTIES_MAX]; memset(modes, UI_BATTLE_AUTORESOLVE_AUTO, sizeof(modes)); /* default before the per-owner prompt fills each */
             if (g_mp_decision_hook_multi(players, n, MP_DEC_BATTLE_INIT, bt, (int)sizeof(*bt), modes, 1) == 0) {
                 ui_battle_autoresolve_t result = UI_BATTLE_AUTORESOLVE_AUTO;
+                bool side_fights[2] = { false, false };
                 for (int i = 0; i < n; ++i) {
-                    /* 1oom-mp: honor EACH human's choice per-side. The battle goes interactive if ANY
-                       human picks Continue (OFF), but a human who picked Auto or Retreat must NOT be
-                       prompted for ship moves -- otherwise the server blocks on a battle-turn RPC that
-                       their (passive) client never answers, deadlocking the whole battle. So flag that
-                       side flag_auto here (server auto-handles it, never prompts), and for Retreat also
-                       set its ships fleeing so they leave the field while the opponent fights live. */
+                    /* 1oom-mp teams: EACH owner's choice drives only its OWN ships. The battle goes
+                       interactive if ANY owner picks Continue (OFF); an owner who picked Auto/Retreat is
+                       never prompted (ui_battle_turn flees its ships) so the server can't deadlock on a
+                       passive client. Retreat also sets that owner's ships fleeing immediately. */
+                    s_battle_owner_mode[players[i]] = modes[i];
                     if (modes[i] == UI_BATTLE_AUTORESOLVE_OFF) {
                         result = UI_BATTLE_AUTORESOLVE_OFF;
-                    } else {
-                        bt->s[sides[i]].flag_auto = 1;
-                        if (modes[i] == UI_BATTLE_AUTORESOLVE_RETREAT) {
-                            for (int it = 1; (it <= (int)bt->items_num) && (it < BATTLE_ITEM_MAX); ++it) {
-                                if (bt->item[it].side == sides[i]) { bt->item[it].retreat = 1; }
-                            }
+                        side_fights[sides[i]] = true;
+                    } else if (modes[i] == UI_BATTLE_AUTORESOLVE_RETREAT) {
+                        for (int it = 1; (it <= (int)bt->items_num) && (it < BATTLE_ITEM_MAX); ++it) {
+                            if (bt->item[it].owner == players[i]) { bt->item[it].retreat = 1; }
                         }
                     }
+                }
+                /* a human side with NO fighting owner is fully auto-handled (no per-ship prompts). */
+                for (int side = SIDE_L; side <= SIDE_R; ++side) {
+                    if (bt->s[side].flag_human && !side_fights[side]) { bt->s[side].flag_auto = 1; }
+                }
+                {
+                    /* 1oom-mp diagnostic: the observer "press W to watch" offer is sent ONLY when the
+                       fight goes interactive (result==OFF). An auto-resolved/retreated teammate battle
+                       builds no live arena and streams no frames, so observers correctly get the combat
+                       wait banner but NO watch prompt -- which looks like a bug. Log both the decision
+                       and how many teammates were eligible so a "watch prompt never appeared" report is
+                       conclusive: eligible>0 + interactive=no => auto-resolved (expected, nothing live);
+                       eligible==0 => a team/filter problem (no one to offer). */
+                    int eligible = mp_battle_observer_count(bt);
+                    int sent = 0;
+                    if (result == UI_BATTLE_AUTORESOLVE_OFF) {
+                        /* the fight will be played live -> tell observing teammates to load the arena and
+                           watch (reliable: must arrive before the frames it precedes). */
+                        static uint8_t ibuf[1 + sizeof(struct battle_s)];
+                        ibuf[0] = UI_MP_SPEC_BATTLE_INIT;
+                        memcpy(ibuf + 1, bt, sizeof(struct battle_s));
+                        sent = mp_spec_send_observers(bt, ibuf, 1 + (int)sizeof(struct battle_s), 1);
+                    }
+                    log_message("MP spectate: battle at planet %d leads L=%d R=%d interactive=%s watch-offer-eligible=%d offer-sent=%d\n",
+                                (int)bt->planet_i, bt->s[SIDE_L].party, bt->s[SIDE_R].party,
+                                (result == UI_BATTLE_AUTORESOLVE_OFF) ? "yes" : "no", eligible, sent);
                 }
                 return result;
             }
@@ -203,11 +278,8 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
        set forever, and then re-render that stale battle on every later combat-wait broadcast --
        even while completely uninvolved in someone else's fight. */
     if (g_mp_decision_hook_multi) {
-        int players[2];
-        int n = 0;
-        for (int side = SIDE_L; side <= SIDE_R; ++side) {
-            if (bt->s[side].flag_human) { players[n++] = bt->s[side].party; }
-        }
+        int players[2 * BATTLE_SIDE_PARTIES_MAX];
+        int n = mp_battle_human_owners(bt, players, NULL); /* 1oom-mp: tear down every human owner's battle UI */
         if (n > 0) {
             static uint8_t buf[sizeof(struct battle_s) + 8];
             int32_t w = winner; uint8_t resp[2] = { 0, 0 };
@@ -215,6 +287,14 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
             buf[sizeof(struct battle_s)] = colony_destroyed ? 1 : 0;
             memcpy(buf + sizeof(struct battle_s) + 1, &w, 4);
             g_mp_decision_hook_multi(players, n, MP_DEC_BATTLE_END, buf, (int)sizeof(struct battle_s) + 5, resp, 1);
+            /* 1oom-mp: tear down any OBSERVING teammate's arena too (reliable: else the finished battle
+               keeps rendering on their screen forever). Prefix the same [battle_s][colony][winner] buf. */
+            {
+                static uint8_t ebuf[1 + sizeof(struct battle_s) + 8];
+                ebuf[0] = UI_MP_SPEC_BATTLE_END;
+                memcpy(ebuf + 1, buf, sizeof(struct battle_s) + 5);
+                mp_spec_send_observers(bt, ebuf, 1 + (int)sizeof(struct battle_s) + 5, 1);
+            }
             if (bt->autoresolve) {
                 /* auto-resolved: send each involved human the per-design losses for both sides, for the
                    consolidated end-of-turn combat report (the per-battle result screen is suppressed). */
@@ -267,13 +347,10 @@ void ui_battle_draw_basic(const struct battle_s *bt)
     /* 1oom-mp: stream the battle to any human NOT currently acting, so they can watch
        the fight progress instead of staring at a frozen frame. */
     if (g_mp_spectate_hook) {
-        battle_side_i_t cside = bt->item[bt->cur_item].side;
-        int actor = ((cside == SIDE_L) || (cside == SIDE_R)) ? bt->s[cside].party : -1;
-        for (int side = SIDE_L; side <= SIDE_R; ++side) {
-            if (bt->s[side].flag_human && (bt->s[side].party != actor)) {
-                g_mp_spectate_hook(bt->s[side].party, bt, (int)sizeof(*bt), 0/*best-effort: full snapshot self-heals*/);
-            }
-        }
+        int actor = bt->item[bt->cur_item].owner; /* 1oom-mp: the owner currently being asked to move */
+        /* stream the live frame to every OTHER human owner (combatant) + every observing teammate. */
+        mp_spec_send_owners(bt, bt, (int)sizeof(*bt), 0/*best-effort: full snapshot self-heals*/, actor);
+        mp_spec_send_observers(bt, bt, (int)sizeof(*bt), 0/*best-effort: full snapshot self-heals*/);
     }
 }
 
@@ -297,9 +374,8 @@ void ui_battle_draw_missile(const struct battle_s *bt, int missilei, int x, int 
         for (int i = 0; i < 5; ++i) { b[p++] = (uint8_t)(vals[i] & 0xff); b[p++] = (uint8_t)((vals[i] >> 8) & 0xff); }
         memcpy(b + p, &bt->missile[missilei], sizeof(struct battle_missile_s));
         p += (int)sizeof(struct battle_missile_s);
-        for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
-            if (bt->s[side].flag_human) { g_mp_spectate_hook(bt->s[side].party, b, p, 1/*reliable: missile flight*/); }
-        }
+        mp_spec_send_owners(bt, b, p, 1/*reliable: missile flight*/, -1);
+        mp_spec_send_observers(bt, b, p, 1/*reliable: missile flight*/);
     }
 }
 
@@ -317,6 +393,25 @@ void ui_battle_draw_item(const struct battle_s *bt, int itemi, int x, int y)
 
 /* 1oom-mp: push a small battle animation event to the human(s) NOT currently acting (same audience
    as the draw_basic snapshot) so a spectator sees the attack play out. args are sent as int16. */
+/* 1oom-mp: stream a battle event to teammates of either combatant who aren't themselves fighting,
+   so they OBSERVE the fight live. NOT actor-gated -- an observer isn't acting, so it needs every
+   frame. Each observer is sent at most once. */
+static int mp_spec_send_observers(const struct battle_s *bt, const void *data, int len, int reliable)
+{
+    const struct game_s *g = bt->g;
+    int pl, pr, sent = 0;
+    if (!g_mp_spectate_hook || !g) { return 0; }
+    pl = bt->s[SIDE_L].party; pr = bt->s[SIDE_R].party;
+    for (int p = 0; p < g->players; ++p) {
+        bool obs;
+        if ((p == pl) || (p == pr) || !IS_HUMAN(g, p) || mp_battle_is_owner(bt, p)) { continue; } /* 1oom-mp: an ally OWNER is a combatant, not an observer */
+        obs = ((pl >= 0) && (g->mp_team[pl] != 0) && (g->mp_team[p] == g->mp_team[pl]))
+           || ((pr >= 0) && (g->mp_team[pr] != 0) && (g->mp_team[p] == g->mp_team[pr]));
+        if (obs) { g_mp_spectate_hook(p, data, len, reliable); ++sent; }
+    }
+    return sent;
+}
+
 static void mp_spec_send(const struct battle_s *bt, uint8_t kind, const int *args, int nargs)
 {
     if (!g_mp_spectate_hook) { return; }
@@ -327,11 +422,8 @@ static void mp_spec_send(const struct battle_s *bt, uint8_t kind, const int *arg
     {
         /* send to EVERY human in the battle, including the one acting — they should see their own
            shot/retreat fire (the actor only gets state snapshots at its decision points otherwise). */
-        for (battle_side_i_t side = SIDE_L; side <= SIDE_R; ++side) {
-            if (bt->s[side].flag_human) {
-                g_mp_spectate_hook(bt->s[side].party, b, 1 + nargs * 2, 1/*reliable: one-shot battle animation (beam/damage/retreat/...)*/);
-            }
-        }
+        mp_spec_send_owners(bt, b, 1 + nargs * 2, 1/*reliable: one-shot battle animation (beam/damage/retreat/...)*/, -1);
+        mp_spec_send_observers(bt, b, 1 + nargs * 2, 1/*reliable: one-shot battle animation*/);
     }
 }
 
@@ -427,13 +519,15 @@ ui_battle_action_t ui_battle_turn(const struct battle_s *bt)
        poll loop and returns a real action; the server's per-frame loop becomes
        one RPC per action). Default AUTO. */
     if (g_mp_decision_hook) {
-        battle_side_i_t side = bt->item[bt->cur_item].side;
-        int party = ((side == SIDE_L) || (side == SIDE_R)) ? bt->s[side].party : -1;
-        log_message("MPDBG turn: cur_item=%d side=%d party=%d (L.party=%d R.party=%d)\n", bt->cur_item, (int)side, party, bt->s[SIDE_L].party, bt->s[SIDE_R].party);
-        if (party >= 0) {
-            uint8_t act = UI_BATTLE_ACT_AUTO;
-            int r = g_mp_decision_hook(party, MP_DEC_BATTLE_TURN, bt, (int)sizeof(*bt), &act, 1);
-            if (r >= 1) { return act; }
+        int owner = bt->item[bt->cur_item].owner; /* 1oom-mp teams: ask the CURRENT SHIP'S owner, not the side lead */
+        if ((owner >= 0) && (owner < PLAYER_NUM) && IS_HUMAN(bt->g, owner)) {
+            if (s_battle_owner_mode[owner] == UI_BATTLE_AUTORESOLVE_OFF) {
+                uint8_t act = UI_BATTLE_ACT_AUTO;
+                int r = g_mp_decision_hook(owner, MP_DEC_BATTLE_TURN, bt, (int)sizeof(*bt), &act, 1);
+                if (r >= 1) { return act; }
+            } else {
+                return UI_BATTLE_ACT_RETREAT; /* this owner chose auto/retreat -> its ships flee (v1: no per-ship AI) */
+            }
         }
     }
     return UI_BATTLE_ACT_AUTO;
@@ -495,7 +589,9 @@ ui_sabotage_t ui_spy_sabotage_ask(struct game_s *g, int spy, int target, planet_
 
 int ui_spy_sabotage_done(struct game_s *g, int pi, int spy, int target, ui_sabotage_t act, int other1, int other2, planet_id_t planet, int snum)
 {
-    /* 1oom-mp: show the sabotage result ONLY to the saboteur, never the victim. The victim's screen
+    /* 1oom-mp: this BLOCKING result is for the saboteur ONLY, never the victim here -- the victim is
+       notified via the non-blocking ui_spy_sabotage_show path instead (MP_DEC_SPY_RESULT_SHOW, buffered
+       + replayed at their turn start). It can't be relayed here because the victim's screen
        (game_spy_sab_human's second loop) is a blocking popup on a passive player; relaying it deadlocks
        resolution waiting for a "continue" ack that can't come (it renders black), and it fires bogusly
        for an incited revolt. Discriminate by `target`: the saboteur views the TARGET empire's planet
@@ -872,6 +968,17 @@ void ui_election_delay(struct election_s *el, int delay)
 int ui_election_vote(struct election_s *el, int player_i)
 {
     if (g_mp_decision_hook) {
+        /* 1oom-mp: the vote is a private RPC, so the shared chamber would otherwise freeze on the last
+           narration while this human decides -- spectators can't tell who they're waiting on. Stream a
+           clear "Awaiting <Empire>..." frame to everyone first (cur_i already marks the voter). */
+        if (g_mp_spectate_hook && el->g) {
+            char wbuf[80];
+            const char *saved = el->str;
+            lib_sprintf(wbuf, sizeof(wbuf), "Awaiting the vote of %s...", el->g->emperor_names[player_i]);
+            el->str = wbuf;
+            mp_election_relay(el, UI_MP_SPEC_COUNCIL);
+            el->str = saved;
+        }
         struct election_s e = *el;
         e.g = NULL; e.uictx = NULL; e.buf = NULL; e.str = NULL;
         uint8_t req[sizeof(struct election_s) + 4];
@@ -989,6 +1096,16 @@ void ui_mp_battle_spectate(const struct battle_s *bt)
 void ui_mp_battle_glide(struct battle_s *bt, int itemi, int sx, int sy)
 {
     (void)bt; (void)itemi; (void)sx; (void)sy; /* headless: client-only */
+}
+
+void ui_battle_init_spectate(struct battle_s *bt)
+{
+    (void)bt; /* headless: the server never renders/observes */
+}
+
+int ui_mp_battle_watch_prompt(void)
+{
+    return 0; /* headless: never watches */
 }
 
 int ui_mp_lobby_run(int my_id)

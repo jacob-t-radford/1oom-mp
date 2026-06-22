@@ -416,7 +416,9 @@ void game_spy_build(struct game_s *g)
             spycost_base /= 2;
         }
         for (player_id_t j = PLAYER_0; j < g->players; ++j) {
-            if ((i != j) && (e->spying[j] != 0)) {
+            /* 1oom-mp: never spy on a teammate (espionage isn't treaty-gated, so the locked alliance
+               alone wouldn't stop it) -- no spies accumulate against same-team empires. */
+            if ((i != j) && (e->spying[j] != 0) && !((g->mp_team[i] != 0) && (g->mp_team[i] == g->mp_team[j]))) {
                 int spyfund, spycost;
                 spyfund = (e->total_production_bc * e->spying[j]) / 1000 + e->spyfund[j];
                 spycost = spycost_base; /* WASBUG MOO1 does not reset spycost between target players */
@@ -921,7 +923,12 @@ void game_spy_sab_human(struct game_s *g)
                     spy2 = PLAYER_NONE;
                 }
                 act = g->evn.sabotage_is_bases[player][spy] ? UI_SABOTAGE_BASES : UI_SABOTAGE_FACT;
-                ui_spy_sabotage_done(g, player, spy2, player, act, PLAYER_NONE, PLAYER_NONE, planet, snum);
+                /* 1oom-mp: notify the human VICTIM via the buffered, non-blocking _show path (relays
+                   MP_DEC_SPY_RESULT_SHOW, replayed at the victim's own turn start). The blocking _done
+                   used here before was suppressed in MP because relaying it deadlocked resolution
+                   (the passive victim can't ack mid-resolution), so sabotage of your own bases/factories
+                   went completely unreported. _show is the same screen, just buffered. */
+                ui_spy_sabotage_show(g, player, spy2, player, act, PLAYER_NONE, PLAYER_NONE, planet, snum);
             }
         }
     }

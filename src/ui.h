@@ -79,6 +79,8 @@ enum ui_mp_spec_e {
     UI_MP_SPEC_COUNCIL,     /* council frame: [kind][struct election_s] — the shared council view, relayed to ALL humans */
     UI_MP_SPEC_COUNCIL_END, /* council adjourned: [kind] only — tear down the spectator's council view */
     UI_MP_SPEC_MISSILE,     /* missile flight: [kind][i16 missilei,x,y,tx,ty][struct battle_missile_s] — animate the missile traveling (the struct rides along since missiles launch after the last snapshot) */
+    UI_MP_SPEC_BATTLE_INIT, /* observer arena setup: [kind][struct battle_s] — a teammate loads the arena to WATCH a fight (no auto-resolve prompt, submits nothing) */
+    UI_MP_SPEC_BATTLE_END,  /* observer arena teardown: [kind][struct battle_s][u8 colony_destroyed][i32 winner] */
 };
 
 /* 1oom-mp: glide a ship from its current hex to (sx,sy) on the spectator's battle screen (replays
@@ -107,6 +109,19 @@ extern int ui_mp_lobby_run(int my_id);
    The proposer side runs inline from the AUDIENCE action. NULL transport (single-player) is a no-op. */
 extern bool ui_mp_diplo_pump(int pi);
 extern void ui_mp_diplo_handle(struct game_s *g, int pi);
+extern int ui_mp_team_vote_pending(void); /* 1oom-mp teams: proposer id of a teammate's stance proposal awaiting my vote (starmap notification), else -1 */
+/* 1oom-mp live teammate visibility: _tick streams my plan to teammates each planning frame; the
+   starmap overlay reads teammates' relayed fleets via _active / _fleet_total / _fleet_get. */
+extern void ui_mp_team_plan_tick(void);
+extern void ui_mp_set_ping(int planet_i);          /* 1oom-mp teams: flag a planet for teammates (toggle) */
+extern int ui_mp_team_plan_ping_at(int planet_i);  /* 1oom-mp teams: teammate who pinged planet_i this turn, else -1 */
+extern void ui_mp_team_plan_reset(void);
+extern bool ui_mp_team_plan_active(int player);
+extern bool ui_mp_team_plan_orbit_has(int player, int planet_i);
+extern int ui_mp_team_plan_fleet_total(void);
+extern bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest);
+extern int ui_mp_team_plan_colonizer(int planet_i);
+extern const struct planet_s *ui_mp_team_plan_planet(int planet_i);
 extern int ui_mp_diplo_invite_pending(void); /* 1oom-mp: proposer id of a pending incoming audience request (starmap notification), else -1 */
 
 /* 1oom-mp: true when this classic UI is running as a networked client (set by game.c's
@@ -165,6 +180,8 @@ typedef enum {
 } ui_battle_bomb_t;
 
 extern ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt);
+extern void ui_battle_init_spectate(struct battle_s *bt); /* 1oom-mp: load the arena for a teammate OBSERVING (no prompt, no orders); no-op in headless/cmdline UIs */
+extern int ui_mp_battle_watch_prompt(void); /* 1oom-mp: one frame of the opt-in "teammate in combat, press W to watch" wait screen; returns 1 if the watch key was pressed. 0 in headless/cmdline */
 extern void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner);
 
 /* 1oom-mp: end-of-turn consolidated combat report. One record per auto-resolved space battle, carrying

@@ -467,12 +467,39 @@ void game_update_empire_contact(struct game_s *g)
                     SETMIN(mindist, dist);
                 }
             }
-            if (mindist <= frange) {
+            /* 1oom-mp: teammates are always in contact -- fuel-range distance must never break it,
+               or the alliance machinery and the starmap lose track of each other's worlds (and the
+               player gets a spurious "contact broken" every turn). */
+            if ((mindist <= frange) || ((g->mp_team[pi1] != 0) && (g->mp_team[pi1] == g->mp_team[pi2]))) {
                 BOOLVEC_SET1(e1->contact, pi2);
                 BOOLVEC_SET1(e2->contact, pi1);
             } else {
                 BOOLVEC_SET0(e1->contact, pi2);
                 BOOLVEC_SET0(e2->contact, pi1);
+            }
+        }
+    }
+    /* 1oom-mp shared diplomacy: a team pools its diplomatic contacts -- if any teammate has met an
+       empire, every human on the team has met them too (so you can negotiate with that empire and
+       see its worlds). Mutual, so the met empire also knows you (your ally introduced you). Looped
+       to a fixed point so contact spreads across the whole team; only human contact is widened. */
+    {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (player_id_t a = PLAYER_0; a < g->players; ++a) {
+                if (!IS_HUMAN(g, a)) { continue; }
+                for (player_id_t b = PLAYER_0; b < g->players; ++b) {
+                    if ((a == b) || (g->mp_team[a] == 0) || (g->mp_team[a] != g->mp_team[b])) { continue; }
+                    for (player_id_t x = PLAYER_0; x < g->players; ++x) {
+                        if ((x == a) || (x == b)) { continue; }
+                        if (BOOLVEC_IS1(g->eto[b].contact, x) && BOOLVEC_IS0(g->eto[a].contact, x)) {
+                            BOOLVEC_SET1(g->eto[a].contact, x);
+                            BOOLVEC_SET1(g->eto[x].contact, a);
+                            changed = true;
+                        }
+                    }
+                }
             }
         }
     }
@@ -554,6 +581,33 @@ void game_update_visibility(struct game_s *g)
             }
             if (!any_ships) {
                 BOOLVEC_CLEAR(o->visible, PLAYER_NUM);
+            }
+        }
+    }
+    /* 1oom-mp: shared team vision -- a human empire sees everything its teammates (human or AI) can
+       see: scanner coverage plus enroute/transport/orbiting fleets. This is the last step of the
+       visibility recompute (game_update_within_range then game_update_visibility) on both server and
+       client, so it stays consistent (no desync). Only human sight is widened; AI sight is left
+       untouched so AI decisions are unaffected. */
+    for (player_id_t h = PLAYER_0; h < g->players; ++h) {
+        if (!IS_HUMAN(g, h)) { continue; }
+        for (player_id_t t = PLAYER_0; t < g->players; ++t) {
+            if ((t == h) || (g->mp_team[h] == 0) || (g->mp_team[h] != g->mp_team[t])) { continue; }
+            for (int k = 0; k < g->enroute_num; ++k) {
+                if (BOOLVEC_IS1(g->enroute[k].visible, t)) { BOOLVEC_SET1(g->enroute[k].visible, h); }
+            }
+            for (int k = 0; k < g->transport_num; ++k) {
+                if (BOOLVEC_IS1(g->transport[k].visible, t)) { BOOLVEC_SET1(g->transport[k].visible, h); }
+            }
+            for (int i = 0; i < g->galaxy_stars; ++i) {
+                if (BOOLVEC_IS1(g->planet[i].within_srange, t) || (g->planet[i].owner == t)) { BOOLVEC_SET1(g->planet[i].within_srange, h); }
+                if (BOOLVEC_IS1(g->planet[i].explored, t) && BOOLVEC_IS0(g->planet[i].explored, h)) {
+                    g->seen[h][i] = g->seen[t][i]; /* inherit the teammate's last-known view of a world they've explored */
+                    BOOLVEC_SET1(g->planet[i].explored, h);
+                }
+                for (player_id_t owner = PLAYER_0; owner < g->players; ++owner) {
+                    if (BOOLVEC_IS1(g->eto[owner].orbit[i].visible, t)) { BOOLVEC_SET1(g->eto[owner].orbit[i].visible, h); }
+                }
             }
         }
     }

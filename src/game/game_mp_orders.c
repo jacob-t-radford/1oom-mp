@@ -54,7 +54,7 @@ bool game_mp_diplo_record(player_id_t actor, player_id_t target, uint8_t verb, u
 
 /* ---- colonize requests (client records a planet to colonize, server resolves) ---- */
 #define MP_COLONIZE_MAX 16
-struct mp_colonize_req_s { player_id_t pi; planet_id_t pli; };
+struct mp_colonize_req_s { player_id_t pi; planet_id_t pli; char name[PLANET_NAME_LEN]; };
 static planet_id_t s_colonize_act[MP_COLONIZE_MAX];
 static int s_colonize_act_num = 0;
 static struct mp_colonize_req_s s_colonize_pending[MP_COLONIZE_MAX];
@@ -65,6 +65,57 @@ void game_mp_colonize_record(player_id_t pi, planet_id_t pli)
     (void)pi; /* actor is implicit: the player whose write_orders drains this */
     for (int i = 0; i < s_colonize_act_num; ++i) { if (s_colonize_act[i] == pli) { return; } }
     if (s_colonize_act_num < MP_COLONIZE_MAX) { s_colonize_act[s_colonize_act_num++] = pli; }
+}
+
+/* 1oom-mp live teammate visibility: serialize this player's IN-PROGRESS plan for teammates --
+   en-route fleets (x,y,dest), queued colonizes, and per-owned-planet production sliders. Compact
+   and best-effort streamed each frame; the viewer overlays it on their starmap. */
+int game_mp_write_team_plan(const struct game_s *g, player_id_t pi, uint8_t *buf, int buflen)
+{
+    int pos = 0;
+    uint16_t v, cnt;
+    int cntpos;
+    v = (uint16_t)pi; PUT(&v, 2);
+    /* en-route fleets I own */
+    cntpos = pos; cnt = 0; PUT(&cnt, 2);
+    for (int i = 0; i < g->enroute_num; ++i) {
+        const fleet_enroute_t *r = &g->enroute[i];
+        if (r->owner != pi) { continue; }
+        v = r->x; PUT(&v, 2); v = r->y; PUT(&v, 2); v = (uint16_t)r->dest; PUT(&v, 2);
+        ++cnt;
+    }
+    memcpy(buf + cntpos, &cnt, 2);
+    /* colonizes I queued this turn */
+    cntpos = pos; cnt = 0; PUT(&cnt, 2);
+    for (int i = 0; i < s_colonize_act_num; ++i) {
+        v = (uint16_t)s_colonize_act[i]; PUT(&v, 2);
+        ++cnt;
+    }
+    memcpy(buf + cntpos, &cnt, 2);
+    /* full planet snapshot for the worlds I own, so a teammate's read-only panel shows EXACT
+       production figures (not just proportional slider bars) -- sliders + economy ride along. */
+    cntpos = pos; cnt = 0; PUT(&cnt, 2);
+    for (int i = 0; i < g->galaxy_stars; ++i) {
+        const planet_t *p = &g->planet[i];
+        if (p->owner != pi) { continue; }
+        v = (uint16_t)i; PUT(&v, 2);
+        PUT(p, (int)sizeof(planet_t));
+        ++cnt;
+    }
+    memcpy(buf + cntpos, &cnt, 2);
+    /* planets where I have ships orbiting RIGHT NOW, so a teammate's map drops the orbit icon
+       for a ship I just sent en-route this turn (else it shows in orbit AND en-route at once). */
+    cntpos = pos; cnt = 0; PUT(&cnt, 2);
+    for (int i = 0; i < g->galaxy_stars; ++i) {
+        const fleet_orbit_t *o = &g->eto[pi].orbit[i];
+        int any = 0;
+        for (int j = 0; j < g->eto[pi].shipdesigns_num; ++j) { if (o->ships[j]) { any = 1; break; } }
+        if (!any) { continue; }
+        v = (uint16_t)i; PUT(&v, 2);
+        ++cnt;
+    }
+    memcpy(buf + cntpos, &cnt, 2);
+    return pos;
 }
 
 int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, int buflen)
@@ -160,6 +211,8 @@ int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, i
         for (int i = 0; i < s_colonize_act_num; ++i) {
             uint16_t pli = (uint16_t)s_colonize_act[i];
             PUT(&pli, 2);
+            /* 1oom-mp: carry the name the player typed so a just-colonized planet keeps it */
+            PUT(g->planet[s_colonize_act[i]].name, PLANET_NAME_LEN);
             ++cnt;
         }
         memcpy(buf + cntpos, &cnt, 2);
@@ -323,10 +376,15 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         GET(&ccnt, 2);
         for (int i = 0; i < ccnt; ++i) {
             uint16_t pli;
+            char cname[PLANET_NAME_LEN];
             GET(&pli, 2);
+            /* 1oom-mp: read the carried name (must stay in sync with the PUT above) */
+            GET(cname, PLANET_NAME_LEN);
+            cname[PLANET_NAME_LEN - 1] = '\0';
             if ((pli < g->galaxy_stars) && (s_colonize_pending_num < MP_COLONIZE_MAX)) {
                 s_colonize_pending[s_colonize_pending_num].pi = pi;
                 s_colonize_pending[s_colonize_pending_num].pli = (planet_id_t)pli;
+                memcpy(s_colonize_pending[s_colonize_pending_num].name, cname, PLANET_NAME_LEN);
                 ++s_colonize_pending_num;
             }
         }
@@ -346,6 +404,10 @@ void game_mp_colonize_apply_pending(struct game_s *g)
     }
     for (int i = 0; i < s_colonize_pending_num; ++i) {
         game_planet_colonize_with_ship(g, s_colonize_pending[i].pi, s_colonize_pending[i].pli);
+        /* 1oom-mp: colonize set the default (star) name; restore the player's chosen name */
+        if (s_colonize_pending[i].name[0]) {
+            memcpy(g->planet[s_colonize_pending[i].pli].name, s_colonize_pending[i].name, PLANET_NAME_LEN);
+        }
     }
     s_colonize_pending_num = 0;
 }

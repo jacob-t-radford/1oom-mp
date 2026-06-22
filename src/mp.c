@@ -133,6 +133,16 @@ int (*g_mp_cl_diplo_recv)(uint16_t *, uint8_t *, int) = NULL;
 void (*g_mp_cl_diplo_send)(uint16_t, const uint8_t *, int) = NULL;
 void (*g_mp_cl_timer_notify)(int) = NULL;
 
+/* client: stream this player's live plan snapshot to teammates (best-effort -- only the latest
+   snapshot matters, so a dropped one self-heals on the next frame). */
+static void cl_team_plan_send_impl(const void *data, int len) {
+    if (!s_cl_conn) { return; }
+    if (len < 0) { len = 0; }
+    mp_send_besteffort(s_cl_conn, MP_MSG_TEAM_PLAN, data, (uint32_t)len);
+}
+void (*g_mp_cl_team_plan_send)(const void *, int) = NULL;
+void (*g_mp_team_plan_recv)(const void *, int) = NULL;
+
 /* client: service the socket once during planning. The server is silent until everyone is
    ready, then sends RESOLVE_START; returns 1 once that arrives (or the link drops), which
    tells the interactive turn UI to stop and hand off to the resolution wait loop. */
@@ -148,6 +158,8 @@ static int cl_poll_impl(void) {
         if (id == MP_MSG_TIMER_START) { if (g_mp_cl_timer_notify) { g_mp_cl_timer_notify((dl >= 1) ? (int)s_cl_blob[0] : 60); } return 0; }
         if (id == MP_MSG_TIMER_CANCEL) { if (g_mp_cl_timer_notify) { g_mp_cl_timer_notify(-1); } return 0; }
         if ((id >= MP_MSG_DIPLO_INVITE) && (id <= MP_MSG_DIPLO_CANCEL)) { cl_diplo_stash(id, s_cl_blob, dl); return 0; }
+        if (id == MP_MSG_TEAM_STANCE) { cl_diplo_stash(id, s_cl_blob, dl); return 0; } /* 1oom-mp teams: drains through the same diplo inbox/pump */
+        if ((id == MP_MSG_TEAM_PLAN) && g_mp_team_plan_recv) { g_mp_team_plan_recv(s_cl_blob, dl); return 0; }
         /* nothing else is expected before resolution; ignore */
     }
     return 0;
@@ -453,6 +465,13 @@ static void mp_diplo_server_handle(net_conn_t **conns, int num, int from_i, uint
         int peer = (from_i == prop) ? resp : prop;
         if ((peer >= 0) && (peer < num)) { mp_send(conns[peer], id, blob, dl); } /* forward to peer */
         s_diplo_busy[prop] = false; s_diplo_busy[resp] = false; s_diplo_sess[s].active = false;
+        MP_MSG("server DIAG: diplo_busy CLEARED players %d,%d (session ended)\n", prop, resp);
+    } else if (id == MP_MSG_TEAM_STANCE) {
+        /* 1oom-mp teams: store-and-forward a foreign-policy consensus message to its addressee. */
+        if (dl < 4) { return; }
+        int from = (blob[0] << 8) | blob[1], to = (blob[2] << 8) | blob[3];
+        if ((from != from_i) || (to < 0) || (to >= num)) { return; }
+        if (conns[to]) { mp_send(conns[to], MP_MSG_TEAM_STANCE, blob, dl); }
     }
 }
 /* each barrier iteration: promote fully-joined sessions to OPEN (sends SESSION_OPEN to both) */
@@ -461,6 +480,7 @@ static void mp_diplo_server_tick(net_conn_t **conns, int num) {
         struct mp_diplo_sess_s *s = &s_diplo_sess[i];
         if (s->active && (!s->open) && s->joined_p && s->joined_r) {
             s->open = true; s_diplo_busy[s->proposer] = true; s_diplo_busy[s->responder] = true;
+            MP_MSG("server DIAG: diplo_busy SET players %d,%d (session opened)\n", s->proposer, s->responder);
             for (int role = 0; role < 2; ++role) {
                 int who = role ? s->responder : s->proposer;
                 if ((who >= 0) && (who < num) && conns[who]) {
@@ -476,6 +496,19 @@ static void mp_diplo_expire_invites(net_conn_t **conns, int num) {
     for (int from = 0; from < num; ++from) {
         int to = s_diplo_invite_to[from];
         if (to >= 0) { s_diplo_invite_to[from] = -1; mp_diplo_send3(conns[from], MP_MSG_DIPLO_INVITE_RESULT, from, to, 3); } /* expired */
+    }
+}
+
+/* server: relay a player's live plan snapshot to its teammates only (best-effort). */
+static void mp_team_plan_server_handle(net_conn_t **conns, int num, int from_i, const uint8_t *blob, uint32_t dl, const mp_game_iface_t *gi) {
+    int team;
+    if (!gi->get_team) { return; }
+    team = gi->get_team(gi->ctx, from_i);
+    if (team == 0) { return; } /* sender isn't on a team -> nobody to share with */
+    for (int j = 0; j < num; ++j) {
+        if ((j != from_i) && (gi->get_team(gi->ctx, j) == team)) {
+            mp_send_besteffort(conns[j], MP_MSG_TEAM_PLAN, blob, dl);
+        }
     }
 }
 
@@ -636,6 +669,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         mp_diplo_expire_invites(conns, num_clients);     /* un-accepted invites from last turn lapse (decision #1) */
         bool all_ready = false;
         bool timer_sent = false; /* have we broadcast TIMER_START this turn? */
+        int wait_log = 0; /* DIAG: throttle the "waiting" log to ~once/2s while stuck */
         while (!all_ready) {
             for (int i = 0; i < num_clients; ++i) {
                 uint16_t id; uint32_t dl;
@@ -648,13 +682,17 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                     if (olen > blobcap) { olen = blobcap; }
                     if (olen > 0) { memcpy(porders[i], blob + 2, (size_t)olen); }
                     porders_len[i] = olen; ready[i] = true;
+                    MP_MSG("server DIAG: turn %d TURN_INPUT from player %d (ready, %d B)\n", turn, i, olen);
                 } else if (id == MP_MSG_READY) {         /* [u16 pid][u8 ready][orders] */
                     if (dl >= 3) {
                         int olen = (int)dl - 3;
                         if (olen > blobcap) { olen = blobcap; }
                         if (olen > 0) { memcpy(porders[i], blob + 3, (size_t)olen); }
                         porders_len[i] = olen; ready[i] = (blob[2] != 0);
+                        MP_MSG("server DIAG: turn %d READY from player %d = %d (%d B)\n", turn, i, blob[2] != 0, olen);
                     }
+                } else if (id == MP_MSG_TEAM_PLAN) {     /* live teammate-plan snapshot -> relay to teammates */
+                    mp_team_plan_server_handle(conns, num_clients, i, blob, dl, gi);
                 } else {                                 /* live-diplomacy messages (0x20-0x2A) */
                     mp_diplo_server_handle(conns, num_clients, i, id, blob, dl);
                 }
@@ -662,11 +700,12 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
             mp_diplo_server_tick(conns, num_clients);    /* promote fully-joined sessions to OPEN */
             /* count ready (not diplo-busy) players; determine if only one straggler remains */
             all_ready = true;
-            int nready = 0;
+            int nready = 0, block_i = -1;
             for (int i = 0; i < num_clients; ++i) {
-                if (ready[i] && !s_diplo_busy[i]) { ++nready; } else { all_ready = false; }
+                if (ready[i] && !s_diplo_busy[i]) { ++nready; } else { all_ready = false; if (block_i < 0) { block_i = i; } }
             }
             if (!all_ready) {
+                if ((wait_log++ % 1000) == 0) { MP_MSG("server DIAG: turn %d WAITING -- player %d blocking (ready=%d diplo_busy=%d)\n", turn, block_i, ready[block_i] ? 1 : 0, s_diplo_busy[block_i] ? 1 : 0); }
                 /* arm/cancel the countdown: fire when exactly one player hasn't readied up yet */
                 if (turn_timer_secs > 0 && num_clients >= 2) {
                     bool one_left = (nready == num_clients - 1);
@@ -795,9 +834,11 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
             g_mp_cl_send_ready = cl_send_ready_impl;
             g_mp_cl_poll = cl_poll_impl;
             g_mp_cl_diplo_recv = cl_diplo_recv_impl; g_mp_cl_diplo_send = cl_diplo_send_impl;
+            g_mp_cl_team_plan_send = cl_team_plan_send_impl;
             if (gi->write_orders) { (void)gi->write_orders(gi->ctx, player_id, blob + 2, blobcap - 2); }
             g_mp_cl_poll = NULL; g_mp_cl_send_ready = NULL; s_cl_conn = NULL; s_cl_blob = NULL;
             g_mp_cl_diplo_recv = NULL; g_mp_cl_diplo_send = NULL;
+            g_mp_cl_team_plan_send = NULL;
             if (s_cl_game_over) { MP_MSG("client: game over\n"); goto done; }
         } else {
             /* submit my turn: [u16 player_id][orders blob] */

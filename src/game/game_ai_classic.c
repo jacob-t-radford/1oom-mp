@@ -2152,12 +2152,16 @@ static bool game_ai_classic_battle_ai_ai_resolve_do(struct battle_s *bt)
             int ws2, ws;
             ws2 = (s == SIDE_L) ? wl2 : wr2;
             ws = (s == SIDE_L) ? wl : wr;
+            /* 1oom-mp: iterate the side's actual stack count, not NUM_SHIPDESIGNS. A combined-fleet side
+               has up to NUM_SHIPDESIGNS*BATTLE_SIDE_PARTIES_MAX stacks (tbl_ships sized to match); scaling
+               only the first 6 left allied stacks beyond the lead's designs unscathed, so game_battle_finish
+               (which reads all num_types entries) wrote those allies' ships back to orbit with zero losses. */
             if (ws == 0) {
-                for (int i = 0; i < NUM_SHIPDESIGNS; ++i) {
+                for (int i = 0; i < bt->s[s].num_types; ++i) {
                     bt->s[s].tbl_ships[i] = 0;
                 }
             } else {
-                for (int i = 0; i < NUM_SHIPDESIGNS; ++i) {
+                for (int i = 0; i < bt->s[s].num_types; ++i) {
                     if (game_num_doom_stack_fix) {
                         bt->s[s].tbl_ships[i] = (((uint64_t)bt->s[s].tbl_ships[i]) * ws2) / ws;
                     } else {

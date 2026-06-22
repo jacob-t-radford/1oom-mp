@@ -1661,7 +1661,10 @@ static void game_turn_update_final_war(struct game_s *g)
         empiretechorbit_t *e1 = &(g->eto[pi1]);
         for (player_id_t pi2 = pi1 + 1; pi2 < g->players; ++pi2) {
             empiretechorbit_t *e2 = &(g->eto[pi2]);
-            if (BOOLVEC_IS1(g->refuse, pi1) == BOOLVEC_IS1(g->refuse, pi2)) {
+            bool same_team = (g->mp_team[pi1] != 0) && (g->mp_team[pi1] == g->mp_team[pi2]);
+            if ((BOOLVEC_IS1(g->refuse, pi1) == BOOLVEC_IS1(g->refuse, pi2)) || same_team) {
+                /* 1oom-mp: teammates stay allied through the council's final-war split, even if they
+                   somehow ended up on opposite refusal sides. */
                 e1->treaty[pi2] = TREATY_ALLIANCE;
                 e2->treaty[pi1] = TREATY_ALLIANCE;
                 e1->relation1[pi2] = 100;

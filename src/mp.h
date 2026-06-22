@@ -40,6 +40,8 @@ enum mp_msg_e {
     MP_MSG_DIPLO_RESPONSE      = 0x28, /* C->S->C: [u16 sid][u8 kind][i16 answer] = the human's accept/reject/counter (phase 2) */
     MP_MSG_DIPLO_SESSION_END   = 0x29, /* both: [u16 sid][u8 outcome][u8 verb][u8 arg] = the audience finished */
     MP_MSG_DIPLO_CANCEL        = 0x2a, /* both: [u16 sid][u8 why] = aborted (esc/disconnect) */
+    MP_MSG_TEAM_PLAN           = 0x2b, /* C->S->C (planning): a teammate's live plan snapshot (fleets + colonizes + planet sliders) */
+    MP_MSG_TEAM_STANCE         = 0x2c, /* C->S->C (planning): [u16 from][u16 to][u8 kind][u8 enemy][u8 verb][u8 accept] = team foreign-policy consensus; kind 0=propose,1=vote,2=enact. Server forwards to 'to'. */
     MP_MSG_DECISION_REQ = 0x30, /* S->C: [u16 dtype][req] = a mid-resolution interactive decision the server is blocking on */
     MP_MSG_DECISION_RESP= 0x31, /* C->S: [u16 dtype][resp] = the human's answer */
     MP_MSG_GAME_OVER = 0x40, /* S->C: session ended */
@@ -163,6 +165,8 @@ typedef struct mp_game_iface_s {
        AI count, galaxy size). Called once, before the initial state is serialized. NULL => the game
        was already created up front (legacy). Return 0 ok, <0 error. */
     int (*setup_game)(void *ctx, const struct mp_lobby_s *lobby);
+    /* server: a player's team number (0 = none/FFA), so team-plan snapshots relay only to teammates. */
+    int (*get_team)(void *ctx, int player);
 } mp_game_iface_t;
 
 /* server-side hook: when non-NULL (set while mp_server_run is active), the null UI
@@ -212,6 +216,12 @@ extern void (*g_mp_cl_diplo_send)(uint16_t id, const uint8_t *data, int len);
    Called by cl_poll_impl when TIMER_START (seconds >= 0) or TIMER_CANCEL (seconds < 0) arrives.
    NULL outside an active client session. */
 extern void (*g_mp_cl_timer_notify)(int seconds);
+
+/* client-side team-plan primitives (live teammate visibility), set by mp_client_run during a
+   soft-ready turn. _send streams this player's plan snapshot to teammates (via the server); an
+   incoming teammate snapshot is delivered to the game layer through g_mp_team_plan_recv. */
+extern void (*g_mp_cl_team_plan_send)(const void *data, int len);
+extern void (*g_mp_team_plan_recv)(const void *data, int len);
 
 /* on_wait reason codes */
 #define MP_WAIT_LOBBY  0 /* waiting for the game to start / other players to join */

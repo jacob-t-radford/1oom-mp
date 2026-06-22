@@ -234,7 +234,12 @@ void ui_starmap_trans(struct game_s *g, player_id_t active_player)
 do_accept:
             ui_sound_play_sfx_24();
             flag_done = true;
-            if (BOOLVEC_IS1(pt->explored, active_player) && (pt->within_frange[active_player] == 1)) {
+            /* 1oom-mp teams: a teammate's world is not a valid troop target -- no invading or
+               reinforcing an ally. Treated like an out-of-range target: the troops just don't launch
+               (kept at home rather than lost), and the server disbands any that slip through. */
+            bool ally_world = (pt->owner != PLAYER_NONE) && (pt->owner != active_player)
+                              && (g->mp_team[active_player] != 0) && (g->mp_team[active_player] == g->mp_team[pt->owner]);
+            if (BOOLVEC_IS1(pt->explored, active_player) && (pt->within_frange[active_player] == 1) && !ally_world) {
                 p->trans_dest = g->planet_focus_i[active_player];
                 p->trans_num = d.tr.num;
             }

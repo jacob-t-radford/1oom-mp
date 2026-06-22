@@ -296,6 +296,13 @@ const uint8_t *game_turn_ground_resolve_all(struct game_s *g)
         for (player_id_t i = 0; i < g->players; ++i) {
             if ((i != powner) || (p->unrest == PLANET_UNREST_REBELLION)) {
                 if ((powner != PLAYER_NONE) && (p->inbound[i] > 0)) {
+                    /* 1oom-mp teams: troops never invade a teammate -- the locked alliance holds on the
+                       ground too. Disband the inbound troops (no reinforcement in v1); the send UI also
+                       blocks targeting a teammate, so this is the authoritative safety net. */
+                    if ((g->mp_team[i] != 0) && (g->mp_team[i] == g->mp_team[powner])) {
+                        p->inbound[i] = 0; p->total_inbound[i] = 0;
+                        continue;
+                    }
                     int pop_planet;
                     gr->flag_rebel = (p->unrest == PLANET_UNREST_REBELLION) && IS_HUMAN(g, i) && (p->owner == i);
                     gr->inbound = p->inbound[i];

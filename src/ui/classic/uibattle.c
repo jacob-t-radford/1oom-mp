@@ -827,6 +827,33 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
     return UI_BATTLE_AUTORESOLVE_OFF;
 }
 
+/* 1oom-mp: load the battle arena for a SPECTATOR (a teammate observing a fight). Identical to
+   ui_battle_init but WITHOUT the auto-resolve prompt (ui_battle_pre) and the hotseat switch -- the
+   observer submits nothing, it only renders the streamed frames (mp_if_on_spectate keeps s_mp_battle
+   fresh; mp_if_on_wait redraws it). Tear it down with ui_battle_shutdown, same as a participant. */
+void ui_battle_init_spectate(struct battle_s *bt)
+{
+    static struct ui_battle_data_s ctx; /* HACK, mirrors ui_battle_init; a client watches at most one battle at a time */
+    memset(&ctx, 0, sizeof(ctx));
+    bt->uictx = &ctx;
+    ctx.bt = bt;
+    ctx.show_switch = false;
+    ui_sound_play_music(8);
+    uiobj_set_callback_and_delay(ui_battle_draw_cb, bt, 2);
+    ctx.cursor[0].cursor_i = 1;
+    ctx.cursor[0].x1 = UI_SCREEN_W - 1;
+    ctx.cursor[0].y1 = UI_SCREEN_H - 1;
+    ui_battle_clear_ois(&ctx);
+    ctx.oi_ai = UIOBJI_INVALID;
+    ctx.gfx_bg = ui_data.gfx.space.bg[bt->g->planet[bt->planet_i].battlebg];
+    ui_battle_draw_arena(bt, 0, 0);
+    ui_battle_draw_bottom_no_ois(bt);
+    {
+        const planet_t *p = &(bt->g->planet[bt->planet_i]);
+        ui_battle_transition_to(p->x, p->y, 10 * 3);
+    }
+}
+
 void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
 {
     struct ui_battle_data_s *d = bt->uictx;
