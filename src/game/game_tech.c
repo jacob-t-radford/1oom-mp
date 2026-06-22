@@ -617,6 +617,9 @@ uint8_t game_tech_get_gfx_i(const struct game_aux_s *gaux, tech_field_t field, i
 
 const char *game_tech_get_name(const struct game_aux_s *gaux, tech_field_t field, int tech, char *buf, size_t bufsize)
 {
+    /* 1oom-mp: guard a wire-sourced field (a tech-trade proposal names it by raw byte) -- it indexes
+       game_str_tbl_te_field[field] and research.d0[field*...]. Inert for legit fields 0..TECH_FIELD_NUM-1. */
+    if ((unsigned)field >= (unsigned)TECH_FIELD_NUM) { buf[0] = '\0'; return buf; }
     if (tech == 0) {
         lib_sprintf(buf, bufsize, "%s %s", game_str_tbl_te_field[field], game_str_te_techno);
     } else if (tech == -2) {
@@ -763,8 +766,15 @@ void game_tech_set_to_max_bonus(struct game_s *g, player_id_t player, tech_field
 
 void game_tech_get_new(struct game_s *g, player_id_t player, tech_field_t field, uint8_t tech, techsource_t source, int a8, player_id_t stolen_from, bool flag_frame)
 {
-    empiretechorbit_t *e = &(g->eto[player]);
-    shipresearch_t *srd = &(g->srd[player]);
+    empiretechorbit_t *e;
+    shipresearch_t *srd;
+    /* 1oom-mp: a tech trade/tribute order carries `field` as a raw wire byte; an out-of-range value
+       would OOB-index researchcompleted[field] / tech.completed[field] -- an OOB WRITE on the
+       authoritative server. Reject it. Every legit caller passes 0..TECH_FIELD_NUM-1, so this is inert
+       in normal play (it only fires on a malformed/modified-client order). */
+    if ((unsigned)field >= (unsigned)TECH_FIELD_NUM) { return; }
+    e = &(g->eto[player]);
+    srd = &(g->srd[player]);
     uint8_t *rc = srd->researchcompleted[field];
     /*di*/int tc = e->tech.completed[field];
     bool have_tech = false;

@@ -7,6 +7,9 @@
 #include "game_num.h"
 #include "types.h"
 
+/* 1oom-mp: defined in game.c -- true only on a networked client, so we trust the synced contact. */
+extern bool ui_mp_active;
+
 /* -------------------------------------------------------------------------- */
 
 /* -------------------------------------------------------------------------- */
@@ -87,7 +90,7 @@ void game_stats_all(struct game_s *g, player_id_t api, struct game_stats_s *d)
     int sum[PLAYER_NUM];
 
     game_update_production(g);
-    game_update_empire_contact(g);
+    if (!ui_mp_active) { game_update_empire_contact(g); } /* 1oom-mp: mirror the races-screen guard -- a client recompute clobbers the server's pooled team contact */
     game_update_maint_costs(g);
 
     d->num = 1;

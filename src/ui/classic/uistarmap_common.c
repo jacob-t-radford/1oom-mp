@@ -170,7 +170,7 @@ static void ui_starmap_draw_sliders_and_prod(struct starmap_data_s *d)
         ui_draw_filled_rect(229, 141, 274, 166, 0, ui_scale);
         lbxgfx_draw_frame(229, 141, ui_data.gfx.starmap.stargate, UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(251, 169, game_str_sm_stargate, UI_SCREEN_W, ui_scale);
-    } else {
+    } else if ((p->owner < g->players) && (p->buildship < NUM_SHIPDESIGNS)) { /* 1oom-mp: a teammate's relayed planet snapshot can carry a garbage owner/buildship -> guard the srd[]/ships[] index (mirrors the guard on the sibling path) */
         const shipdesign_t *sd = &g->srd[p->owner].design[p->buildship];
         uint8_t *gfx = ui_data.gfx.ships[sd->look];
         lbxgfx_set_frame_0(gfx);
@@ -566,7 +566,8 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             bool do_print = visible
                         || (pi == g->evn.planet_orion_i)
                         || (BOOLVEC_IS1(g->eto[d->api].contact, p->owner))
-                        || (p->within_frange[d->api] == 1);
+                        || (p->within_frange[d->api] == 1)
+                        || (eff_owner != p->owner); /* 1oom-mp: a teammate's just-settled colony (overlay owner, synced still NONE) -> show its name via shared team vision even out of my scanner range */
             if (eff_owner != PLAYER_NONE && do_print) {
                 lbxfont_print_str_center_limit(tx, ty, p->name, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
             }

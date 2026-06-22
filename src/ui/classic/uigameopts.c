@@ -20,6 +20,7 @@
 #include "uipal.h"
 #include "uisave.h"
 #include "uisound.h"
+#include "ui.h" /* 1oom-mp: ui_mp_active + ui_mp_save_game */
 
 /* -------------------------------------------------------------------------- */
 
@@ -112,7 +113,8 @@ gameopts_act_t ui_gameopts(struct game_s *g, int *load_game_i_ptr)
             flag_done = true;
         } else if (oi == oi_save) {
             ui_sound_play_sfx_24();
-            ui_save_game(g);
+            if (ui_mp_active) { ui_mp_save_game(g); } /* 1oom-mp: ask the server for a resumable named save (the SP save writes only a local, non-resumable file) */
+            else { ui_save_game(g); }
             flag_done = true;
         } else if (oi == oi_quit) {
             ret = GAMEOPTS_QUIT;

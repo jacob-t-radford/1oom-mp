@@ -711,6 +711,11 @@ static void audience_menu_threat(struct audience_s *au)
     if (eh->trade_bc[pa] == 0) {
         condtbl[2] = false;
     }
+    /* 1oom-mp teams: a locked teammate's treaties can't be broken (the primitives no-op it) -- don't
+       even offer Break NAP/Alliance/Trade against them; the option would look actionable but do nothing. */
+    if ((g->mp_team[ph] != 0) && (g->mp_team[ph] == g->mp_team[pa])) {
+        condtbl[0] = false; condtbl[1] = false; condtbl[2] = false;
+    }
     game_audience_choice(au, game_str_au_youract, game_str_au_opts_threaten, condtbl, 5);
     au->condtbl = condtbl;
     selected = ui_audience_ask4(au);

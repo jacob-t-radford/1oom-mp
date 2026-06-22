@@ -6,26 +6,36 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 #define MP_ERR(...) do { fprintf(stderr, "mp: " __VA_ARGS__); fflush(stderr); } while (0)
 #define MP_MSG(...) do { fprintf(stdout, "mp: " __VA_ARGS__); fflush(stdout); } while (0)
 
+/* 1oom-mp: per-turn time-limit options offered in the lobby (index 0 = off). The host picks an index;
+   the server maps it to seconds and auto-resolves the turn once it elapses (see mp_server_run). */
+const uint16_t mp_turn_timer_secs[MP_TURN_TIMER_NUM] = { 0, 60, 120, 180, 300, 600 };
+
 /* ---- message framing: an mp message is a net frame of [u16 id][payload] ---- */
 
 static int mp_send(net_conn_t *c, uint16_t id, const void *data, uint32_t len) {
-    uint8_t *frame = (uint8_t *)malloc(len + 2);
+    uint8_t *frame;
+    int r;
+    if (!c) { return 0; } /* 1oom-mp: a dropped player's slot is NULL -- a send to it is a no-op success, so broadcast loops skip it instead of treating it as an error and ending the game */
+    frame = (uint8_t *)malloc(len + 2);
     if (!frame) { return -1; }
     frame[0] = (uint8_t)(id >> 8);
     frame[1] = (uint8_t)(id & 0xff);
     if (len && data) { memcpy(frame + 2, data, len); }
-    int r = net_send(c, frame, len + 2);
+    r = net_send(c, frame, len + 2);
     free(frame);
     return r;
 }
 
 /* framed best-effort send: drops the message if the send buffer is full (for fire-and-forget spectate). */
 static int mp_send_besteffort(net_conn_t *c, uint16_t id, const void *data, uint32_t len) {
-    uint8_t *frame = (uint8_t *)malloc(len + 2);
+    uint8_t *frame;
+    if (!c) { return 0; } /* 1oom-mp: dropped slot -> no-op (see mp_send) */
+    frame = (uint8_t *)malloc(len + 2);
     if (!frame) { return -1; }
     frame[0] = (uint8_t)(id >> 8);
     frame[1] = (uint8_t)(id & 0xff);
@@ -48,8 +58,10 @@ static int mp_recv(net_conn_t *c, uint16_t *id, uint8_t *buf, uint32_t bufsize, 
     return 1;
 }
 
-/* block until a specific message id arrives (or error/close). */
-static int mp_recv_wait(net_conn_t *c, uint16_t want_id, uint8_t *buf, uint32_t bufsize, uint32_t *datalen, const mp_game_iface_t *gi, int reason) {
+/* block until a specific message id arrives (or error/close). timeout_secs > 0 gives up after that long
+   (returns -1) so a frozen client can't hang the server forever; 0 = wait indefinitely. */
+static int mp_recv_wait(net_conn_t *c, uint16_t want_id, uint8_t *buf, uint32_t bufsize, uint32_t *datalen, const mp_game_iface_t *gi, int reason, int timeout_secs) {
+    time_t start = time(NULL);
     for (;;) {
         uint16_t id;
         int r = mp_recv(c, &id, buf, bufsize, datalen);
@@ -58,6 +70,7 @@ static int mp_recv_wait(net_conn_t *c, uint16_t want_id, uint8_t *buf, uint32_t 
             if (id == want_id) { return 0; }
             /* ignore other messages for now (Phase A) */
         } else {
+            if ((timeout_secs > 0) && ((long)(time(NULL) - start) >= (long)timeout_secs)) { return -1; } /* 1oom-mp: timed out -> caller falls back to a default */
             if (gi && gi->on_wait) { gi->on_wait(gi->ctx, reason); }
             usleep(1000);
         }
@@ -67,6 +80,10 @@ static int mp_recv_wait(net_conn_t *c, uint16_t want_id, uint8_t *buf, uint32_t 
 /* ---- interactive-decision channel: server blocks turn resolution to ask one client,
    the client answers from inside its post-submit wait loop. ---- */
 #define MP_DECISION_BUF_MAX 65536
+/* 1oom-mp: how long the server waits for a client's mid-resolution decision answer (combat move, bomb
+   prompt, council vote, ...) before giving up and using the null-UI default, so one frozen client can't
+   hang resolution -- and the whole game -- forever. Generous so a human just thinking isn't cut off. */
+#define MP_DECISION_TIMEOUT_SECS 120
 int (*g_mp_decision_hook)(int, int, const void *, int, void *, int) = NULL;
 int (*g_mp_decision_hook_multi)(const int *, int, int, const void *, int, void *, int) = NULL;
 void (*g_mp_spectate_hook)(int, const void *, int, int) = NULL;
@@ -83,6 +100,8 @@ static uint8_t *s_cl_blob = NULL;          /* shared recv buffer (borrowed from 
 static int s_cl_blobcap = 0;
 static bool s_cl_resolving = false;        /* set when RESOLVE_START arrives -> end planning */
 static bool s_cl_game_over = false;        /* set if the link dropped / game ended during planning */
+static uint8_t s_cl_go_buf[256];           /* 1oom-mp: GAME_OVER ending payload (winner/type) */
+static int s_cl_go_len = -1;               /* -1 = no real GAME_OVER (e.g. link drop); >=0 = play the ending */
 static int s_cl_wait_kind = 0;             /* 0=none, 1=another player in combat, 2=galactic council in session (from MP_MSG_WAIT_STATUS) */
 
 /* client: serialize+send a READY (latest orders + ready flag). Called by the UI adapter. */
@@ -153,7 +172,7 @@ static int cl_poll_impl(void) {
     if (r < 0) { s_cl_game_over = true; return 1; }
     if (r == 1) {
         if (id == MP_MSG_RESOLVE_START) { s_cl_resolving = true; return 1; }
-        if (id == MP_MSG_GAME_OVER) { s_cl_game_over = true; return 1; }
+        if (id == MP_MSG_GAME_OVER) { s_cl_go_len = (dl <= sizeof(s_cl_go_buf)) ? (int)dl : 0; if (s_cl_go_len > 0) { memcpy(s_cl_go_buf, s_cl_blob, (size_t)s_cl_go_len); } s_cl_game_over = true; return 1; } /* stash the ending payload */
         if ((id >= MP_MSG_DIPLO_INVITE) && (id <= MP_MSG_DIPLO_CANCEL)) { cl_diplo_stash(id, s_cl_blob, dl); return 0; }
         if (id == MP_MSG_TEAM_STANCE) { cl_diplo_stash(id, s_cl_blob, dl); return 0; } /* 1oom-mp teams: drains through the same diplo inbox/pump */
         if ((id == MP_MSG_TEAM_PLAN) && g_mp_team_plan_recv) { g_mp_team_plan_recv(s_cl_blob, dl); return 0; }
@@ -254,7 +273,7 @@ static int mp_decision_rpc(int player_id, int dtype, const void *req, int req_le
         uint8_t *buf = (uint8_t *)malloc(MP_DECISION_BUF_MAX);
         if (!buf) { return -1; }
         uint32_t dl = 0;
-        int r = mp_recv_wait(c, MP_MSG_DECISION_RESP, buf, MP_DECISION_BUF_MAX, &dl, NULL, 0);
+        int r = mp_recv_wait(c, MP_MSG_DECISION_RESP, buf, MP_DECISION_BUF_MAX, &dl, NULL, 0, MP_DECISION_TIMEOUT_SECS);
         if ((r != 0) || (dl < 2)) { free(buf); return -1; }
         int rlen = (int)dl - 2;
         if (rlen > resp_buflen) { rlen = resp_buflen; }
@@ -290,7 +309,7 @@ static int mp_decision_rpc_multi(const int *players, int n, int dtype, const voi
         if (!buf) { return -1; }
         for (int i = 0; i < n; ++i) {
             uint32_t dl = 0;
-            if ((mp_recv_wait(s_mp_conns[players[i]], MP_MSG_DECISION_RESP, buf, MP_DECISION_BUF_MAX, &dl, NULL, 0) != 0) || (dl < 2)) { free(buf); return -1; }
+            if ((mp_recv_wait(s_mp_conns[players[i]], MP_MSG_DECISION_RESP, buf, MP_DECISION_BUF_MAX, &dl, NULL, 0, MP_DECISION_TIMEOUT_SECS) != 0) || (dl < 2)) { free(buf); return -1; }
             int rlen = (int)dl - 2;
             if (rlen > resp_stride) { rlen = resp_stride; }
             if (rlen > 0) { memcpy((uint8_t *)resps + (size_t)i * resp_stride, buf + 2, rlen); }
@@ -349,6 +368,13 @@ static bool mp_lobby_apply(struct mp_lobby_s *lob, int slot, uint8_t field, uint
             if (value > 4) { value = 4; } /* DIFFICULTY_NUM-1, kept literal to stay engine-agnostic */
             if (lob->difficulty == value) { return false; }
             lob->difficulty = value;
+            for (int j = 0; j < num_clients; ++j) { lob->slot[j].ready = 0; } /* settings changed: re-confirm */
+            return true;
+        case MP_LOBBY_F_TURNTIMER:
+            if (slot != 0) { return false; } /* host only */
+            if (value >= MP_TURN_TIMER_NUM) { value = MP_TURN_TIMER_NUM - 1; }
+            if (lob->turn_timer == value) { return false; }
+            lob->turn_timer = value;
             for (int j = 0; j < num_clients; ++j) { lob->slot[j].ready = 0; } /* settings changed: re-confirm */
             return true;
         case MP_LOBBY_F_AI_RACE: {
@@ -499,6 +525,55 @@ static void mp_team_plan_server_handle(net_conn_t **conns, int num, int from_i, 
     }
 }
 
+/* read + validate a just-connected client's HELLO ([u16 proto][u32 wire_id]) with a short timeout.
+   The client sends it immediately on connect, so this returns within a round-trip in the normal case;
+   a silent / mismatched-build client is refused (caller closes it). Returns true iff the handshake is OK. */
+static bool mp_server_hello_ok(net_conn_t *c, const mp_game_iface_t *gi) {
+    uint8_t buf[64]; uint16_t id; uint32_t dl;
+    for (int tries = 0; tries < 3000; ++tries) { /* ~3s budget; HELLO normally arrives in <1ms */
+        int r = mp_recv(c, &id, buf, sizeof(buf), &dl);
+        if (r < 0) { MP_ERR("server: client dropped before HELLO\n"); return false; }
+        if (r == 1) {
+            if (id != MP_MSG_HELLO) { continue; } /* ignore anything stray, keep waiting for HELLO */
+            int proto = (dl >= 2) ? ((buf[0] << 8) | buf[1]) : 0;
+            uint32_t wid = (dl >= 6) ? (((uint32_t)buf[2] << 24) | ((uint32_t)buf[3] << 16) | ((uint32_t)buf[4] << 8) | (uint32_t)buf[5]) : 0;
+            if (proto != MP_PROTO_VERSION) { MP_ERR("server: rejecting client -- protocol v%d, server is v%d (update the client)\n", proto, MP_PROTO_VERSION); return false; }
+            if (gi->wire_id) {
+                uint32_t mine = (uint32_t)gi->wire_id(gi->ctx);
+                if (wid != mine) { MP_ERR("server: rejecting client -- wire fingerprint %08x != server %08x (mismatched build)\n", wid, mine); return false; }
+            }
+            return true;
+        }
+        usleep(1000);
+    }
+    MP_ERR("server: rejecting client -- no HELLO within timeout\n");
+    return false;
+}
+
+/* 1oom-mp: mid-game reconnect. When a slot is dropped (its empire is coasting, see the barrier), accept
+   a re-launched client into it so the player can rejoin without restarting the whole game. v1 claims the
+   LOWEST dropped slot -- unambiguous for the common single-drop case (multiple simultaneous drops are
+   first-come, noted as a limitation). The client is told via the WELCOME reconnect flag (5th byte = 1) to
+   skip the lobby and load the state we send right after. Returns the reclaimed slot, or -1 (nobody / no
+   slot / bad build). Called from the barrier only while a slot is actually dropped. */
+static int mp_server_try_reconnect(net_listener_t *l, net_conn_t **conns, int num_clients, const mp_game_iface_t *gi, uint8_t *blob, int blobcap) {
+    net_conn_t *c = net_accept(l);
+    int slot = -1, len;
+    if (!c) { return -1; }
+    if (!mp_server_hello_ok(c, gi)) { net_conn_close(c); return -1; } /* must be the same build */
+    for (int i = 0; i < num_clients; ++i) { if (!conns[i]) { slot = i; break; } }
+    if (slot < 0) { MP_MSG("server: reconnect refused -- no dropped slot (game full)\n"); net_conn_close(c); return -1; }
+    {   /* WELCOME with the reconnect flag so the client skips the lobby and waits for the state below */
+        uint8_t w[5] = { (uint8_t)(slot >> 8), (uint8_t)slot, (uint8_t)(num_clients >> 8), (uint8_t)num_clients, 1 };
+        if (mp_send(c, MP_MSG_WELCOME, w, 5) != 0) { net_conn_close(c); return -1; }
+    }
+    len = gi->serialize(gi->ctx, blob, blobcap);
+    if ((len <= 0) || (mp_send(c, MP_MSG_GAME_DATA, blob, (uint32_t)len) != 0)) { net_conn_close(c); return -1; }
+    conns[slot] = c; /* live again -- the barrier waits for its READY from now on; s_mp_conns aliases this */
+    MP_MSG("server: player %d reconnected\n", slot);
+    return slot;
+}
+
 int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_iface_t *gi, int open_lobby) {
     if (num_clients < 1 || num_clients > MP_MAX_PLAYERS) { MP_ERR("bad num_clients %d\n", num_clients); return -1; }
     net_listener_t *l = net_listen(port);
@@ -513,6 +588,8 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         if (!porders[i]) { for (int j = 0; j < i; ++j) { free(porders[j]); } free(blob); net_listener_close(l); return -1; }
     }
     int rc = 0;
+    bool game_over_natural = false; /* 1oom-mp: true only when the game ended for real (not a drop/error), so GAME_OVER can carry the ending */
+    int turn_timer_secs = 0;        /* 1oom-mp: per-turn time limit from the lobby (0 = off); enforced in the barrier */
 
     /* --- lobby: accept clients ---
        fixed mode: block until exactly num_clients connect. open mode: block only for the host
@@ -520,7 +597,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
     int cap = num_clients;
     if (open_lobby && gi->setup_game) {
         MP_MSG("server: OPEN lobby on port %u -- waiting for host, then up to %d human(s)\n", (unsigned)port, cap);
-        for (;;) { net_conn_t *c = net_accept(l); if (c) { conns[0] = c; MP_MSG("server: host connected (%s)\n", net_conn_addr(c)); break; } usleep(2000); }
+        for (;;) { net_conn_t *c = net_accept(l); if (c) { if (!mp_server_hello_ok(c, gi)) { net_conn_close(c); continue; } conns[0] = c; MP_MSG("server: host connected (%s)\n", net_conn_addr(c)); break; } usleep(2000); }
         num_clients = 1;
     } else {
         open_lobby = 0; /* no lobby to drive (resume/legacy) -> fall back to the fixed accept */
@@ -528,6 +605,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         for (int i = 0; i < num_clients; ) {
             net_conn_t *c = net_accept(l);
             if (c) {
+                if (!mp_server_hello_ok(c, gi)) { net_conn_close(c); continue; } /* refuse a mismatched-build client */
                 conns[i] = c;
                 ++i;
                 MP_MSG("server: client %d/%d connected (%s)\n", i, num_clients, net_conn_addr(c));
@@ -561,10 +639,12 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         lob.galaxy_size = 1;                                 /* default medium */
         lob.difficulty = 2;                                  /* default average (DIFFICULTY_AVERAGE) */
         lob.open_lobby = open_lobby ? 1 : 0;
+        /* lob.turn_timer defaults to 0 (off) from the memset; the host sets it in the lobby UI. */
         { const char *e; /* host-launch overrides for the lobby defaults (still editable in the lobby UI) */
           if ((e = getenv("MP_GSIZE"))) { int v = atoi(e); if ((v >= 0) && (v <= 3)) { lob.galaxy_size = (uint8_t)v; } }
           if ((e = getenv("MP_DIFF")))  { int v = atoi(e); if ((v >= 0) && (v <= 4)) { lob.difficulty = (uint8_t)v; } }
-          if ((e = getenv("MP_AI")))    { int v = atoi(e); if ((v >= 0) && (v <= MP_MAX_PLAYERS - num_clients)) { lob.num_ai = (uint8_t)v; } } }
+          if ((e = getenv("MP_AI")))    { int v = atoi(e); if ((v >= 0) && (v <= MP_MAX_PLAYERS - num_clients)) { lob.num_ai = (uint8_t)v; } }
+          if ((e = getenv("MP_TURNTIMER"))) { int v = atoi(e); if ((v >= 0) && (v < MP_TURN_TIMER_NUM)) { lob.turn_timer = (uint8_t)v; } } }
         for (int i = 0; i < MP_MAX_PLAYERS; ++i) {
             lob.slot[i].race = 0xff; lob.slot[i].banner = 0xff; lob.slot[i].ready = 0;
             lob.slot[i].connected = (i < num_clients) ? 1 : 0; /* AI slots start race-unset (= random) */
@@ -584,6 +664,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                next contiguous slot, and clamp the AI count so humans+AI never exceeds MP_MAX_PLAYERS. */
             if (open_lobby && (num_clients < cap)) {
                 net_conn_t *c = net_accept(l);
+                if (c && !mp_server_hello_ok(c, gi)) { net_conn_close(c); c = NULL; } /* refuse a mismatched-build joiner */
                 if (c) {
                     int s = num_clients;
                     conns[s] = c;
@@ -625,7 +706,8 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         }
         if (open_lobby) { lob.slot[0].ready = 1; } /* the host's Start stands in for a Ready */
         if (gi->setup_game(gi->ctx, &lob) != 0) { MP_ERR("server: setup_game failed\n"); rc = -1; goto done; }
-        MP_MSG("server: game created from lobby (humans=%d ai=%d gsize=%d)\n", lob.num_humans, lob.num_ai, lob.galaxy_size);
+        turn_timer_secs = mp_turn_timer_secs[(lob.turn_timer < MP_TURN_TIMER_NUM) ? lob.turn_timer : 0]; /* 1oom-mp: lock in the host's turn-timer choice for the barrier */
+        MP_MSG("server: game created from lobby (humans=%d ai=%d gsize=%d turntimer=%ds)\n", lob.num_humans, lob.num_ai, lob.galaxy_size, turn_timer_secs);
     }
     s_mp_num_conns = num_clients; /* an open lobby may have grown the human count -- lock it in for the decision/spectate hooks */
     {
@@ -648,13 +730,40 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         int porders_len[MP_MAX_PLAYERS];
         for (int i = 0; i < num_clients; ++i) { porders_len[i] = 0; }
         mp_diplo_expire_invites(conns, num_clients);     /* un-accepted invites from last turn lapse (decision #1) */
+        /* 1oom-mp: also tear down any leftover session + busy flag at the turn boundary. A live audience
+           is a within-planning-phase thing: an OPEN session marks both players busy, and busy blocks the
+           barrier, so an open session can never legitimately survive into the next turn. The only sessions
+           that reach here are STALE half-open ones (a handshake that stalled -- e.g. a crossing invite
+           whose responder never joined, or an accept whose proposer never joined): active==true but
+           open==false, so they don't block the barrier and the game keeps running, yet mp_diplo_find_member
+           keeps reporting both players as engaged -> "already engaged in another audience" for the rest of
+           the game. Clearing them each turn makes any stalled handshake self-heal at the next turn. */
+        for (int i = 0; i < MP_MAX_PLAYERS; ++i) { s_diplo_sess[i].active = false; s_diplo_busy[i] = false; }
         bool all_ready = false;
+        time_t turn_started = time(NULL); /* 1oom-mp: planning-phase start, for the turn timer */
         int wait_log = 0; /* DIAG: throttle the "waiting" log to ~once/2s while stuck */
         while (!all_ready) {
+            /* 1oom-mp: while a slot is dropped, let a re-launched client rejoin that (coasting) empire. */
+            { int dropped = 0; for (int i = 0; i < num_clients; ++i) { if (!conns[i]) { dropped = 1; break; } }
+              if (dropped) { mp_server_try_reconnect(l, conns, num_clients, gi, blob, blobcap); } }
             for (int i = 0; i < num_clients; ++i) {
                 uint16_t id; uint32_t dl;
-                int r = mp_recv(conns[i], &id, blob, blobcap, &dl);
-                if (r < 0) { MP_ERR("server: client %d dropped\n", i); rc = -1; goto done; }
+                int r;
+                if (!conns[i]) { continue; } /* 1oom-mp: a dropped player's slot -- its empire coasts */
+                r = mp_recv(conns[i], &id, blob, blobcap, &dl);
+                if (r < 0) {
+                    /* 1oom-mp: a client dropped. Don't end the whole game for everyone -- close its slot
+                       and carry on for the remaining humans. Its empire coasts on its last orders, and its
+                       combat auto-resolves (the null-UI decision default, since its conn is now NULL). End
+                       only when EVERYONE has gone. The autosave is current, so a full reconnect via -mpload
+                       is still available if they'd rather resume with the dropped player back. */
+                    int live = 0;
+                    MP_ERR("server: client %d dropped -- continuing without it (its empire coasts)\n", i);
+                    net_conn_close(conns[i]); conns[i] = NULL;
+                    for (int j = 0; j < num_clients; ++j) { if (conns[j]) { ++live; } }
+                    if (live == 0) { MP_MSG("server: all clients gone -- ending\n"); goto done; }
+                    continue;
+                }
                 if (r != 1) { continue; }
                 /* orders apply to the SERVER-assigned empire id (i), not any client-claimed one. */
                 if (id == MP_MSG_TURN_INPUT) {           /* legacy: [u16 pid][orders] = ready now */
@@ -673,6 +782,9 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                     }
                 } else if (id == MP_MSG_TEAM_PLAN) {     /* live teammate-plan snapshot -> relay to teammates */
                     mp_team_plan_server_handle(conns, num_clients, i, blob, dl, gi);
+                } else if (id == MP_MSG_SAVE_REQUEST) {  /* a player chose Esc -> Save -> write a named snapshot */
+                    MP_MSG("server: save requested by player %d\n", i);
+                    if (gi->save_request) { gi->save_request(gi->ctx, i); }
                 } else {                                 /* live-diplomacy messages (0x20-0x2A) */
                     mp_diplo_server_handle(conns, num_clients, i, id, blob, dl);
                 }
@@ -681,10 +793,20 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
             all_ready = true;
             int block_i = -1;
             /* a player in an OPEN diplo session is held un-ready until it ends (decision #2) */
-            for (int i = 0; i < num_clients; ++i) { if (!ready[i] || s_diplo_busy[i]) { all_ready = false; block_i = i; break; } }
+            for (int i = 0; i < num_clients; ++i) { if (conns[i] && (!ready[i] || s_diplo_busy[i])) { all_ready = false; block_i = i; break; } } /* 1oom-mp: a dropped (NULL) slot is treated as ready -- it can't block the turn */
             if (!all_ready) {
-                if ((wait_log++ % 1000) == 0) { MP_MSG("server DIAG: turn %d WAITING -- player %d blocking (ready=%d diplo_busy=%d)\n", turn, block_i, ready[block_i] ? 1 : 0, s_diplo_busy[block_i] ? 1 : 0); }
-                usleep(2000);
+                /* 1oom-mp: turn timer -- once the host-set limit elapses, auto-ready whoever is still
+                   planning (their latest submitted orders stand; an empty submit just coasts the empire)
+                   and drop any open diplo session, so one AFK / stuck player can't stall the turn forever. */
+                if ((turn_timer_secs > 0) && ((long)(time(NULL) - turn_started) >= (long)turn_timer_secs)) {
+                    MP_MSG("server: turn %d timer (%ds) expired -> auto-resolving (player %d was still planning)\n", turn, turn_timer_secs, block_i);
+                    for (int i = 0; i < num_clients; ++i) { if (conns[i]) { ready[i] = true; } }
+                    for (int i = 0; i < MP_MAX_PLAYERS; ++i) { s_diplo_sess[i].active = false; s_diplo_busy[i] = false; }
+                    all_ready = true;
+                } else {
+                    if ((wait_log++ % 1000) == 0) { MP_MSG("server DIAG: turn %d WAITING -- player %d blocking (ready=%d diplo_busy=%d)\n", turn, block_i, ready[block_i] ? 1 : 0, s_diplo_busy[block_i] ? 1 : 0); }
+                    usleep(2000);
+                }
             }
         }
         /* everyone is ready: end the clients' planning phase, then apply orders + resolve */
@@ -695,6 +817,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
             if (gi->apply_orders && porders_len[i] > 0) {
                 int n = gi->apply_orders(gi->ctx, i, porders[i], porders_len[i]);
                 if (n > 0) { MP_MSG("server: applied %d planet order(s) for player %d\n", n, i); }
+                else if (n < 0) { MP_ERR("server: malformed orders from player %d (apply returned %d) -- ignored\n", i, n); }
             }
         }
         /* every client has submitted -> resolve the turn authoritatively */
@@ -721,7 +844,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
             if (mp_send(conns[i], MP_MSG_GAME_DATA, blob, len) != 0) { rc = -1; goto done; }
         }
         MP_MSG("server: resolved turn -> now turn %d, rebroadcast %d bytes\n", gi->turn_number(gi->ctx), len);
-        if (over) { MP_MSG("server: game ended at turn %d\n", gi->turn_number(gi->ctx)); goto done; }
+        if (over) { MP_MSG("server: game ended at turn %d\n", gi->turn_number(gi->ctx)); game_over_natural = true; goto done; }
     }
 
 done:
@@ -731,8 +854,15 @@ done:
     g_mp_movement_hook = NULL;
     s_mp_conns = NULL;
     s_mp_num_conns = 0;
-    for (int i = 0; i < num_clients; ++i) {
-        if (conns[i]) { mp_send(conns[i], MP_MSG_GAME_OVER, NULL, 0); net_conn_close(conns[i]); }
+    {   /* 1oom-mp: on a real finish, ship each client ITS OWN ending (per-player so competing human teams
+           see the right win/loss outcome); on a drop/error send an empty GAME_OVER (clients just exit). */
+        for (int i = 0; i < num_clients; ++i) {
+            uint8_t gobuf[256]; int golen = 0;
+            if (!conns[i]) { continue; }
+            if (game_over_natural && gi->get_game_over) { golen = gi->get_game_over(gi->ctx, i, gobuf, (int)sizeof(gobuf)); if (golen < 0) { golen = 0; } }
+            mp_send(conns[i], MP_MSG_GAME_OVER, golen ? gobuf : NULL, (uint32_t)golen);
+            net_conn_close(conns[i]);
+        }
     }
     for (int i = 0; i < MP_MAX_PLAYERS; ++i) { free(porders[i]); }
     free(blob);
@@ -745,7 +875,9 @@ done:
 int mp_cl_player_id(void) { return s_cl_pid; }
 
 int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_iface_t *gi) {
-    net_conn_t *c = net_connect(host, port);
+    net_conn_t *c;
+    s_cl_go_len = -1; /* 1oom-mp: no ending received yet */
+    c = net_connect(host, port);
     if (!c) { return -1; }
     int blobcap = gi->max_blob_len(gi->ctx);
     uint8_t *blob = (uint8_t *)malloc(blobcap);
@@ -756,16 +888,22 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
     uint32_t dl = 0;
 
     /* handshake */
-    { uint8_t h[2] = { 0, MP_PROTO_VERSION }; if (mp_send(c, MP_MSG_HELLO, h, 2) != 0) { rc = -1; goto done; } }
-    if (mp_recv_wait(c, MP_MSG_WELCOME, blob, blobcap, &dl, gi, MP_WAIT_LOBBY) != 0) { rc = -1; goto done; }
+    {   /* HELLO: [u16 proto][u32 wire_id]. The server refuses us if either differs from its own build. */
+        uint32_t wid = gi->wire_id ? (uint32_t)gi->wire_id(gi->ctx) : 0;
+        uint8_t h[6] = { 0, MP_PROTO_VERSION, (uint8_t)(wid >> 24), (uint8_t)(wid >> 16), (uint8_t)(wid >> 8), (uint8_t)wid };
+        if (mp_send(c, MP_MSG_HELLO, h, 6) != 0) { rc = -1; goto done; }
+    }
+    if (mp_recv_wait(c, MP_MSG_WELCOME, blob, blobcap, &dl, gi, MP_WAIT_LOBBY, 0) != 0) { rc = -1; goto done; }
     int player_id = (dl >= 2) ? ((blob[0] << 8) | blob[1]) : 0;
     int num_players = (dl >= 4) ? ((blob[2] << 8) | blob[3]) : 1;
-    MP_MSG("client: welcome - player %d of %d\n", player_id, num_players);
+    int is_reconnect = (dl >= 5) ? blob[4] : 0; /* 1oom-mp: server reclaimed a dropped slot for us -> skip the lobby, load current state */
+    s_cl_pid = player_id; /* 1oom-mp: valid from here on (the lobby block, skipped on reconnect, also set it) */
+    MP_MSG("client: welcome - player %d of %d%s\n", player_id, num_players, is_reconnect ? " (reconnect)" : "");
 
     /* lobby: if the server runs one, drive the interactive lobby until the game starts. run_lobby
        loops on g_mp_cl_lobby_poll/_set; the poll loads the initial GAME_DATA when it arrives. */
     bool got_initial = false;
-    if (gi->run_lobby) {
+    if (gi->run_lobby && !is_reconnect) { /* 1oom-mp: a reconnect skips the lobby -- the state follows immediately */
         s_cl_conn = c; s_cl_pid = player_id; s_cl_blob = blob; s_cl_blobcap = blobcap; s_cl_gi = gi;
         s_cl_lobby_started = false; s_cl_game_over = false;
         memset(&s_cl_lobby, 0, sizeof(s_cl_lobby));
@@ -780,7 +918,7 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
 
     /* initial state (no-lobby/legacy path; the lobby loads it itself when present) */
     if (!got_initial) {
-        if (mp_recv_wait(c, MP_MSG_GAME_DATA, blob, blobcap, &dl, gi, MP_WAIT_LOBBY) != 0) { rc = -1; goto done; }
+        if (mp_recv_wait(c, MP_MSG_GAME_DATA, blob, blobcap, &dl, gi, MP_WAIT_LOBBY, 0) != 0) { rc = -1; goto done; }
         if (gi->deserialize(gi->ctx, blob, dl) != 0) { MP_ERR("client: load state failed\n"); rc = -1; goto done; }
         if (gi->on_state_loaded) { gi->on_state_loaded(gi->ctx, 1); }
         MP_MSG("client: got initial state (%u bytes), turn %d\n", dl, gi->turn_number(gi->ctx));
@@ -849,6 +987,8 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
                     got = true;
                 } else if (id == MP_MSG_GAME_OVER) {
                     MP_MSG("client: game over\n");
+                    s_cl_go_len = (dl <= sizeof(s_cl_go_buf)) ? (int)dl : 0; /* stash the ending payload */
+                    if (s_cl_go_len > 0) { memcpy(s_cl_go_buf, blob, (size_t)s_cl_go_len); }
                     goto done;
                 } else if (id == MP_MSG_WAIT_STATUS) {
                     s_cl_wait_kind = (dl >= 1) ? blob[0] : 0;
@@ -861,6 +1001,7 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
     }
 
 done:
+    if (gi->on_game_over && (s_cl_go_len >= 0)) { gi->on_game_over(gi->ctx, s_cl_go_buf, s_cl_go_len); } /* 1oom-mp: play the ending sequence on a real finish (not a link drop) */
     free(blob);
     free(respbuf);
     net_conn_close(c);

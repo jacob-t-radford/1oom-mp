@@ -183,6 +183,7 @@ void game_update_production(struct game_s *g)
             uint16_t spymaint;
             spymaint = 0;
             for (player_id_t pi2 = PLAYER_0; pi2 < g->players; ++pi2) {
+                if ((g->mp_team[pi] != 0) && (g->mp_team[pi] == g->mp_team[pi2])) { continue; } /* 1oom-mp: don't bill upkeep for spies aimed at a locked teammate (catch-all for any source, incl. a human) */
                 spymaint += (e->total_production_bc * e->spying[pi2]) / 1000;
             }
             e->spying_maint_bc = spymaint;

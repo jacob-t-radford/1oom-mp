@@ -19,6 +19,7 @@ enum mp_msg_e {
     MP_MSG_WELCOME   = 0x02, /* S->C: [u16 player_id][u16 num_players] */
     MP_MSG_LOBBY     = 0x03, /* S->C: [struct mp_lobby_s] = the shared lobby state (broadcast on change) */
     MP_MSG_LOBBY_PICK= 0x13, /* C->S: [u8 field][u8 value] = set one of my lobby fields (see mp_lobby_field_e) */
+    MP_MSG_SAVE_REQUEST = 0x14, /* C->S: (empty) request a server-side named save (Esc -> Save) */
     MP_MSG_GAME_DATA = 0x08, /* S->C: [state blob] (save-format, authoritative) */
     MP_MSG_TURN_MOVE = 0x09, /* S->C: [pre-movement state blob] = animate this turn's fleet movement, sent just before GAME_DATA */
     MP_MSG_SPECTATE  = 0x0a, /* S->C: [battle_s] = a battle update to re-render (no reply); for watching the other side's turn */
@@ -90,6 +91,7 @@ struct mp_lobby_s {
     uint8_t galaxy_size;  /* host-set: galaxy size (0..5) */
     uint8_t difficulty;   /* host-set: AI difficulty (0..4) — global, all AIs share it */
     uint8_t open_lobby;   /* 1 = open lobby: humans join freely up to the cap and the host clicks Start to begin */
+    uint8_t turn_timer;   /* host-set: per-turn time limit, index into mp_turn_timer_secs[] (0 = off). On expiry the server auto-readies whoever is still planning, so an AFK player can't stall the turn. */
     struct {
         uint8_t race;     /* 0xff = not yet chosen */
         uint8_t banner;   /* 0xff = not yet chosen */
@@ -110,7 +112,13 @@ enum mp_lobby_field_e {
     MP_LOBBY_F_DIFFICULTY = 6, /* host only: value = difficulty 0..4 */
     MP_LOBBY_F_TEAM = 7,       /* value = (slot << 4) | team -- set a player's team (own slot, or host any) */
     MP_LOBBY_F_START = 8,      /* open lobby, host (slot 0) only: value ignored -- begin the game with whoever has joined */
+    MP_LOBBY_F_TURNTIMER = 9,  /* host only: value = index into mp_turn_timer_secs[] (0 = off) */
 };
+
+/* per-turn time-limit options offered in the lobby (index 0 = off). Shared by the lobby UI label and
+   the server's barrier (mp.c maps the chosen index to seconds). */
+#define MP_TURN_TIMER_NUM 6
+extern const uint16_t mp_turn_timer_secs[MP_TURN_TIMER_NUM];
 
 /* The game, abstracted. ctx is opaque (the real impl passes a struct game_s *). */
 typedef struct mp_game_iface_s {
@@ -163,6 +171,21 @@ typedef struct mp_game_iface_s {
     int (*setup_game)(void *ctx, const struct mp_lobby_s *lobby);
     /* server: a player's team number (0 = none/FFA), so team-plan snapshots relay only to teammates. */
     int (*get_team)(void *ctx, int player);
+    /* both: a fingerprint of the raw-struct wire layout (sizes of the structs relayed by memcpy + the
+       save-blob version). The client sends it in HELLO; the server refuses a client whose fingerprint
+       differs from its own, so a mismatched build can't silently corrupt the same-build-both-ends wire.
+       NULL => skip the fingerprint check (proto-version only). */
+    int (*wire_id)(void *ctx);
+    /* server: the game just ended naturally -> serialize player_id's OWN end-of-game info (winner/type/
+       name) into buf so it can play its ending. Per-player so competing human teams each see the right
+       outcome (winner sees victory, others a defeat). Return byte length (0 = nothing). NULL => no ending. */
+    int (*get_game_over)(void *ctx, int player_id, uint8_t *buf, int buflen);
+    /* client: a GAME_OVER carrying end-of-game info arrived -> play the ending sequence. len 0 = none
+       (e.g. the link dropped rather than a real finish). NULL => just exit. */
+    void (*on_game_over)(void *ctx, const uint8_t *buf, int len);
+    /* server: a client (player_id) requested a save -> write a named snapshot of the authoritative
+       state. Return 0 ok. NULL => no on-command save. */
+    int (*save_request)(void *ctx, int player_id);
 } mp_game_iface_t;
 
 /* server-side hook: when non-NULL (set while mp_server_run is active), the null UI
