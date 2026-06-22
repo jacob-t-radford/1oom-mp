@@ -114,6 +114,7 @@ extern int ui_mp_team_vote_pending(void); /* 1oom-mp teams: proposer id of a tea
    starmap overlay reads teammates' relayed fleets via _active / _fleet_total / _fleet_get. */
 extern void ui_mp_team_plan_tick(void);
 extern void ui_mp_set_ping(int planet_i);          /* 1oom-mp teams: flag a planet for teammates (toggle) */
+extern void ui_mp_save_game(struct game_s *g);     /* 1oom-mp: Esc -> Save in MP -> request a server-side named save */
 extern int ui_mp_team_plan_ping_at(int planet_i);  /* 1oom-mp teams: teammate who pinged planet_i this turn, else -1 */
 extern void ui_mp_team_plan_reset(void);
 extern bool ui_mp_team_plan_active(int player);

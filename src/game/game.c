@@ -38,6 +38,7 @@
 #include "ui.h"
 #include "util.h"
 #include <stdio.h>
+#include <time.h>
 
 /* -------------------------------------------------------------------------- */
 
@@ -74,6 +75,7 @@ static int opt_mp_humans = 1; /* host: number of human clients to wait for (empi
 static int opt_mp_open = 0;   /* host: >0 = open lobby -- players join freely up to this many and the host clicks Start */
 static char *opt_mp_load = NULL; /* host: path to an MP autosave to resume instead of starting a new game */
 static int s_mp_humans = 1;      /* host: human-client count, recorded in the autosave header for -mpload */
+static char s_mp_game_id[24] = {0}; /* 1oom-mp: per-game id (timestamp at game start), kept in the save header so each game has its own autosave file (no clobber) and the id is stable across -mpload resumes */
 #define MP_DEFAULT_PORT 24444
 
 
@@ -462,7 +464,7 @@ const struct cmdline_options_s main_cmdline_options[] = {
       "N", "Multiplayer (host): number of human players to wait for (default 1; rest of -new empires are AI)" },
     { "-mpload", 1,
       options_set_str_var, (void *)&opt_mp_load,
-      "FILE", "Multiplayer (host): resume a saved game from FILE (e.g. the autosave mp_autosave.blob in the user dir) instead of starting a new one" },
+      "FILE", "Multiplayer (host): resume a saved game from FILE in the user dir (an autosave mp_auto_<id>.blob or an on-command save mp_save_<id>_y<year>.blob) instead of starting a new one" },
     { "-mpopen", 1,
       options_set_int_var, (void *)&opt_mp_open,
       "MAXHUMANS", "Multiplayer (host): OPEN lobby -- players join freely (up to MAXHUMANS) and the host clicks Start to begin, instead of -mphumans' fixed count" },
@@ -761,33 +763,81 @@ int main_handle_option(const char *argv)
    over the wire is a save blob; advancing a turn is game_turn_process. */
 static int mp_if_serialize(void *ctx, uint8_t *buf, int buflen) { return game_save_blob_save((struct game_s *)ctx, buf, buflen); }
 static int mp_if_deserialize(void *ctx, const uint8_t *buf, int len) { return game_save_blob_load((struct game_s *)ctx, buf, len); }
-/* 1oom-mp: autosave the just-resolved game so a server crash or restart never loses it. Written every
-   turn in the same blob format the GAME_DATA sync uses, so the server can resume from it (-mpload).
-   Path: <user dir>/mp_autosave.blob. Cheap (~one save-sized write per turn). */
-static void game_mp_autosave(struct game_s *g) {
+/* 1oom-mp save-file header magic. Distinguishes the [u32 magic][int humans][char game_id[24]] header
+   from the OLD [int humans] one -- humans is 1..6, never equal to this, so the loader can tell them
+   apart and still read pre-this-change autosaves. */
+#define MP_SAVE_MAGIC 0x31535000u
+
+/* write the full MP save (header + state blob) to fname, atomically: write a temp then rename, so a
+   crash mid-write can't corrupt it. Shared by the per-turn autosave and the on-command named save. */
+static bool mp_write_save_blob(struct game_s *g, const char *fname) {
     static uint8_t *buf = NULL;
     static int cap = 0;
-    int need, n;
-    char fname[1024];
+    int need = game_save_blob_maxlen(g), n;
+    char tmp[1040];
     FILE *f;
-    need = game_save_blob_maxlen(g);
-    if (need > cap) {
-        uint8_t *nb = (uint8_t *)realloc(buf, (size_t)need);
-        if (!nb) { return; }
-        buf = nb; cap = need;
-    }
+    uint32_t magic = MP_SAVE_MAGIC;
+    int humans = s_mp_humans;
+    bool ok;
+    if (need > cap) { uint8_t *nb = (uint8_t *)realloc(buf, (size_t)need); if (!nb) { return false; } buf = nb; cap = need; }
     n = game_save_blob_save(g, buf, cap);
-    if (n <= 0) { return; }
-    os_make_path_user();
-    lib_sprintf(fname, sizeof(fname), "%s/mp_autosave.blob", os_get_path_user());
-    f = fopen(fname, "wb");
-    if (f) {
-        int humans = s_mp_humans;
-        fwrite(&humans, sizeof(humans), 1, f); /* header: human-client count, so -mpload knows how many to wait for */
-        fwrite(buf, 1, (size_t)n, f);
-        fclose(f);
+    if (n <= 0) { return false; }
+    lib_sprintf(tmp, sizeof(tmp), "%s.tmp", fname);
+    f = fopen(tmp, "wb");
+    if (!f) { return false; }
+    ok = (fwrite(&magic, sizeof(magic), 1, f) == 1)
+      && (fwrite(&humans, sizeof(humans), 1, f) == 1)            /* human-client count, so -mpload waits for the right number */
+      && (fwrite(s_mp_game_id, sizeof(s_mp_game_id), 1, f) == 1) /* per-game id (the filename stem), carried across resumes */
+      && (fwrite(buf, 1, (size_t)n, f) == (size_t)n);
+    if (fclose(f) != 0) { ok = false; }
+    if (ok) {
+#ifdef _WIN32
+        remove(fname); /* Windows rename() won't overwrite an existing file */
+#endif
+        if (rename(tmp, fname) != 0) { remove(tmp); ok = false; }
+    } else {
+        remove(tmp);
     }
+    return ok;
 }
+
+/* 1oom-mp: per-turn autosave so a crash/restart never loses the game. Each game has its OWN file
+   (mp_auto_<game_id>.blob) so starting a new game never clobbers an old game's autosave; resume any of
+   them with -mpload. Cheap (~one save-sized write per turn). */
+static void game_mp_autosave(struct game_s *g) {
+    char fname[1024];
+    os_make_path_user();
+    if (s_mp_game_id[0]) { lib_sprintf(fname, sizeof(fname), "%s/mp_auto_%s.blob", os_get_path_user(), s_mp_game_id); }
+    else { lib_sprintf(fname, sizeof(fname), "%s/mp_autosave.blob", os_get_path_user()); } /* fallback if no id was set */
+    mp_write_save_blob(g, fname);
+}
+
+/* 1oom-mp: an on-command save (a player chose Esc -> Save). A permanent NAMED snapshot, separate from the
+   rolling autosave, so you can keep several and resume any: mp_save_<game_id>_y<year>.blob (one per
+   in-game year). Lives on the server's machine, where -mpload reads. */
+static void game_mp_save_named(struct game_s *g) {
+    char fname[1024];
+    int year = (int)g->year + YEAR_BASE;
+    os_make_path_user();
+    if (s_mp_game_id[0]) { lib_sprintf(fname, sizeof(fname), "%s/mp_save_%s_y%d.blob", os_get_path_user(), s_mp_game_id, year); }
+    else { lib_sprintf(fname, sizeof(fname), "%s/mp_save_y%d.blob", os_get_path_user(), year); }
+    if (mp_write_save_blob(g, fname)) { log_message("MP: saved game to %s\n", fname); }
+    else { log_error("MP: save to %s FAILED\n", fname); }
+}
+
+/* server: a client requested a save (Esc -> Save) -> write a named snapshot of the authoritative state. */
+static int mp_if_save_request(void *ctx, int player_id) {
+    (void)player_id;
+    game_mp_save_named((struct game_s *)ctx);
+    return 0;
+}
+
+/* 1oom-mp: the natural end-of-game result, stashed when advance_turn reports game-over so it can be
+   shipped to clients (mp_if_get_game_over) for them to play the ending sequence. ge.name is a pointer
+   into game state, copied into our own buffer for safe transport. */
+static struct game_end_s s_mp_game_end;
+static char s_mp_game_end_name[64];
+static bool s_mp_game_over = false;
 
 static int mp_if_advance(void *ctx) {
     struct game_s *g = (struct game_s *)ctx;
@@ -829,7 +879,91 @@ static int mp_if_advance(void *ctx) {
     game_mp_diplo_apply_pending(g);
     game_mp_autosave(g); /* persist the resolved turn so a crash/restart can resume it */
     /* return >0 to tell mp_server_run the game has ended (someone won/lost) */
-    return ((ge.type == GAME_END_NONE) || (ge.type == GAME_END_FINAL_WAR)) ? 0 : 1;
+    {
+        int over = ((ge.type == GAME_END_NONE) || (ge.type == GAME_END_FINAL_WAR)) ? 0 : 1;
+        if (over) { /* 1oom-mp: stash the ending so the server can ship it to clients to play the sequence */
+            s_mp_game_end = ge;
+            if (ge.name) { lib_strcpy(s_mp_game_end_name, ge.name, sizeof(s_mp_game_end_name)); s_mp_game_end.name = s_mp_game_end_name; }
+            else { s_mp_game_end_name[0] = 0; s_mp_game_end.name = NULL; }
+            s_mp_game_over = true;
+        }
+        return over;
+    }
+}
+
+/* 1oom-mp: serialize PLAYER player_id's OWN end-of-game result for its GAME_OVER. The game's outcome is
+   one global value, but with multiple competing human teams one team wins and the rest lose -- so derive
+   each viewer's ending here: a player on the winning team sees the victory; everyone else sees a defeat
+   (a funeral after a conquest, exile after a council vote). For the common single-human-team game this
+   also means the humans see their OWN funeral when an AI conquers them, instead of the AI's victory.
+   POD fields + the winner name as a length-prefixed string (the struct's name pointer can't cross the wire). */
+static int mp_if_get_game_over(void *ctx, int player_id, uint8_t *buf, int buflen) {
+    struct game_s *g = (struct game_s *)ctx;
+    struct game_end_s ge;
+    const char *name;
+    int pos = 0, namelen, win_emp = -1, win_team = -1;
+    bool won;
+    int32_t v; uint8_t nlen;
+    if (!s_mp_game_over) { return 0; }
+    if ((player_id < 0) || (player_id >= (int)g->players)) { return 0; }
+    ge = s_mp_game_end; /* the global result (winner's race/name) is the base */
+    /* find the winning empire -> its team */
+    if ((ge.type == GAME_END_WON_GOOD) && (g->winner < g->players)) {
+        win_emp = g->winner;                                                            /* the elected emperor */
+    } else if (ge.type == GAME_END_WON_TYRANT) {
+        for (player_id_t i = PLAYER_0; i < g->players; ++i) { if (IS_ALIVE(g, i)) { win_emp = (int)i; break; } } /* last team standing */
+    }
+    win_team = (win_emp >= 0) ? g->mp_team[win_emp] : -1;
+    won = (win_emp >= 0) && ((player_id == win_emp) || ((win_team != 0) && (win_team == g->mp_team[player_id])));
+    if (!won) {
+        /* this viewer's team did not win -> a defeat ending instead of the global victory */
+        if (ge.type == GAME_END_WON_GOOD) {
+            ge.type = GAME_END_LOST_EXILE;                  /* the council elected someone else -> exile (name = the new emperor) */
+        } else {
+            ge.type = GAME_END_LOST_FUNERAL;
+            ge.race = (win_emp >= 0) ? g->eto[win_emp].banner : 0; /* funeral: banner_live = the victor's banner */
+            ge.banner_dead = g->eto[player_id].banner;             /* banner_dead = this viewer's own banner */
+        }
+    }
+    name = (ge.type == GAME_END_LOST_FUNERAL) ? "" : s_mp_game_end_name; /* the funeral uses banners, not a name */
+    namelen = name[0] ? (int)strlen(name) : 0;
+    if (namelen > 63) { namelen = 63; }
+    if (buflen < 4 * 4 + 1 + namelen) { return 0; }
+    v = (int32_t)ge.type;        memcpy(buf + pos, &v, 4); pos += 4;
+    v = (int32_t)ge.race;        memcpy(buf + pos, &v, 4); pos += 4;
+    v = (int32_t)ge.banner_dead; memcpy(buf + pos, &v, 4); pos += 4;
+    v = (int32_t)ge.varnum;      memcpy(buf + pos, &v, 4); pos += 4;
+    nlen = (uint8_t)namelen; buf[pos++] = nlen;
+    if (namelen) { memcpy(buf + pos, name, namelen); pos += namelen; }
+    return pos;
+}
+
+/* client: a GAME_OVER with end-of-game info arrived -> play the matching ending sequence (mirrors the
+   single-player switch in main_do). Shows the same authoritative outcome to everyone. */
+static void mp_if_on_game_over(void *ctx, const uint8_t *buf, int len) {
+    struct game_s *g = (struct game_s *)ctx;
+    struct game_end_s ge;
+    static char namebuf[64];
+    int pos = 0; int32_t v; uint8_t nlen;
+    if (len < 4 * 4 + 1) { return; } /* empty / link-drop GAME_OVER -> no ending */
+    memset(&ge, 0, sizeof(ge));
+    memcpy(&v, buf + pos, 4); pos += 4; ge.type = (game_end_type_t)v;
+    memcpy(&v, buf + pos, 4); pos += 4; ge.race = (int)v;
+    memcpy(&v, buf + pos, 4); pos += 4; ge.banner_dead = (int)v;
+    memcpy(&v, buf + pos, 4); pos += 4; ge.varnum = (int)v;
+    nlen = buf[pos++];
+    if (nlen > 63) { nlen = 63; }
+    if (len < pos + nlen) { return; }
+    memcpy(namebuf, buf + pos, nlen); namebuf[nlen] = 0;
+    ge.name = namebuf;
+    ui_game_end(g);
+    switch (ge.type) {
+        case GAME_END_WON_GOOD:    ui_play_ending_good(ge.race, ge.name); break;
+        case GAME_END_WON_TYRANT:  ui_play_ending_tyrant(ge.race, ge.name); break;
+        case GAME_END_LOST_FUNERAL: ui_play_ending_funeral(ge.race, ge.banner_dead); break;
+        case GAME_END_LOST_EXILE:  ui_play_ending_exile(ge.name); break;
+        default: break;
+    }
 }
 static int mp_if_turn(void *ctx) { return ((struct game_s *)ctx)->year; }
 static int mp_if_maxblob(void *ctx) { return game_save_blob_maxlen((struct game_s *)ctx); }
@@ -904,7 +1038,7 @@ static int s_mp_news_n = 0;
    the server on each) lets every player's independent invasions play at the same wall-clock time
    rather than queuing behind each other. ui_ground renders purely from the ground_s + static data, so
    replaying against post-invasion state is safe. */
-static struct ground_s s_mp_ground[16];
+static struct ground_s s_mp_ground[32]; /* 1oom-mp: raised from 16 so a big multi-front turn doesn't drop invasion replays */
 static int s_mp_ground_n = 0;
 
 /* 1oom-mp: orbital bombings, same buffer+replay treatment as ground (concurrent across players). The
@@ -912,7 +1046,7 @@ static int s_mp_ground_n = 0;
 struct mp_bomb_item_s { int32_t attacker, owner, planet, popdmg, factdmg; uint8_t play_music, hide_other; planet_t psnap; };
 /* 1oom-mp: orbital bombings buffered as they stream in during resolution, replayed concurrently at the
    next state load -- so the bomb phase never blocks one player on another's bombardment screens. */
-static struct mp_bomb_item_s s_mp_bomb[16];
+static struct mp_bomb_item_s s_mp_bomb[32]; /* 1oom-mp: raised from 16 (busy bombardment turn) */
 static int s_mp_bomb_n = 0;
 
 /* 1oom-mp: espionage result streams, buffered as they stream in during resolution and replayed
@@ -921,10 +1055,10 @@ static int s_mp_bomb_n = 0;
    (it shows only race + tech); the sabotage result swaps in a post-sabotage planet snapshot at replay
    like ui_bomb_show does. The blocking framing choice (other2 != PLAYER_NONE) is NOT buffered. */
 struct mp_stolen_item_s { int32_t spy, field; uint8_t tech; };
-static struct mp_stolen_item_s s_mp_stolen[16];
+static struct mp_stolen_item_s s_mp_stolen[32]; /* 1oom-mp: raised from 16 */
 static int s_mp_stolen_n = 0;
 struct mp_sabres_item_s { int32_t spy, target, act, other1, other2, snum, planet; planet_t psnap; };
-static struct mp_sabres_item_s s_mp_sabres[16];
+static struct mp_sabres_item_s s_mp_sabres[32]; /* 1oom-mp: raised from 16 */
 static int s_mp_sabres_n = 0;
 
 /* 1oom-mp: hysteresis for the "waiting for other players" banner. Counts consecutive on_wait ticks
@@ -1049,7 +1183,7 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (req_len < (int)sizeof(struct mp_bomb_item_s)) { return 0; }
             if (s_mp_bomb_n < (int)(sizeof(s_mp_bomb) / sizeof(s_mp_bomb[0]))) {
                 memcpy(&s_mp_bomb[s_mp_bomb_n++], req, sizeof(struct mp_bomb_item_s));
-            }
+            } else { log_warning("MP: bombing-replay buffer full (%d) -- a bombing result won't be shown this turn\n", (int)(sizeof(s_mp_bomb) / sizeof(s_mp_bomb[0]))); }
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
@@ -1128,7 +1262,7 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (req_len < (int)sizeof(struct ground_s)) { return 0; }
             if (s_mp_ground_n < (int)(sizeof(s_mp_ground) / sizeof(s_mp_ground[0]))) {
                 memcpy(&s_mp_ground[s_mp_ground_n++], req, sizeof(struct ground_s));
-            }
+            } else { log_warning("MP: ground-invasion replay buffer full (%d) -- an invasion won't be shown this turn\n", (int)(sizeof(s_mp_ground) / sizeof(s_mp_ground[0]))); }
             if (resp_buflen >= 1) { resp[0] = 1; } /* instant ack -- the screen plays later, so the server never blocks on it */
             return 1;
         }
@@ -1171,7 +1305,7 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(&it, req, sizeof(it));
             if (s_mp_stolen_n < (int)(sizeof(s_mp_stolen) / sizeof(s_mp_stolen[0]))) {
                 s_mp_stolen[s_mp_stolen_n++] = it;
-            }
+            } else { log_warning("MP: stolen-tech notice buffer full (%d) -- a 'tech stolen from you' notice won't show this turn\n", (int)(sizeof(s_mp_stolen) / sizeof(s_mp_stolen[0]))); }
             if (resp_buflen >= 1) { resp[0] = 1; } /* instant ack -- the screen plays later */
             return 1;
         }
@@ -1182,7 +1316,7 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(&it, req, sizeof(it));
             if (s_mp_sabres_n < (int)(sizeof(s_mp_sabres) / sizeof(s_mp_sabres[0]))) {
                 s_mp_sabres[s_mp_sabres_n++] = it;
-            }
+            } else { log_warning("MP: sabotage-result buffer full (%d) -- a sabotage result won't show this turn\n", (int)(sizeof(s_mp_sabres) / sizeof(s_mp_sabres[0]))); }
             if (resp_buflen >= 1) { resp[0] = 1; } /* instant ack -- the screen plays later */
             return 1;
         }
@@ -1202,7 +1336,7 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             memcpy(&it, req, sizeof(it));
             if (s_mp_news_n < (int)(sizeof(s_mp_news) / sizeof(s_mp_news[0]))) {
                 s_mp_news[s_mp_news_n++] = it;
-            }
+            } else { log_warning("MP: turn-news buffer full (%d) -- a GNN report won't show this turn\n", (int)(sizeof(s_mp_news) / sizeof(s_mp_news[0]))); }
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
@@ -1832,10 +1966,34 @@ static int mp_if_get_team(void *ctx, int player) {
     return ((player >= 0) && (player < (int)game.players)) ? game.mp_team[player] : 0;
 }
 
+/* 1oom-mp: fingerprint the raw-struct wire layout. The relays memcpy whole structs (battle/election/
+   audience/ground) and the orders/team-plan ship per-planet state, and GAME_DATA is the field-by-field
+   save blob keyed to the build's save version -- all of which assume the SAME build on both ends. Fold
+   the sizes of the big relayed structs + the whole game state into one id; the server compares it at
+   HELLO and refuses a client whose build differs, instead of letting a layout skew silently corrupt the
+   wire. sizeof(struct game_s) is the broad catch-all (it contains eto/srd/enroute/transport/mp_team, so
+   any save-format-relevant change moves it). FNV-1a mix. */
+static int mp_if_wire_id(void *ctx) {
+    (void)ctx;
+    uint32_t v = 0x811c9dc5u;
+    v = (v ^ (uint32_t)sizeof(struct game_s))     * 16777619u;
+    v = (v ^ (uint32_t)sizeof(struct battle_s))   * 16777619u;
+    v = (v ^ (uint32_t)sizeof(planet_t))          * 16777619u;
+    v = (v ^ (uint32_t)sizeof(struct election_s)) * 16777619u;
+    v = (v ^ (uint32_t)sizeof(struct audience_s)) * 16777619u;
+    v = (v ^ (uint32_t)sizeof(struct ground_s))   * 16777619u;
+    v = (v ^ (uint32_t)MP_PROTO_VERSION)          * 16777619u;
+    return (int)v;
+}
+
 static mp_game_iface_t mp_make_iface(void) {
     mp_game_iface_t gi;
     gi.ctx = &game;
     gi.get_team = mp_if_get_team;
+    gi.wire_id = mp_if_wire_id;
+    gi.get_game_over = mp_if_get_game_over;
+    gi.on_game_over = mp_if_on_game_over;
+    gi.save_request = mp_if_save_request;
     gi.serialize = mp_if_serialize;
     gi.deserialize = mp_if_deserialize;
     gi.advance_turn = mp_if_advance;
@@ -1914,20 +2072,35 @@ static int mp_if_run_lobby(void *ctx, int my_id) {
     return ui_mp_lobby_run(my_id);
 }
 
-/* 1oom-mp: load an MP autosave written by game_mp_autosave ([int humans][blob]) into `game`.
-   Caller must have game_aux_init'd; game_aux_start/game_start follow (as for a freshly-created game).
+/* 1oom-mp: load an MP save (autosave or named) into `game`. New header is [u32 magic][int humans]
+   [char game_id[24]]; pre-this-change autosaves are just [int humans] (no magic) and still load (game_id
+   then comes up empty -> the caller stamps a fresh one). Sets s_mp_game_id so a resumed game keeps
+   autosaving to the same file. Caller must have game_aux_init'd; game_aux_start/game_start follow.
    Reports the recorded human-client count via *humans_out. */
 static int game_mp_load_autosave(const char *fname, int *humans_out) {
     FILE *f = fopen(fname, "rb");
     long fsize;
-    int humans = 0, rc;
+    int humans = 0, rc, hdr;
+    uint32_t magic = 0;
     size_t blen, got;
     uint8_t *buf;
+    s_mp_game_id[0] = 0;
     if (!f) { log_error("MP: cannot open save '%s'\n", fname); return 1; }
     fseek(f, 0, SEEK_END); fsize = ftell(f); fseek(f, 0, SEEK_SET);
-    if (fsize <= (long)sizeof(int)) { fclose(f); log_error("MP: save '%s' too small\n", fname); return 1; }
-    if (fread(&humans, sizeof(int), 1, f) != 1) { fclose(f); log_error("MP: save '%s' header read failed\n", fname); return 1; }
-    blen = (size_t)fsize - sizeof(int);
+    if (fread(&magic, sizeof(magic), 1, f) != 1) { fclose(f); log_error("MP: save '%s' header read failed\n", fname); return 1; }
+    if (magic == MP_SAVE_MAGIC) { /* new format: [magic][humans][game_id] */
+        if ((fread(&humans, sizeof(int), 1, f) != 1) || (fread(s_mp_game_id, sizeof(s_mp_game_id), 1, f) != 1)) {
+            fclose(f); log_error("MP: save '%s' header truncated\n", fname); return 1;
+        }
+        s_mp_game_id[sizeof(s_mp_game_id) - 1] = 0;
+        hdr = (int)sizeof(magic) + (int)sizeof(int) + (int)sizeof(s_mp_game_id);
+    } else { /* old format: those first 4 bytes were the humans count */
+        humans = (int)magic;
+        hdr = (int)sizeof(int);
+        fseek(f, hdr, SEEK_SET);
+    }
+    if (fsize <= hdr) { fclose(f); log_error("MP: save '%s' too small\n", fname); return 1; }
+    blen = (size_t)fsize - (size_t)hdr;
     buf = (uint8_t *)malloc(blen);
     if (!buf) { fclose(f); return 1; }
     got = fread(buf, 1, blen, f);
@@ -1942,6 +2115,15 @@ static int game_mp_load_autosave(const char *fname, int *humans_out) {
     return 0;
 }
 
+/* 1oom-mp: stamp a fresh per-game id (a timestamp) used as the autosave/named-save filename stem. */
+static void game_mp_set_game_id(void) {
+    time_t t = time(NULL);
+    struct tm *lt = localtime(&t);
+    if (!lt || (strftime(s_mp_game_id, sizeof(s_mp_game_id), "%Y%m%d_%H%M%S", lt) == 0)) {
+        lib_sprintf(s_mp_game_id, sizeof(s_mp_game_id), "%lu", (unsigned long)t); /* fallback */
+    }
+}
+
 static int game_mp_host(void) {
     int humans, rc;
     bool resume = (opt_mp_load != NULL);
@@ -1952,11 +2134,14 @@ static int game_mp_host(void) {
        can pin a slider and the per-turn ECO/waste auto-balance won't override it. */
     game_num_slider_respects_locks = true;
     if (resume) {
-        /* resume a crashed/saved game: the autosave blob takes the place of game_new. */
+        /* resume a crashed/saved game: the save blob takes the place of game_new (it also restores the
+           per-game id, so we keep autosaving to the same mp_auto_<id>.blob). */
         if (game_mp_load_autosave(opt_mp_load, &humans)) { game_aux_shutdown(&game_aux); return 1; }
+        if (s_mp_game_id[0] == 0) { game_mp_set_game_id(); } /* an old-format save carried no id -> stamp a fresh one */
     } else {
         /* honor -new (galaxy size, races, empire count, difficulty); GAME_NEW_OPTS_DEFAULT otherwise */
         struct game_new_options_s opts = game_opt_new;
+        game_mp_set_game_id(); /* fresh game -> a new per-game autosave id */
         humans = opt_mp_humans;
         if (humans < 1) { humans = 1; }
         if (humans > PLAYER_NUM) { humans = PLAYER_NUM; }

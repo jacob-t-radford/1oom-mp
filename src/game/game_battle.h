@@ -90,7 +90,7 @@ struct battle_missile_s {
     uint8_t speed;
 };
 
-#define BATTLE_SIDE_PARTIES_MAX 3 /* 1oom-mp: max empires per side (lead + 2 allies); 2 sides * 3 * NUM_SHIPDESIGNS + planet fits BATTLE_ITEM_MAX */
+#define BATTLE_SIDE_PARTIES_MAX 3 /* 1oom-mp: max empires per side (lead + 2 allies); 2 sides * 3 * NUM_SHIPDESIGNS + planet fits BATTLE_ITEM_MAX. NOT a silent drop -- a 4th co-located teammate isn't lost, it fights as its own separate battle at the same planet. Capped at 3 because raising it cascades through BATTLE_ITEM_MAX + arena placement. */
 struct battle_side_s {
     int party;                            /* lead empire of this side (commands; owns the ship-type table below) */
     int parties[BATTLE_SIDE_PARTIES_MAX]; /* 1oom-mp: every empire on this side (party + allied teammates) */

@@ -2055,6 +2055,7 @@ static void game_ai_classic_turn_p3(struct game_s *g)
                 if (1
                   && (pi != pi2) && BOOLVEC_IS1(e->contact, pi2) && (e->spymode_next[pi2] != SPYMODE_HIDE)
                   && (BOOLVEC_IS0(g->is_ai, pi2) || !rnd_0_nm1(3, &g->seed))
+                  && !((g->mp_team[pi] != 0) && (g->mp_team[pi] == g->mp_team[pi2])) /* 1oom-mp: never aim spies at a locked teammate -- they can't build vs an ally, so allocating intent just wastes upkeep */
                 ) {
                     e->spymode[pi2] = e->spymode_next[pi2];
                     e->spying[pi2] = rnd_1_n(5, &g->seed) + 5;
@@ -2086,23 +2087,33 @@ static void game_ai_classic_battle_ai_ai_get_weights(const struct game_s *g, pla
     }
 }
 
+/* 1oom-mp teams: total combat weight of a (possibly combined) side -- each stack is weighted by ITS
+   OWN owner's ship designs, not the side lead's. (Allied stacks used to be scored with the lead's
+   designs, skewing AI-vs-AI combined-fleet odds + loss ratios.) Recomputes the per-owner weight table
+   only when the owner changes; stacks are grouped by party, so that's at most once per ally. For a
+   single-owner side -- every non-team battle -- this is identical to the old lead-only computation. */
+static int game_ai_classic_battle_ai_ai_side_weight(const struct game_s *g, const struct battle_side_s *s)
+{
+    int w = 0, last_owner = -1;
+    int wtab[NUM_SHIPDESIGNS];
+    for (int i = 0; i < s->num_types; ++i) {
+        int owner = s->tbl_owner[i];
+        if (owner != last_owner) {
+            for (int k = 0; k < NUM_SHIPDESIGNS; ++k) { wtab[k] = 0; }
+            if ((owner >= 0) && (owner < PLAYER_NUM)) { game_ai_classic_battle_ai_ai_get_weights(g, (player_id_t)owner, wtab); }
+            last_owner = owner;
+        }
+        w += s->tbl_ships[i] * wtab[s->tbl_shiptype[i]];
+    }
+    return w;
+}
+
 static bool game_ai_classic_battle_ai_ai_resolve_do(struct battle_s *bt)
 {
     struct game_s *g = bt->g;
     bool r_won;
-    int tbl_weight_l[NUM_SHIPDESIGNS], tbl_weight_r[NUM_SHIPDESIGNS];
-    int base_l = 0, base_r = 0, wl = 0, wr = 0, wl2, wr2;
+    int base_l = 0, base_r = 0, wl, wr, wl2, wr2;
     bt->biodamage = 0;
-    for (int i = 0; i < NUM_SHIPDESIGNS; ++i) {
-        tbl_weight_l[i] = 0;
-        tbl_weight_r[i] = 0;
-    }
-    if (bt->s[SIDE_L].party < PLAYER_NUM) {
-        game_ai_classic_battle_ai_ai_get_weights(g, bt->s[SIDE_L].party, tbl_weight_l);
-    }
-    if (bt->s[SIDE_R].party < PLAYER_NUM) {
-        game_ai_classic_battle_ai_ai_get_weights(g, bt->s[SIDE_R].party, tbl_weight_r);
-    }
     switch (bt->planet_side) {
         case SIDE_NONE:
             break;
@@ -2119,12 +2130,8 @@ static bool game_ai_classic_battle_ai_ai_resolve_do(struct battle_s *bt)
             }
             break;
     }
-    for (int i = 0; i < bt->s[SIDE_L].num_types; ++i) {
-        wl += bt->s[SIDE_L].tbl_ships[i] * tbl_weight_l[bt->s[SIDE_L].tbl_shiptype[i]];
-    }
-    for (int i = 0; i < bt->s[SIDE_R].num_types; ++i) {
-        wr += bt->s[SIDE_R].tbl_ships[i] * tbl_weight_r[bt->s[SIDE_R].tbl_shiptype[i]];
-    }
+    wl = game_ai_classic_battle_ai_ai_side_weight(g, &bt->s[SIDE_L]); /* 1oom-mp: per-owner weighting (combined fleets) */
+    wr = game_ai_classic_battle_ai_ai_side_weight(g, &bt->s[SIDE_R]);
     wl += base_l * 75 * bt->bases;
     wr += base_r * 75 * bt->bases;
     if (bt->s[SIDE_L].party >= PLAYER_NUM) {

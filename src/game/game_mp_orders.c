@@ -18,6 +18,7 @@
 #include "game_shipdesign.h"
 #include "game_tech.h"
 #include "game_turn.h"
+#include "log.h"
 #include "rnd.h"
 
 #define PUT(src, n) do { if (pos + (int)(n) > buflen) { return -1; } memcpy(buf + pos, (src), (n)); pos += (int)(n); } while (0)
@@ -28,7 +29,7 @@
    s_diplo_pending: filled on the SERVER by apply_orders, applied by
    game_mp_diplo_apply_pending after the turn resolves. (Distinct processes use one
    or the other.) */
-#define MP_DIPLO_ACT_MAX 16
+#define MP_DIPLO_ACT_MAX 32 /* 1oom-mp: per-turn diplomacy actions; well above any real turn (was 16) */
 struct mp_diplo_act_s { player_id_t actor, target; uint8_t verb, arg; uint8_t p[4]; };
 static struct mp_diplo_act_s s_diplo_act[MP_DIPLO_ACT_MAX];
 static int s_diplo_act_num = 0;
@@ -37,7 +38,7 @@ static int s_diplo_pending_num = 0;
 
 bool game_mp_diplo_record_p(player_id_t actor, player_id_t target, uint8_t verb, uint8_t arg, const uint8_t *p)
 {
-    if (s_diplo_act_num >= MP_DIPLO_ACT_MAX) { return false; }
+    if (s_diplo_act_num >= MP_DIPLO_ACT_MAX) { log_warning("MP: diplomacy-action queue full (%d) -- dropping action verb=%d target=%d (raise MP_DIPLO_ACT_MAX)\n", MP_DIPLO_ACT_MAX, verb, target); return false; }
     s_diplo_act[s_diplo_act_num].actor = actor;
     s_diplo_act[s_diplo_act_num].target = target;
     s_diplo_act[s_diplo_act_num].verb = verb;
@@ -53,7 +54,7 @@ bool game_mp_diplo_record(player_id_t actor, player_id_t target, uint8_t verb, u
 }
 
 /* ---- colonize requests (client records a planet to colonize, server resolves) ---- */
-#define MP_COLONIZE_MAX 16
+#define MP_COLONIZE_MAX 64 /* 1oom-mp: per-turn colonizations; raised from 16 so a big batch of colony ships arriving together isn't silently dropped */
 struct mp_colonize_req_s { player_id_t pi; planet_id_t pli; char name[PLANET_NAME_LEN]; };
 static planet_id_t s_colonize_act[MP_COLONIZE_MAX];
 static int s_colonize_act_num = 0;
@@ -65,6 +66,7 @@ void game_mp_colonize_record(player_id_t pi, planet_id_t pli)
     (void)pi; /* actor is implicit: the player whose write_orders drains this */
     for (int i = 0; i < s_colonize_act_num; ++i) { if (s_colonize_act[i] == pli) { return; } }
     if (s_colonize_act_num < MP_COLONIZE_MAX) { s_colonize_act[s_colonize_act_num++] = pli; }
+    else { log_warning("MP: colonize queue full (%d) -- dropping colonize of planet %d (raise MP_COLONIZE_MAX)\n", MP_COLONIZE_MAX, (int)pli); }
 }
 
 /* 1oom-mp live teammate visibility: serialize this player's IN-PROGRESS plan for teammates --
@@ -324,10 +326,15 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         uint16_t cnt;
         GET(&cnt, 2);
         for (int i = 0; i < cnt; ++i) {
-            if (n >= FLEET_ENROUTE_MAX) { return -1; }
-            GET(&g->enroute[n], sizeof(fleet_enroute_t));
-            g->enroute[n].owner = pi; /* anti-cheat: a client can only move its own ships */
-            ++n;
+            fleet_enroute_t r;
+            GET(&r, sizeof(fleet_enroute_t)); /* always consume the wire entry so the parse stays aligned */
+            /* clamp instead of returning -1 mid-loop: the old early-return left enroute[] half-rewritten
+               with a stale enroute_num (corrupting the SHARED fleet array the server then resolves on).
+               Overflow means the galaxy-wide cap was hit; drop the excess, keep state consistent. */
+            if (n < FLEET_ENROUTE_MAX) {
+                r.owner = pi; /* anti-cheat: a client can only move its own ships */
+                g->enroute[n++] = r;
+            }
         }
         g->enroute_num = (uint16_t)n;
     }
@@ -342,10 +349,12 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         uint16_t cnt;
         GET(&cnt, 2);
         for (int i = 0; i < cnt; ++i) {
-            if (n >= TRANSPORT_MAX) { return -1; }
-            GET(&g->transport[n], sizeof(transport_t));
-            g->transport[n].owner = pi;
-            ++n;
+            transport_t tr;
+            GET(&tr, sizeof(transport_t)); /* always consume so the parse stays aligned; clamp rather than corrupt */
+            if (n < TRANSPORT_MAX) {
+                tr.owner = pi;
+                g->transport[n++] = tr;
+            }
         }
         g->transport_num = (uint16_t)n;
     }
@@ -360,13 +369,15 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
             GET(&target, 2);
             GET(&arg, 1);
             GET(p, 4);
-            if ((target < g->players) && ((player_id_t)target != pi) && (s_diplo_pending_num < MP_DIPLO_ACT_MAX)) {
-                s_diplo_pending[s_diplo_pending_num].actor = pi;
-                s_diplo_pending[s_diplo_pending_num].target = (player_id_t)target;
-                s_diplo_pending[s_diplo_pending_num].verb = verb;
-                s_diplo_pending[s_diplo_pending_num].arg = arg;
-                memcpy(s_diplo_pending[s_diplo_pending_num].p, p, 4);
-                ++s_diplo_pending_num;
+            if ((target < g->players) && ((player_id_t)target != pi)) {
+                if (s_diplo_pending_num < MP_DIPLO_ACT_MAX) {
+                    s_diplo_pending[s_diplo_pending_num].actor = pi;
+                    s_diplo_pending[s_diplo_pending_num].target = (player_id_t)target;
+                    s_diplo_pending[s_diplo_pending_num].verb = verb;
+                    s_diplo_pending[s_diplo_pending_num].arg = arg;
+                    memcpy(s_diplo_pending[s_diplo_pending_num].p, p, 4);
+                    ++s_diplo_pending_num;
+                } else { log_warning("MP: server diplo-pending queue full (%d) -- dropping action from player %d\n", MP_DIPLO_ACT_MAX, (int)pi); }
             }
         }
     }
@@ -381,11 +392,13 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
             /* 1oom-mp: read the carried name (must stay in sync with the PUT above) */
             GET(cname, PLANET_NAME_LEN);
             cname[PLANET_NAME_LEN - 1] = '\0';
-            if ((pli < g->galaxy_stars) && (s_colonize_pending_num < MP_COLONIZE_MAX)) {
-                s_colonize_pending[s_colonize_pending_num].pi = pi;
-                s_colonize_pending[s_colonize_pending_num].pli = (planet_id_t)pli;
-                memcpy(s_colonize_pending[s_colonize_pending_num].name, cname, PLANET_NAME_LEN);
-                ++s_colonize_pending_num;
+            if (pli < g->galaxy_stars) {
+                if (s_colonize_pending_num < MP_COLONIZE_MAX) {
+                    s_colonize_pending[s_colonize_pending_num].pi = pi;
+                    s_colonize_pending[s_colonize_pending_num].pli = (planet_id_t)pli;
+                    memcpy(s_colonize_pending[s_colonize_pending_num].name, cname, PLANET_NAME_LEN);
+                    ++s_colonize_pending_num;
+                } else { log_warning("MP: server colonize-pending queue full (%d) -- dropping colonize from player %d\n", MP_COLONIZE_MAX, (int)pi); }
             }
         }
     }

@@ -189,6 +189,20 @@ static void ui_mp_diplo_msgbox(struct game_s *g, player_id_t pi, player_id_t pa,
     ui_audience_end(&au);
 }
 
+/* 1oom-mp: Esc -> Save in a networked game. The single-player save would only write a LOCAL,
+   non-resumable file on this machine; instead ask the authoritative SERVER to write a named snapshot
+   (mp_save_<game_id>_y<year>.blob, resumable with -mpload), then confirm. */
+void ui_mp_save_game(struct game_s *g)
+{
+    int pi;
+    if (!g_mp_cl_diplo_send) { return; } /* not in a live MP turn */
+    g_mp_cl_diplo_send(MP_MSG_SAVE_REQUEST, NULL, 0);
+    pi = mp_cl_player_id();
+    if ((pi >= 0) && (pi < g->players)) {
+        ui_mp_diplo_msgbox(g, (player_id_t)pi, (player_id_t)pi, "Our records are committed to the archives. (Game saved on the server.)");
+    }
+}
+
 /* proposer side of an open session: pick a treaty action (the legacy menu), relay it live, and
    show the responder's live answer. Consensual deals are applied by the RESPONDER's ACCEPT record;
    unilateral acts (declare war / break treaty) are recorded here. */
@@ -515,6 +529,7 @@ static uint8_t s_team_prop_stance = 0;
 static uint32_t s_team_prop_await = 0;
 static int s_team_prop_result = 0;   /* 1 approved, 2 rejected, 0 none -> a pump breakout for _handle */
 static int s_team_prop_announce = -1;/* enemy to confirm "proposal sent" once back on the starmap (avoids a nested modal), -1 none */
+static bool s_team_prop_busy = false;/* 1oom-mp: the pending confirm is a "one proposal already out, please wait" notice, not "sent" */
 /* teammate side: an incoming proposal to vote on (drives the starmap banner). */
 static int s_team_vote_from = -1, s_team_vote_enemy = -1;
 static uint8_t s_team_vote_stance = 0;
@@ -546,7 +561,7 @@ static bool mp_team_stance_propose(struct game_s *g, player_id_t pi, player_id_t
     uint32_t await = 0;
     if (!g_mp_cl_diplo_send) { return false; }   /* not a live MP turn */
     if (g->mp_team[pi] == 0) { return false; }    /* not on a team */
-    if (s_team_prop_enemy >= 0) { s_team_prop_announce = enemy; return true; } /* one at a time: re-confirm, don't apply */
+    if (s_team_prop_enemy >= 0) { s_team_prop_announce = enemy; s_team_prop_busy = true; return true; } /* one proposal at a time: notify (don't apply/send a 2nd), so it isn't silently dropped */
     for (player_id_t t = PLAYER_0; t < g->players; ++t) {
         if ((t == pi) || (g->mp_team[t] != g->mp_team[pi]) || (!IS_HUMAN(g, t))) { continue; }
         await |= (1u << t);
@@ -600,7 +615,13 @@ bool ui_mp_diplo_pump(int pi)
                 else if (tkind == MP_TEAM_KIND_PROPOSE) {                 /* a teammate asks me to vote */
                     s_team_vote_from = tfrom; s_team_vote_enemy = tenemy; s_team_vote_stance = (uint8_t)tst;
                 } else if (tkind == MP_TEAM_KIND_VOTE) {                  /* a vote on my proposal (proposer side) */
-                    if ((s_team_prop_enemy == tenemy) && (s_team_prop_stance == (uint8_t)tst) && (s_team_prop_result == 0)) {
+                    /* 1oom-mp: only count a vote from a teammate we are ACTUALLY awaiting -- bound tfrom
+                       (1u<<tfrom is UB for tfrom>=32) and require its await bit set, so a stray / duplicate
+                       / spoofed vote can't clear the wrong bit or drive the tally to "approved" without
+                       real unanimous assent. */
+                    if ((tfrom >= 0) && (tfrom < MP_MAX_PLAYERS)
+                     && (s_team_prop_enemy == tenemy) && (s_team_prop_stance == (uint8_t)tst) && (s_team_prop_result == 0)
+                     && (s_team_prop_await & (1u << tfrom))) {
                         if (!tacc) { s_team_prop_result = 2; s_team_prop_await = 0; }              /* any refusal kills it */
                         else { s_team_prop_await &= ~(1u << tfrom); if (s_team_prop_await == 0) { s_team_prop_result = 1; } }
                     }
@@ -627,13 +648,17 @@ int ui_mp_team_vote_pending(void) { return s_team_vote_from; }
 void ui_mp_diplo_handle(struct game_s *g, int pi)
 {
     if (s_team_prop_announce >= 0) {             /* confirm a just-sent proposal, now that the audience has closed */
-        player_id_t e = (player_id_t)s_team_prop_announce; s_team_prop_announce = -1;
-        ui_mp_diplo_msgbox(g, pi, e, "Our envoy will consult our allies; we shall have their answer soon.");
+        player_id_t e = (player_id_t)s_team_prop_announce; bool busy = s_team_prop_busy;
+        s_team_prop_announce = -1; s_team_prop_busy = false;
+        ui_mp_diplo_msgbox(g, pi, e, busy
+            ? "An envoy is already consulting our allies; we must await their answer." /* 1oom-mp: a 2nd proposal while one is pending -- tell the player, don't silently drop it */
+            : "Our envoy will consult our allies; we shall have their answer soon.");
         return;
     }
     if (s_team_enact_from >= 0) {                /* a teammate's proposal passed -> apply it on my client too */
         player_id_t a = (player_id_t)s_team_enact_from, e = (player_id_t)s_team_enact_enemy; uint8_t st = s_team_enact_stance;
         s_team_enact_from = -1;
+        if ((a >= g->players) || (e >= g->players)) { return; } /* 1oom-mp: reject out-of-range ids from the wire (would OOB-index eto[]/race tables in apply+msgbox) */
         mp_team_stance_apply(g, a, e, st);
         ui_mp_diplo_msgbox(g, pi, e, "Our alliance has agreed a new course; it is done.");
         return;
@@ -658,6 +683,7 @@ void ui_mp_diplo_handle(struct game_s *g, int pi)
     if (s_team_vote_from >= 0) {                  /* an ally asks me to assent to a stance (teammate side) */
         int from = s_team_vote_from; player_id_t e = (player_id_t)s_team_vote_enemy; uint8_t st = s_team_vote_stance;
         s_team_vote_from = -1;
+        if ((from < 0) || (from >= (int)g->players) || (e >= g->players)) { return; } /* 1oom-mp: reject out-of-range ids from the wire (au.pa + game_str_tbl_race[eto[e].race]) */
         const char *act = (st == MP_TEAM_STANCE_PEACE) ? "make peace with"
                         : (st == MP_TEAM_STANCE_NAP)   ? "sign a non-aggression pact with"
                         : (st == MP_TEAM_STANCE_WAR)   ? "declare war on"
@@ -821,8 +847,13 @@ ui_turn_action_t ui_game_turn(struct game_s *g, int *load_game_i_ptr, int pi)
     /* 1oom-mp teams: a stance proposal lives for one turn. Clear any that didn't resolve so a
        disconnected / AFK / just-eliminated ally can't leave the proposer stuck awaiting a vote that
        will never come (mirrors how an unanswered audience invite lapses at the turn boundary). */
-    s_team_prop_enemy = -1; s_team_prop_stance = 0; s_team_prop_await = 0; s_team_prop_result = 0; s_team_prop_announce = -1;
+    s_team_prop_enemy = -1; s_team_prop_stance = 0; s_team_prop_await = 0; s_team_prop_result = 0; s_team_prop_announce = -1; s_team_prop_busy = false;
     s_team_vote_from = -1; s_team_enact_from = -1;
+    /* 1oom-mp: likewise drop any leftover p2p audience invite/session state at turn start (mirrors the
+       server's per-turn session teardown). Otherwise an invite that lapsed unanswered leaves a stale
+       "<race> requests an audience" prompt, and a half-finished handshake leaves us thinking we're still
+       mid-session -- the client/server disagree and diplomacy appears stuck ("engaged in an audience"). */
+    s_mp_diplo_invite_from = -1; s_mp_diplo_invite_to = -1; s_mp_diplo_invite_result = 0; s_mp_diplo_sess_open = false;
     if (g->gaux->local_players > 1) {
         while (ui_switch_1_opts(g, pi)) {
             switch (ui_gameopts(g, load_game_i_ptr)) {

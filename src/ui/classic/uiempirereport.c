@@ -163,7 +163,7 @@ void ui_empirereport(struct game_s *g, player_id_t active_player, player_id_t pi
     d.pi = pi;
 
     game_update_production(g);
-    game_update_empire_contact(g);
+    if (!ui_mp_active) { game_update_empire_contact(g); } /* 1oom-mp: mirror the races-screen guard -- a client recompute clobbers the server's pooled team contact */
     game_update_maint_costs(g);
 
     uiobj_table_clear();

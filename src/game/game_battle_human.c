@@ -107,12 +107,20 @@ static void game_battle_place_items(struct battle_s *bt)
         bt->item[0].sx = x;
         bt->item[0].sy = y;
     }
+    /* 1oom-mp: a defending side owns the planet, which sits in its 2nd column (col 1 for L, col 8 for R).
+       The classic <=8-ship case stays in the edge column (0 / 9) so it never overlapped; a combined fleet
+       spilling >8 stacks reaches the planet's column and stacked a ship on its own planet (row 3). Skip
+       the planet's column when spilling for the side that owns it, so ships fill around it. */
     for (int i = 1; i <= bt->s[SIDE_L].items; ++i) {
-        bt->item[i].sx = (i - 1) / BATTLE_AREA_H;                                            /* columns 0,1,2 */
+        int col = (i - 1) / BATTLE_AREA_H;                                       /* 0,1,2 ... */
+        if ((bt->planet_side == SIDE_L) && (col >= 1)) { ++col; }                /* planet in col 1 -> spill 0,2,3 */
+        bt->item[i].sx = col;
         bt->item[i].sy = tbl_starty[(i - 1) % BATTLE_AREA_H];
     }
     for (int i = 1; i <= bt->s[SIDE_R].items; ++i) {
-        bt->item[i + bt->s[SIDE_L].items].sx = (BATTLE_AREA_W - 1) - (i - 1) / BATTLE_AREA_H; /* columns 9,8,7 */
+        int col = (i - 1) / BATTLE_AREA_H;
+        if ((bt->planet_side == SIDE_R) && (col >= 1)) { ++col; }                /* planet in col 8 -> spill 9,7,6 */
+        bt->item[i + bt->s[SIDE_L].items].sx = (BATTLE_AREA_W - 1) - col;
         bt->item[i + bt->s[SIDE_L].items].sy = tbl_starty[(i - 1) % BATTLE_AREA_H];
     }
     for (int i = 0; i < bt->num_rocks; ++i) {
@@ -506,6 +514,22 @@ static void game_battle_item_finish(struct battle_s *bt, bool flag_quick)
     game_battle_missile_remove_unused(bt);
 }
 
+/* 1oom-mp teams: per-OWNER "Auto" for combined fleets. On a side with 2+ human owners (a combined
+   human+human fleet), one human picking Auto must hand over only ITS OWN ships to the AI, not the
+   whole side -- otherwise it would auto-pilot the teammate's ships too. Tracked here (server-local,
+   NOT in the wire battle_s), reset per battle. On a single-owner side (every SP battle, plus a
+   human+AI-ally side) Auto still sets the per-side flag_auto, preserving the original fast-resolve. */
+static bool s_battle_owner_auto[PLAYER_NUM];
+static int game_battle_side_human_owners(const struct battle_s *bt, battle_side_i_t side)
+{
+    int n = 0;
+    for (int k = 0; k < (int)bt->s[side].num_parties; ++k) {
+        int p = bt->s[side].parties[k];
+        if ((p >= 0) && (p < PLAYER_NUM) && IS_HUMAN(bt->g, p)) { ++n; }
+    }
+    return n;
+}
+
 static void game_battle_with_human_init(struct battle_s *bt)
 {
     /* from ui_battle_do */
@@ -530,6 +554,7 @@ static void game_battle_with_human_init(struct battle_s *bt)
         bt->s[SIDE_L].tbl_ships[i] = 0;
         bt->s[SIDE_R].tbl_ships[i] = 0;
     }
+    for (int i = 0; i < PLAYER_NUM; ++i) { s_battle_owner_auto[i] = false; } /* 1oom-mp: fresh per-owner Auto state each battle */
     if ((bt->planet_side != SIDE_NONE) && (bt->bases > 0)) {
         bt->s[bt->planet_side].flag_have_scan = true;
     }
@@ -1263,6 +1288,7 @@ static void game_battle_with_human_do_turn_ai(struct battle_s *bt)
                 bt->s[i].flag_auto = 0;
             }
         }
+        for (int p = 0; p < PLAYER_NUM; ++p) { if (IS_HUMAN(bt->g, p)) { s_battle_owner_auto[p] = false; } } /* 1oom-mp: clicking to resume control also un-Autos every human owner */
     }
     if ((b->cloak == 2) && (b->stasisby == 0)) {
         if (!bt->autoresolve) {
@@ -1320,6 +1346,7 @@ static void game_battle_with_human_do_sub3(struct battle_s *bt)
             while (!flag_turn_done) {
                 ui_battle_action_t act;
                 bool item_is_ai = (b->owner >= 0) && (b->owner < PLAYER_NUM) && !IS_HUMAN(bt->g, b->owner); /* 1oom-mp teams: per-stack control -- an AI-owned stack on a mixed (human+AI) side auto-moves */
+                bool item_owner_auto = (b->owner >= 0) && (b->owner < PLAYER_NUM) && s_battle_owner_auto[b->owner]; /* 1oom-mp teams: this human owner picked Auto -> the AI moves ITS stacks, leaving teammates interactive */
                 if (!bt->autoresolve) {
                     ui_battle_turn_pre(bt);
                 }
@@ -1344,8 +1371,8 @@ static void game_battle_with_human_do_sub3(struct battle_s *bt)
                 b->selected = 1;
                 bt->flag_cur_item_destroyed = false;
                 bt->num_repulsed = 0;
-                if (bt->s[b->side].flag_auto || (b->retreat > 0) || item_is_ai) {
-                    if (bt->s[b->side].flag_human && bt->autoretreat && (b->retreat == 0) && !item_is_ai) {
+                if (bt->s[b->side].flag_auto || (b->retreat > 0) || item_is_ai || item_owner_auto) {
+                    if (bt->s[b->side].flag_human && bt->autoretreat && (b->retreat == 0) && !item_is_ai && !item_owner_auto) {
                         b->retreat = 1;
                     } else {
                         game_battle_with_human_do_turn_ai(bt);
@@ -1385,7 +1412,15 @@ static void game_battle_with_human_do_sub3(struct battle_s *bt)
                     }
                     /*4ee70*/
                     if (act == UI_BATTLE_ACT_AUTO) {
-                        bt->s[b->side].flag_auto = 1;
+                        /* 1oom-mp teams: a combined human+human side must NOT have one player's Auto flip
+                           the whole side (that auto-pilots the teammate's ships too). Set per-owner Auto
+                           instead; the single-owner case (every SP battle + a human+AI-ally side) keeps the
+                           original per-side flag_auto so Auto still fast-resolves. */
+                        if (game_battle_side_human_owners(bt, b->side) > 1) {
+                            if ((b->owner >= 0) && (b->owner < PLAYER_NUM)) { s_battle_owner_auto[b->owner] = true; }
+                        } else {
+                            bt->s[b->side].flag_auto = 1;
+                        }
                         if (b->missile == 0) {
                             b->missile = 1;
                         }

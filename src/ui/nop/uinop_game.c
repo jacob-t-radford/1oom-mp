@@ -282,7 +282,7 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
         int n = mp_battle_human_owners(bt, players, NULL); /* 1oom-mp: tear down every human owner's battle UI */
         if (n > 0) {
             static uint8_t buf[sizeof(struct battle_s) + 8];
-            int32_t w = winner; uint8_t resp[2] = { 0, 0 };
+            int32_t w = winner; uint8_t resp[2 * BATTLE_SIDE_PARTIES_MAX] = { 0 }; /* 1oom-mp: one ack byte PER human owner (BATTLE_END returns 0, COMBAT_REPORT returns 1) -- size for the whole coalition like players[] above, not the old 2, else >=3 human owners overflow the stack */
             memcpy(buf, bt, sizeof(struct battle_s));
             buf[sizeof(struct battle_s)] = colony_destroyed ? 1 : 0;
             memcpy(buf + sizeof(struct battle_s) + 1, &w, 4);
