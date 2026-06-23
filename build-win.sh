@@ -1,7 +1,7 @@
 #!/bin/bash
 # Cross-compile the 1oom-mp fork into a Windows "unzip-and-play" bundle, from macOS.
 #
-# Output: <workspace>/win-bundle/Surprise.zip   (unzip -> double-click a .bat to play)
+# Output: <workspace>/win-bundle/1oom-mp.zip   (unzip -> double-click a .bat to play)
 #   - "Play Together.bat" : interactive multiplayer launcher -- choose HOST or JOIN (no hardcoded IP).
 #       HOST shows your IP addresses, starts a server + your client, waits for the other player.
 #       JOIN asks for the host's IP and connects.
@@ -23,7 +23,7 @@ SRC="$SCRIPT_DIR"                          # live source = this repo (picks up u
 WORK="$ROOT/fork-win"                      # throwaway cross-build copy
 DATA="$ROOT/game"                          # game data (LBX etc.)
 OUTDIR="$ROOT/win-bundle"
-BUNDLE="$OUTDIR/Surprise"
+BUNDLE="$OUTDIR/1oom-mp"
 
 [ -n "$LLVM" ]   && [ -d "$LLVM" ]   || { echo "ERROR: llvm-mingw toolchain not found in $ROOT (expected llvm-mingw-*-macos-universal)"; exit 1; }
 [ -n "$SDLDIR" ] && [ -d "$SDLDIR" ] || { echo "ERROR: SDL2-mingw not found in $ROOT (expected sdl2-mingw/SDL2-*/x86_64-w64-mingw32)"; exit 1; }
@@ -41,8 +41,8 @@ make -C "$WORK" distclean >/dev/null 2>&1 || true
 # 3. build (the SDL2 client AND the headless server)
 make -C "$WORK"
 
-# 4. assemble the bundle. Obscured names kept from the original "gift": exe -> Play.exe, server ->
-#    Server.exe, data -> data, folder -> Surprise.
+# 4. assemble the bundle: SDL2 client as Play.exe, headless server as Server.exe, the game data,
+#    plus the .bat launchers.
 rm -rf "$BUNDLE"; mkdir -p "$BUNDLE"
 cp "$WORK/src/1oom_classic_sdl2.exe" "$BUNDLE/Play.exe"
 cp "$WORK/src/1oom_server.exe"       "$BUNDLE/Server.exe"   # needed for the HOST option
@@ -89,7 +89,7 @@ goto end
 cls
 echo.
 set "ip="
-set /p "ip=Enter the host's address (just the IP, e.g. 100.125.140.3): "
+set /p "ip=Enter the host's address (just the IP, e.g. 100.x.x.x): "
 if "%ip%"=="" goto join
 echo.
 echo    Connecting to %ip% ...
@@ -107,5 +107,5 @@ BAT
 perl -pi -e 's/(?<!\r)\n/\r\n/g' "$BUNDLE/"*.bat   # Windows (CRLF) line endings
 
 # 5. zip
-( cd "$OUTDIR" && rm -f Surprise.zip && zip -r -9 -q Surprise.zip Surprise )
-echo "Built: $OUTDIR/Surprise.zip"
+( cd "$OUTDIR" && rm -f 1oom-mp.zip && zip -r -9 -q 1oom-mp.zip 1oom-mp )
+echo "Built: $OUTDIR/1oom-mp.zip"

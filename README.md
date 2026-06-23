@@ -47,7 +47,7 @@ The fastest path depends on your group. Everyone needs a working client, a copy 
 
 - **Build from source** (macOS / Linux — see [Building](#building)), **or**
 - **Windows, no build:** the repo includes `build-win.sh`, which cross-compiles an
-  *unzip-and-double-click* Windows bundle (`Surprise.zip`). Its **`Play Together.bat`** launcher just
+  *unzip-and-double-click* Windows bundle (`1oom-mp.zip`). Its **`Play Together.bat`** launcher just
   asks **Host or Join** — no command line needed. (Building the bundle needs an `llvm-mingw` +
   `SDL2-mingw` cross-toolchain; the resulting zip is what you hand to friends.)
 
@@ -186,7 +186,7 @@ copy the `1oom_*` executables and their DLLs into that directory. All players in
 must use the **same data version (1.3)**. See upstream
 [1oom](https://github.com/1oom-fork/1oom) for more on locating the files.
 
-> The Windows `Surprise.zip` bundle ships a `data/` folder so the person you hand it to can play
+> The Windows `1oom-mp.zip` bundle ships a `data/` folder so the person you hand it to can play
 > without locating the files themselves — share it only with people who own the game; **don't post
 > it publicly**, since it contains those copyrighted assets.
 
