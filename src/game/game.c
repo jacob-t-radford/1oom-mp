@@ -1841,7 +1841,9 @@ void ui_mp_team_plan_tick(void) {
 }
 
 /* starmap overlay accessors. */
-void ui_mp_team_plan_reset(void) { for (int i = 0; i < 3; ++i) { s_mp_my_ping[i] = PLANET_NONE; } for (int p = 0; p < MP_MAX_PLAYERS; ++p) { s_team_plan[p].active = false; } }
+/* 1oom-mp: clear the per-turn teammate-plan snapshots. Beacons (s_mp_my_ping) are NOT cleared here --
+   they persist across turns until the player toggles them off, and are re-streamed each planning frame. */
+void ui_mp_team_plan_reset(void) { for (int p = 0; p < MP_MAX_PLAYERS; ++p) { s_team_plan[p].active = false; } }
 /* 1oom-mp teams: toggle a beacon on a planet. If it's already one of my up-to-3 beacons, remove it; else
    add it to a free slot; if all 3 slots are in use, do nothing (the player removes one first). */
 void ui_mp_set_ping(int planet_i) {
