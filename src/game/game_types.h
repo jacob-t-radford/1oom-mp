@@ -96,9 +96,9 @@ typedef enum {
 } galaxy_size_t;
 
 /* 1oom-mp: how many galaxy sizes are SELECTABLE in the UI. Stock 1oom = Small..Huge; the larger
-   Enormous/Galactic sizes (and their uint16 plumbing) stay compiled in but are hidden on this
-   branch. The `larger-maps` branch raises this to GALAXY_SIZE_NUM to re-expose them. */
-#define GALAXY_SIZE_SEL_NUM (GALAXY_SIZE_HUGE + 1)
+   Enormous/Galactic sizes (and their uint16 plumbing) are compiled in. Now exposed (Small..Galactic)
+   in both single-player and the MP lobby. */
+#define GALAXY_SIZE_SEL_NUM (GALAXY_SIZE_NUM)
 
 typedef enum {
     DIFFICULTY_SIMPLE = 0,
