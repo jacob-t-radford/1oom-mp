@@ -4,6 +4,7 @@
 
 #include "uistarmap.h"
 #include "comp.h"
+#include "hw.h"
 #include "game.h"
 #include "game_aux.h"
 #include "game_cheat.h"
@@ -57,22 +58,23 @@ static void ui_starmap_drag_pan(struct starmap_data_s *d)
             sm_drag_px = moouse_x;
             sm_drag_py = moouse_y;
         } else {
-            int div = 2 * starmap_scale;   /* screen px per galaxy unit at the current zoom */
-            if (div < 1) div = 1;
-            int gdx = (moouse_x - sm_drag_px) / div;
-            int gdy = (moouse_y - sm_drag_py) / div;
-            if (gdx || gdy) {
-                int nx = ui_data.starmap.x - gdx;
-                int ny = ui_data.starmap.y - gdy;
-                ui_starmap_clamp_xy(g, &nx, &ny);
-                ui_data.starmap.x = nx;
-                ui_data.starmap.x2 = nx;
-                ui_data.starmap.y = ny;
-                ui_data.starmap.y2 = ny;
-                sm_drag_px += gdx * div;   /* retain sub-galaxy-unit remainder */
-                sm_drag_py += gdy * div;
+            /* 1oom-mp: fractional drag-pan -- move the origin by (cursor delta / F) galaxy units at 1/16
+               precision so dragging is smooth. F = sm_zoom_f16/16 px per galaxy unit; moouse is *ui_scale. */
+            int dpx = moouse_x - sm_drag_px;
+            int dpy = moouse_y - sm_drag_py;
+            int f16 = (sm_zoom_f16 >= 16) ? sm_zoom_f16 : 32;
+            int d16x = (dpx * 256) / f16;   /* galaxy*16 = px * 16 / F = px * 256 / f16 */
+            int d16y = (dpy * 256) / f16;
+            if (d16x || d16y) {
+                int ox16 = (ui_data.starmap.x << 4) + sm_frac_x16 - d16x;
+                int oy16 = (ui_data.starmap.y << 4) + sm_frac_y16 - d16y;
+                ui_starmap_set_origin16(g, ox16, oy16);
                 sm_drag_panned = true;
             }
+            /* snap the drag reference to the cursor so a held-still cursor produces zero delta (no creep);
+               with f16 <= 256 a 1px move always yields d16 >= 1, so this doesn't stall the pan. */
+            sm_drag_px = moouse_x;
+            sm_drag_py = moouse_y;
         }
     } else {
         sm_drag_active = false;
@@ -364,6 +366,18 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
         p = &g->planet[g->planet_focus_i[active_player]];
         uiobj_set_help_id((p->owner == active_player) ? 0 : 3);
         scrollmisc = 0;
+        /* 1oom-mp: trackpad / wheel over the galaxy map -> fine CONTINUOUS zoom at the cursor. We must pump
+           events ourselves first: uiobj_handle_input_cond() pumps and then ZEROES mouse_scroll internally,
+           so reading it before that always saw 0 and the zoom fell back to the coarse scroll-area path.
+           hw_event_handle() drains the SDL queue (each event is polled once); uiobj's later pump finds it
+           empty. Consume the scroll so the scroll-area's coarse integer step doesn't also fire; scrolls
+           outside the map (ship list, name, etc.) leave mouse_scroll for uiobj. */
+        hw_event_handle();
+        if (mouse_scroll && (moouse_x >= 6 * ui_scale) && (moouse_x < 222 * ui_scale) && (moouse_y >= 6 * ui_scale) && (moouse_y < 178 * ui_scale)) {
+            ui_starmap_zoom_to_f16(g, sm_zoom_f16 - mouse_scroll * 2, moouse_x, moouse_y); /* scroll up (=-1) -> zoom in; moouse is *ui_scale coords */
+            d.scrollz = starmap_scale;
+            mouse_scroll = 0;
+        }
         oi1 = uiobj_handle_input_cond();
         /* 1oom-mp: a drag pans the map; swallow the click-recenter that
            would otherwise fire on button release after a drag. */
@@ -792,10 +806,12 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             }
             STARMAP_UIOBJ_FILL_FX();
             if ((p->owner == active_player) && p->missile_bases) {
-                oi_b = uiobj_add_mousearea(272, 59, 312, 67, MOO_KEY_b);
+                /* 1oom-mp: scrap-bases keeps its on-screen button but releases the 'b' key, which is now the
+                   team beacon toggle (see oi_ping below). */
+                oi_b = uiobj_add_mousearea(272, 59, 312, 67, MOO_KEY_UNKNOWN);
             }
             if (ui_mp_turn_active && ui_mp_turn_active() && (g->mp_team[active_player] != 0)) {
-                oi_ping = uiobj_add_inputkey(MOO_KEY_p); /* 1oom-mp teams: flag the focused world for my allies */
+                oi_ping = uiobj_add_inputkey(MOO_KEY_b); /* 1oom-mp teams: toggle a beacon on the focused world for my allies (up to 3) */
             }
             oi_c = uiobj_add_inputkey(MOO_KEY_c);
             if (ui_mp_turn_active && ui_mp_turn_active() && ((ui_mp_diplo_invite_pending() >= 0) || (ui_mp_team_vote_pending() >= 0))) {
@@ -824,10 +840,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             }
             ui_starmap_fill_oi_tbls(&d);
             if (!ui_sm_no_question_mark_cursor && BOOLVEC_IS1(p->explored, active_player)) {
-                int x0, y0;
-                x0 = (p->x - ui_data.starmap.x) * 2 + 6;
-                y0 = (p->y - ui_data.starmap.y) * 2 + 6;
-                oi_starview1 = uiobj_add_mousearea_limited(x0, y0, x0 + 16, y0 + 16, starmap_scale, MOO_KEY_UNKNOWN);
+                oi_starview1 = sm_add_galaxy_mousearea(p->x, p->y, 6, 6, 22, 22);
             }
             ui_starmap_fill_oi_tbl_stars(&d);
             if (ui_sm_no_question_mark_cursor && BOOLVEC_IS1(p->explored, active_player)) {
@@ -838,8 +851,8 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             ui_starmap_fill_oi_ctrl(&d);
             if (1) {
                 int x0, y0, x1, y1;
-                x0 = ((p->x - ui_data.starmap.x) * 2 + 6) * starmap_scale;
-                y0 = ((p->y - ui_data.starmap.y) * 2 + 6) * starmap_scale;
+                x0 = ui_starmap_ovl_x(p->x, 6) * starmap_scale;
+                y0 = ui_starmap_ovl_y(p->y, 6) * starmap_scale;
                 x1 = x0 + 16 * starmap_scale;
                 y1 = y0 + 16 * starmap_scale;
                 ui_cursor_area_tbl[7].x0 = x0;

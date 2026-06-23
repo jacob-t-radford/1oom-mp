@@ -40,8 +40,8 @@ static void ui_starmap_transport_draw_cb(void *vptr)
     ui_starmap_draw_basic(d);
     {
         int x, y;
-        x = (r->x - ui_data.starmap.x) * 2 + 5;
-        y = (r->y - ui_data.starmap.y) * 2 + 5;
+        x = ui_starmap_ovl_x(r->x, 5);
+        y = ui_starmap_ovl_y(r->y, 5);
         lbxgfx_draw_frame_offs_delay(x, y, !d->anim_delay, ui_data.gfx.starmap.shipbord, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
     }
     ui_draw_filled_rect(225, 8, 314, 180, 7, ui_scale);
@@ -62,11 +62,11 @@ static void ui_starmap_transport_draw_cb(void *vptr)
         uint8_t *gfx;
         int x0, y0, x1, y1, dist;
         bool dest_ok = true;
-        x1 = (pt->x - ui_data.starmap.x) * 2 + 8;
-        y1 = (pt->y - ui_data.starmap.y) * 2 + 8;
+        x1 = ui_starmap_ovl_x(pt->x, 8);
+        y1 = ui_starmap_ovl_y(pt->y, 8);
         lbxgfx_draw_frame_offs_delay(x1, y1, !d->anim_delay, ui_data.gfx.starmap.planbord, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
-        x0 = (r->x - ui_data.starmap.x) * 2 + 8;
-        y0 = (r->y - ui_data.starmap.y) * 2 + 8;
+        x0 = ui_starmap_ovl_x(r->x, 8);
+        y0 = ui_starmap_ovl_y(r->y, 8);
         if (d->controllable) {
             dest_ok = game_transport_dest_ok(g, pt, d->api);
         }
@@ -77,8 +77,8 @@ static void ui_starmap_transport_draw_cb(void *vptr)
         }
         if (ui_extra_enabled && ui_data.starmap.flag_show_own_routes && (r->owner == d->api)) {
             int x2, y2;
-            x2 = (pd->x - ui_data.starmap.x) * 2 + 8;
-            y2 = (pd->y - ui_data.starmap.y) * 2 + 8;
+            x2 = ui_starmap_ovl_x(pd->x, 8);
+            y2 = ui_starmap_ovl_y(pd->y, 8);
             ui_draw_line_limit_ctbl(x0 + 4, y0 + 1, x2 + 6, y2 + 6, colortbl_line_green, 5, ui_data.starmap.line_anim_phase, starmap_scale);
         }
         gfx = ui_data.gfx.starmap.smaltran[e->banner];

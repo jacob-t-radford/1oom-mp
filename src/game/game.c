@@ -1728,12 +1728,12 @@ struct mp_team_plan_s {
     struct { uint16_t planet; planet_t p; } sl[PLANETS_MAX]; /* a teammate's owned worlds, full live state */
     int orbit_num;
     uint16_t orbit[PLANETS_MAX]; /* planets where this teammate has ships orbiting live this turn */
-    uint16_t ping;               /* 1oom-mp teams: a planet this teammate flagged for the team, PLANET_NONE = none */
+    uint16_t ping[3];            /* 1oom-mp teams: up to 3 planets this teammate flagged for the team, PLANET_NONE = empty */
 };
 static struct mp_team_plan_s s_team_plan[MP_MAX_PLAYERS];
 static uint8_t *s_team_plan_buf = NULL;
 static int s_team_plan_cap = 0;
-static int s_mp_my_ping = PLANET_NONE; /* 1oom-mp teams: the planet I've flagged for my team this turn */
+static int s_mp_my_ping[3] = { PLANET_NONE, PLANET_NONE, PLANET_NONE }; /* 1oom-mp teams: up to 3 planets (beacons) I've flagged for my team this turn */
 
 /* client: a teammate's plan snapshot arrived -> store it for the starmap overlay. */
 static void mp_team_plan_recv(const void *data, int len) {
@@ -1767,8 +1767,8 @@ static void mp_team_plan_recv(const void *data, int len) {
     tp->orbit_num = 0;
     TPGET(&n, 2);
     for (int i = 0; i < (int)n; ++i) { uint16_t pli; TPGET(&pli, 2); if (tp->orbit_num < PLANETS_MAX) { tp->orbit[tp->orbit_num++] = pli; } }
-    tp->ping = (uint16_t)PLANET_NONE; /* 1oom-mp teams: optional trailing map-ping (back-compatible: absent -> none) */
-    { uint16_t pg; if (pos + 2 <= len) { memcpy(&pg, buf + pos, 2); pos += 2; tp->ping = pg; } }
+    for (int i = 0; i < 3; ++i) { tp->ping[i] = (uint16_t)PLANET_NONE; } /* 1oom-mp teams: up to 3 trailing map-beacons (back-compatible: absent -> none) */
+    for (int i = 0; i < 3; ++i) { uint16_t pg; if (pos + 2 <= len) { memcpy(&pg, buf + pos, 2); pos += 2; tp->ping[i] = pg; } }
     tp->active = true;
 #undef TPGET
     { static bool logged = false; if (!logged) { logged = true; log_message("MP: live team-plan relay active (first snapshot from P%d: %d fleets)\n", sender, tp->fleet_num); } }
@@ -1785,20 +1785,25 @@ void ui_mp_team_plan_tick(void) {
     {
         int len = game_mp_write_team_plan(&game, (player_id_t)s_mp_my_pid, s_team_plan_buf, s_team_plan_cap);
         if (len > 0) {
-            if (len + 2 <= s_team_plan_cap) { uint16_t pg = (uint16_t)s_mp_my_ping; memcpy(s_team_plan_buf + len, &pg, 2); len += 2; } /* 1oom-mp teams: append my map-ping */
+            for (int i = 0; (i < 3) && (len + 2 <= s_team_plan_cap); ++i) { uint16_t pg = (uint16_t)s_mp_my_ping[i]; memcpy(s_team_plan_buf + len, &pg, 2); len += 2; } /* 1oom-mp teams: append my up-to-3 map-beacons */
             g_mp_cl_team_plan_send(s_team_plan_buf, len);
         }
     }
 }
 
 /* starmap overlay accessors. */
-void ui_mp_team_plan_reset(void) { s_mp_my_ping = PLANET_NONE; for (int p = 0; p < MP_MAX_PLAYERS; ++p) { s_team_plan[p].active = false; } }
-/* 1oom-mp teams: flag/unflag a planet for my teammates (re-pinging the same one clears it). */
-void ui_mp_set_ping(int planet_i) { s_mp_my_ping = (s_mp_my_ping == planet_i) ? PLANET_NONE : planet_i; }
-/* the teammate (banner) who has flagged planet_i for the team this turn, else -1. */
+void ui_mp_team_plan_reset(void) { for (int i = 0; i < 3; ++i) { s_mp_my_ping[i] = PLANET_NONE; } for (int p = 0; p < MP_MAX_PLAYERS; ++p) { s_team_plan[p].active = false; } }
+/* 1oom-mp teams: toggle a beacon on a planet. If it's already one of my up-to-3 beacons, remove it; else
+   add it to a free slot; if all 3 slots are in use, do nothing (the player removes one first). */
+void ui_mp_set_ping(int planet_i) {
+    for (int i = 0; i < 3; ++i) { if (s_mp_my_ping[i] == planet_i) { s_mp_my_ping[i] = PLANET_NONE; return; } }
+    for (int i = 0; i < 3; ++i) { if (s_mp_my_ping[i] == PLANET_NONE) { s_mp_my_ping[i] = planet_i; return; } }
+}
+/* the teammate (banner) who has a beacon on planet_i this turn, else -1. */
 int ui_mp_team_plan_ping_at(int planet_i) {
-    if ((s_mp_my_ping == planet_i) && (s_mp_my_pid >= 0)) { return s_mp_my_pid; } /* my own ping, so I see what I flagged */
-    for (int p = 0; p < MP_MAX_PLAYERS; ++p) { if (s_team_plan[p].active && (s_team_plan[p].ping == (uint16_t)planet_i)) { return p; } }
+    if (planet_i == PLANET_NONE) { return -1; }
+    if (s_mp_my_pid >= 0) { for (int i = 0; i < 3; ++i) { if (s_mp_my_ping[i] == planet_i) { return s_mp_my_pid; } } } /* my own beacons, so I see what I flagged */
+    for (int p = 0; p < MP_MAX_PLAYERS; ++p) { if (s_team_plan[p].active) { for (int i = 0; i < 3; ++i) { if (s_team_plan[p].ping[i] == (uint16_t)planet_i) { return p; } } } }
     return -1;
 }
 bool ui_mp_team_plan_active(int player) {

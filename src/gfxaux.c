@@ -964,6 +964,30 @@ void gfx_aux_draw_frame_from_limit(int x, int y, struct gfx_aux_s *aux, int lx0,
     gfx_aux_draw_frame_from_limit_do(x0, y0, w, h, xskip, yskip, aux, pitch, scale);
 }
 
+/* 1oom-mp: like gfx_aux_draw_frame_from_limit, but (ax,ay) is an ABSOLUTE pixel position (NOT multiplied
+   by scale); the glyph is still magnified `scale`x. This lets the starmap place a star icon at its exact
+   continuous pixel position while the icon SIZE steps independently -- so icons resize in place without
+   the position re-gridding ("shift") that the usual pos*scale causes when scale changes. lx0..ly1 are in
+   absolute pixels. Edge clipping is to whole source columns/rows (sub-`scale` slack at the border). */
+void gfx_aux_draw_frame_at_limit(int ax, int ay, struct gfx_aux_s *aux, int lx0, int ly0, int lx1, int ly1, uint16_t pitch, int scale)
+{
+    int gw = aux->w * scale, gh = aux->h * scale;
+    int xskip, yskip, x0, y0, sw, sh, last;
+    if ((ax > lx1) || (ay > ly1)) { return; }
+    if ((ax + gw - 1 < lx0) || (ay + gh - 1 < ly0)) { return; }
+    if (ax >= lx0) { xskip = 0; x0 = ax; } else { xskip = (lx0 - ax + scale - 1) / scale; x0 = ax + xskip * scale; }
+    if (ay >= ly0) { yskip = 0; y0 = ay; } else { yskip = (ly0 - ay + scale - 1) / scale; y0 = ay + yskip * scale; }
+    last = (ax + gw - 1 < lx1) ? (ax + gw - 1) : lx1; sw = (last - x0 + 1) / scale;
+    last = (ay + gh - 1 < ly1) ? (ay + gh - 1) : ly1; sh = (last - y0 + 1) / scale;
+    if ((sw <= 0) || (sh <= 0)) { return; }
+    {
+        uint8_t *p = hw_video_get_buf() + (y0 * pitch + x0);
+        uint8_t *q = aux->data + yskip * aux->w + xskip;
+        if (scale == 1) { gfx_aux_draw_frame_1x(q, p, sw, sh, aux->w, pitch); }
+        else { gfx_aux_draw_frame_nx(q, p, sw, sh, aux->w, pitch, scale); }
+    }
+}
+
 void gfx_aux_draw_frame_from_rotate_limit(int x0, int y0, int x1, int y1, struct gfx_aux_s *aux, int lx0, int ly0, int lx1, int ly1, uint16_t pitch, int scale)
 {
     int h = aux->h, angle, angle2, x2, y2, x3, y3, xo, yo, v;

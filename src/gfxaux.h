@@ -26,6 +26,7 @@ extern void gfx_aux_draw_cloak(struct gfx_aux_s *aux, uint8_t percent, uint16_t 
 extern void gfx_aux_draw_frame_to(uint8_t *data, struct gfx_aux_s *aux);
 extern void gfx_aux_draw_frame_from(int x, int y, struct gfx_aux_s *aux, uint16_t pitch, int scale);
 extern void gfx_aux_draw_frame_from_limit(int x, int y, struct gfx_aux_s *aux, int lx0, int ly0, int lx1, int ly1, uint16_t pitch, int scale);
+extern void gfx_aux_draw_frame_at_limit(int ax, int ay, struct gfx_aux_s *aux, int lx0, int ly0, int lx1, int ly1, uint16_t pitch, int scale); /* 1oom-mp: (ax,ay) absolute px, glyph magnified scale x */
 extern void gfx_aux_draw_frame_from_rotate_limit(int x0, int y0, int x1, int y1, struct gfx_aux_s *aux, int lx0, int ly0, int lx1, int ly1, uint16_t pitch, int scale);
 
 #endif

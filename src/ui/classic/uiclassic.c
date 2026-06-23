@@ -174,6 +174,9 @@ int ui_screen_h = 0;
 int ui_scale = 0;
 int ui_scale_hint = 0;
 int starmap_scale = 0;
+int sm_zoom_f16 = 0; /* 1oom-mp: continuous map zoom -- screen px per galaxy unit, 4-bit fixed point (0 = uninit -> derived from starmap_scale). starmap_scale stays the integer ICON scale = round(F/2). */
+int sm_frac_x16 = 0; /* 1oom-mp: sub-unit (1/16 galaxy unit) fractional part of the pan origin, X, for smooth pan/zoom */
+int sm_frac_y16 = 0;
 bool ui_extra_enabled = false;
 bool ui_fixbugs_enabled = false;
 bool ui_illogical_hotkey_fix = false;

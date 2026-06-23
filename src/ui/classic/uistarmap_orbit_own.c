@@ -46,8 +46,8 @@ static void ui_starmap_orbit_own_draw_cb(void *vptr)
     ui_starmap_draw_basic(d);
     {
         int x, y;
-        x = (pf->x - ui_data.starmap.x) * 2 + 23;
-        y = (pf->y - ui_data.starmap.y) * 2 + 5;
+        x = ui_starmap_ovl_x(pf->x, 23);
+        y = ui_starmap_ovl_y(pf->y, 5);
         lbxgfx_draw_frame_offs_delay(x, y, !d->anim_delay, ui_data.gfx.starmap.shipbord, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
     }
     ui_draw_filled_rect(225, 8, 314, 192, 7, ui_scale);
@@ -64,11 +64,11 @@ static void ui_starmap_orbit_own_draw_cb(void *vptr)
         int x0, y0, x1, y1;
         const uint8_t *ctbl;
         uint8_t *gfx;
-        x1 = (pt->x - ui_data.starmap.x) * 2 + 8;
-        y1 = (pt->y - ui_data.starmap.y) * 2 + 8;
+        x1 = ui_starmap_ovl_x(pt->x, 8);
+        y1 = ui_starmap_ovl_y(pt->y, 8);
         lbxgfx_draw_frame_offs_delay(x1, y1, !d->anim_delay, ui_data.gfx.starmap.planbord, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
-        x0 = (pf->x - ui_data.starmap.x) * 2 + 26;
-        y0 = (pf->y - ui_data.starmap.y) * 2 + 8;
+        x0 = ui_starmap_ovl_x(pf->x, 26);
+        y0 = ui_starmap_ovl_y(pf->y, 8);
         ctbl = ui_starmap_orbit_own_in_frange(d) ? colortbl_line_green : colortbl_line_red;
         ui_draw_line_limit_ctbl(x0 + 3, y0 + 1, x1 + 6, y1 + 6, ctbl, 5, ui_data.starmap.line_anim_phase, starmap_scale);
         gfx = ui_data.gfx.starmap.smalship[g->eto[d->api].banner];

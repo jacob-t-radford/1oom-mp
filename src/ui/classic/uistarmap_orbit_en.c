@@ -39,8 +39,8 @@ static void ui_starmap_orbit_en_draw_cb(void *vptr)
     ui_starmap_draw_basic(d);
     {
         int x, y;
-        x = (p->x - ui_data.starmap.x) * 2 + 23;
-        y = (p->y - ui_data.starmap.y) * 2 + 5 + d->oe.yoff;
+        x = ui_starmap_ovl_x(p->x, 23);
+        y = ui_starmap_ovl_y(p->y, 5) + d->oe.yoff;
         lbxgfx_draw_frame_offs_delay(x, y, !d->anim_delay, ui_data.gfx.starmap.shipbord, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
     }
     ui_draw_filled_rect(225, 8, 314, 180, 7, ui_scale);

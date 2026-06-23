@@ -10,7 +10,9 @@
 #define STARMAP_ANIM_DELAY (ui_sm_smoother_scrolling ? 3 : 1)
 #define STARMAP_SCROLLSTEP  (ui_sm_smoother_scrolling ? ui_sm_scroll_speed : 10)
 
-#define STARMAP_LIM_INIT()  const int slx0 = (6 * ui_scale) / starmap_scale, sly0 = (6 * ui_scale) / starmap_scale, slx1 = (222 * ui_scale) / starmap_scale - 1, sly1 = (178 * ui_scale) / starmap_scale - 1
+/* 1oom-mp: non-const so the offscreen starmap render can temporarily widen the clip to the offscreen
+   buffer bounds (see ui_starmap_draw_starmap), then restore. */
+#define STARMAP_LIM_INIT()  int slx0 = (6 * ui_scale) / starmap_scale, sly0 = (6 * ui_scale) / starmap_scale, slx1 = (222 * ui_scale) / starmap_scale - 1, sly1 = (178 * ui_scale) / starmap_scale - 1
 #define STARMAP_TEXT_LIMITS 6 * ui_scale, 6 * ui_scale, 222 * ui_scale - 1, 178 * ui_scale - 1
 #define STARMAP_LIMITS  slx0, sly0, slx1, sly1
 
@@ -175,6 +177,19 @@ extern bool ui_starmap_handle_oi_misc(struct starmap_data_s *d, int16_t oi);
 extern void ui_starmap_handle_oi_ctrl(struct starmap_data_s *d, int16_t oi);
 extern void ui_starmap_handle_scrollkeys(struct starmap_data_s *d, int16_t oi);
 extern void ui_starmap_clamp_xy(const struct game_s *g, int *x, int *y);
+/* 1oom-mp: continuous map zoom. Converts a galaxy-coord delta to render-coord spacing using the
+   fractional sm_zoom_f16 (screen px per galaxy unit, 4-bit fixed pt); replaces the classic "* 2".
+   The draw primitives still multiply the result by starmap_scale (the integer ICON scale = round(F/2)),
+   so star icons step while spacing is smooth. sm_zoom_f16 == 32*starmap_scale reproduces "* 2" exactly. */
+extern int sm_span(int galaxy_delta);
+extern int sm_span_x(int galaxy_delta_x); /* sub-unit-corrected X spacing */
+extern int sm_span_y(int galaxy_delta_y); /* sub-unit-corrected Y spacing */
+extern int ui_starmap_ovl_x(int galaxy_x, int off); /* render-X for a framebuffer overlay draw on the blitted element at galaxy_x + off; replaces sm_span_x(galaxy_x - starmap.x) + off */
+extern int ui_starmap_ovl_y(int galaxy_y, int off);
+extern int16_t sm_add_galaxy_mousearea(int gx, int gy, int ox0, int oy0, int ox1, int oy1); /* clickarea on the blitted galaxy element; box render-coord [2g+o0..2g+o1] */
+extern void ui_starmap_set_origin16(const struct game_s *g, int ox16, int oy16); /* set pan origin from galaxy*16 fixed point */
+extern void ui_starmap_zoom_sync_scale(void); /* derive starmap_scale (icon) from sm_zoom_f16; call after setting either */
+extern void ui_starmap_zoom_to_f16(const struct game_s *g, int new_f16, int mx, int my); /* cursor/centre-anchored zoom to absolute f16 level */
 extern void ui_starmap_draw_basic(struct starmap_data_s *d);
 extern void ui_starmap_draw_starmap(struct starmap_data_s *d);
 extern void ui_starmap_draw_button_text(struct starmap_data_s *d, bool highlight);

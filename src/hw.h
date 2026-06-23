@@ -40,6 +40,9 @@ extern void hw_video_set_palette_color(int i, uint8_t r, uint8_t g, uint8_t b);
 extern void hw_video_refresh_palette(void);
 /* Return back buffer. */
 extern uint8_t *hw_video_get_buf(void);
+/* 1oom-mp: redirect all drawing to a caller-owned 8-bit buffer (NULL = normal framebuffer). Used by the
+   starmap to render the galaxy offscreen for smooth continuous-zoom scaling. */
+extern void hw_video_set_draw_buf(uint8_t *buf);
 /* Return front buffer. */
 extern uint8_t *hw_video_get_buf_front(void);
 /* Draw the current back buffer and return new back buffer. */

@@ -34,13 +34,13 @@ static void ui_starmap_reloc_draw_cb(void *vptr)
     int x0, y0;
     STARMAP_LIM_INIT();
     ui_starmap_draw_basic(d);
-    x0 = (pf->x - ui_data.starmap.x) * 2 + 8;
-    y0 = (pf->y - ui_data.starmap.y) * 2 + 8;
+    x0 = ui_starmap_ovl_x(pf->x, 8);
+    y0 = ui_starmap_ovl_y(pf->y, 8);
     if (g->planet_focus_i[d->api] != d->from) {
         int x1, y1;
         const uint8_t *ctbl;
-        x1 = (pt->x - ui_data.starmap.x) * 2 + 14;
-        y1 = (pt->y - ui_data.starmap.y) * 2 + 14;
+        x1 = ui_starmap_ovl_x(pt->x, 14);
+        y1 = ui_starmap_ovl_y(pt->y, 14);
         if (game_reloc_dest_ok(g, g->planet_focus_i[d->api], d->api)) {
             ctbl = colortbl_line_green;
         } else {

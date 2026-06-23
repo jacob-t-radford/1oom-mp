@@ -1,9 +1,11 @@
 #include "config.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "uistarmap_common.h"
 #include "comp.h"
+#include "hw.h"
 #include "game.h"
 #include "game_aux.h"
 #include "game_fleet.h"
@@ -238,25 +240,71 @@ static void ui_starmap_draw_textbox_finished(const struct game_s *g, player_id_t
     ui_draw_textbox_2str("", game_str_sm_planratio, 110, ui_scale);
 }
 
+/* 1oom-mp: map an OFFSCREEN render coord (origin 0; the galaxy draws there at "*2", i.e. rc = 2*galaxy)
+   to the on-screen window pixel where sm_offscreen_blit() actually places it: winl + (rc/2 - origin)*F,
+   origin = starmap.x + frac/16, F = sm_zoom_f16/16. Used to put click areas under the blitted glyphs. */
+static int sm_blit_win_x(int rc)
+{
+    return 6 * ui_scale + (int)((((long)rc * 8 - (long)ui_data.starmap.x * 16 - sm_frac_x16) * sm_zoom_f16) / 256);
+}
+
+static int sm_blit_win_y(int rc)
+{
+    return 6 * ui_scale + (int)((((long)rc * 8 - (long)ui_data.starmap.y * 16 - sm_frac_y16) * sm_zoom_f16) / 256);
+}
+
+/* Add a clickable area for a galaxy element whose offscreen glyph box is render-coord
+   [2*gx+ox0 .. 2*gx+ox1] x [2*gy+oy0 .. 2*gy+oy1], placed where the downscale-blit draws it on screen.
+   Returns UIOBJI_INVALID if the box falls entirely outside the map window. */
+int16_t sm_add_galaxy_mousearea(int gx, int gy, int ox0, int oy0, int ox1, int oy1)
+{
+    int winl = 6 * ui_scale, wint = 6 * ui_scale, winr = 222 * ui_scale - 1, winb = 178 * ui_scale - 1;
+    int x0 = sm_blit_win_x(2 * gx + ox0);
+    int y0 = sm_blit_win_y(2 * gy + oy0);
+    int x1 = sm_blit_win_x(2 * gx + ox1);
+    int y1 = sm_blit_win_y(2 * gy + oy1);
+    if ((x1 < winl) || (x0 > winr) || (y1 < wint) || (y0 > winb)) {
+        return UIOBJI_INVALID;
+    }
+    SETMAX(x0, winl);
+    SETMAX(y0, wint);
+    SETMIN(x1, winr);
+    SETMIN(y1, winb);
+    /* uiobj stores render coords and multiplies by ui_scale at hit-test; pass screen px / ui_scale. */
+    return uiobj_add_mousearea(x0 / ui_scale, y0 / ui_scale, x1 / ui_scale, y1 / ui_scale, MOO_KEY_UNKNOWN);
+}
+
+/* 1oom-mp: the sub-mode overlays (selector boxes, route lines, fleet sprites) are drawn AFTER the galaxy
+   is blitted, straight to the framebuffer, so they must land where the blit drew the galaxy -- not via the
+   old sm_span transform. These give the render coord (for a scale=starmap_scale draw) that sits on the
+   blitted element at galaxy coord g + render offset off. Drop-in replacement for
+   "sm_span_x(g - ui_data.starmap.x) + off"; relative tweaks like (x0 + 6) keep working because +k render
+   units == +k*starmap_scale screen px == the blit's +k offset (starmap_scale == F/2). */
+int ui_starmap_ovl_x(int galaxy_x, int off)
+{
+    return sm_blit_win_x(2 * galaxy_x + off) / starmap_scale;
+}
+
+int ui_starmap_ovl_y(int galaxy_y, int off)
+{
+    return sm_blit_win_y(2 * galaxy_y + off) / starmap_scale;
+}
+
+/* -------------------------------------------------------------------------- */
+
 static void ui_starmap_add_oi_enroute(struct starmap_data_s *d, bool want_prio)
 {
     const struct game_s *g = d->g;
-    const int x = ui_data.starmap.x;
-    const int y = ui_data.starmap.y;
     for (int i = 0; i < g->enroute_num; ++i) {
         const fleet_enroute_t *r = &(g->enroute[i]);
         if (BOOLVEC_IS1(r->visible, d->api) && (BOOLVEC_IS1(ui_data.starmap.select_prio_fleet, i) == want_prio)) {
-            int x0 = (r->x - x) * 2 + 8;
-            int y0 = (r->y - y) * 2 + 8;
-            d->oi_tbl_enroute[i] = uiobj_add_mousearea_limited(x0, y0, x0 + 8, y0 + 4, starmap_scale, MOO_KEY_UNKNOWN);
+            d->oi_tbl_enroute[i] = sm_add_galaxy_mousearea(r->x, r->y, 8, 8, 16, 12);
         }
     }
     for (int i = 0; i < g->transport_num; ++i) {
         const transport_t *r = &(g->transport[i]);
         if (BOOLVEC_IS1(r->visible, d->api) && (BOOLVEC_IS1(ui_data.starmap.select_prio_trans, i) == want_prio)) {
-            int x0 = (r->x - x) * 2 + 8;
-            int y0 = (r->y - y) * 2 + 8;
-            d->oi_tbl_transport[i] = uiobj_add_mousearea_limited(x0, y0, x0 + 8, y0 + 4, starmap_scale, MOO_KEY_UNKNOWN);
+            d->oi_tbl_transport[i] = sm_add_galaxy_mousearea(r->x, r->y, 8, 8, 16, 12);
         }
     }
 }
@@ -362,11 +410,71 @@ void ui_starmap_draw_basic(struct starmap_data_s *d)
     }
 }
 
+/* -------------------------------------------------------------------------- */
+
+/* 1oom-mp: smooth continuous starmap zoom via an offscreen render.
+   The galaxy is drawn once into s_sm_off at a FIXED reference scale (REF_SCALE == the maximum on-screen
+   zoom, so the window blit only ever DOWNSCALES -> always crisp, never blocky), then sm_offscreen_blit()
+   nearest-neighbour downscales it into the map window at the real continuous zoom (f16) + fractional pan
+   origin. Drawing everything at one uniform scale is what removes the per-element "shift" at zoom steps:
+   stars, nebulae, names, grid and lines all scale together because they are a single image. */
+#define REF_SCALE (2 * ui_scale)        /* offscreen render scale == max on-screen zoom (downscale-only) */
+
+static uint8_t *s_sm_off = NULL;        /* offscreen 8-bit galaxy buffer (whole galaxy at REF_SCALE) */
+static int s_sm_off_w = 0;
+static int s_sm_off_h = 0;
+
+static void sm_offscreen_ensure(const struct game_s *g)
+{
+    int w = (g->galaxy_maxx + 4) * 2 * REF_SCALE;   /* galaxy G -> 2*G*REF_SCALE px, +4 units glyph margin */
+    int h = (g->galaxy_maxy + 4) * 2 * REF_SCALE;
+    if (s_sm_off && (s_sm_off_w == w) && (s_sm_off_h == h)) { return; }
+    if (s_sm_off) { lib_free(s_sm_off); s_sm_off = NULL; }
+    s_sm_off_w = w;
+    s_sm_off_h = h;
+    s_sm_off = lib_malloc((size_t)w * h);
+}
+
+/* Downscale-blit the visible region of the offscreen into the map window at origin (ox + ofx/16,
+   oy + ofy/16) galaxy units and zoom f16 (screen px per galaxy unit, 4-bit fixed point, F = f16/16). */
+static void sm_offscreen_blit(int ox, int oy, int ofx, int ofy, int f16)
+{
+    int SCL = 2 * REF_SCALE;                              /* offscreen px per galaxy unit */
+    uint8_t *fb = hw_video_get_buf();                    /* real framebuffer (override is NULL again here) */
+    int winl = 6 * ui_scale, wint = 6 * ui_scale;
+    int winr = 222 * ui_scale, winb = 178 * ui_scale;    /* exclusive */
+    /* source position in 1/16 offscreen px, computed PER PIXEL (no truncated-step accumulation, which
+       drifts a few px across the window and jitters as the zoom changes). src16 = real_origin*SCL*16 +
+       wo*SCL*256/f16 (wo = window offset; SCL*256/f16 = (SCL/F)*16 offscreen px per window px). */
+    long ox_off = (long)(ox * 16 + ofx) * SCL;
+    long oy_off = (long)(oy * 16 + ofy) * SCL;
+    if (f16 < 1) { f16 = 1; }
+    for (int wy = wint; wy < winb; ++wy) {
+        long sy16 = oy_off + ((long)(wy - wint) * SCL * 256) / f16;
+        int sy = (int)(sy16 / 16);
+        uint8_t *srow, *drow;
+        if ((sy < 0) || (sy >= s_sm_off_h)) { continue; }
+        srow = s_sm_off + (size_t)sy * s_sm_off_w;
+        drow = fb + (size_t)wy * ui_screen_w;
+        for (int wx = winl; wx < winr; ++wx) {
+            long sx16 = ox_off + ((long)(wx - winl) * SCL * 256) / f16;
+            int sx = (int)(sx16 / 16);
+            uint8_t c;
+            if ((sx < 0) || (sx >= s_sm_off_w)) { continue; }
+            c = srow[sx];
+            if (c) { drow[wx] = c; }    /* 0 = space-black; skip so the framebuffer clear shows through */
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+
 void ui_starmap_draw_starmap(struct starmap_data_s *d)
 {
     const struct game_s *g = d->g;
     int x, y, tx, ty;
     char str[16];
+    int stl_x0, stl_y0, stl_x1, stl_y1;     /* text/name clip = offscreen bounds during the offscreen render */
     STARMAP_LIM_INIT();
     {
         int v, step;
@@ -410,17 +518,47 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
     ui_draw_filled_rect(6, 6, 222 - 1, 178 - 1, 0, ui_scale);
     lbxgfx_draw_frame(0, 0, ui_data.gfx.starmap.mainview, UI_SCREEN_W, ui_scale);
     uiobj_set_limits(STARMAP_LIMITS);
+    sm_offscreen_ensure(g);
+    if (s_sm_off) {
+        /* save real view params */
+        int rx = ui_data.starmap.x, ry = ui_data.starmap.y;
+        int rf16 = sm_zoom_f16, rsc = starmap_scale, rfx = sm_frac_x16, rfy = sm_frac_y16, rsw = ui_screen_w;
+        /* save the clip limits so they can be restored after the offscreen render */
+        int rlx0 = slx0, rly0 = sly0, rlx1 = slx1, rly1 = sly1;
+        /* render the galaxy at the fixed reference into the offscreen, origin 0 */
+        memset(s_sm_off, 0, (size_t)s_sm_off_w * s_sm_off_h);
+        hw_video_set_draw_buf(s_sm_off);
+        ui_screen_w = s_sm_off_w;               /* pitch for the offscreen */
+        ui_data.starmap.x = 0; ui_data.starmap.y = 0;
+        sm_frac_x16 = 0; sm_frac_y16 = 0;
+        starmap_scale = REF_SCALE;
+        sm_zoom_f16 = 32 * REF_SCALE;           /* keeps sm_span()==classic "*2", so G -> 2*G*REF_SCALE px */
+        /* clip the galaxy-content block to the whole offscreen. STARMAP_LIMITS (slx0..sly1) are render
+           coords (the draw primitives multiply them by starmap_scale), so divide the offscreen px size
+           by starmap_scale to get the render-coord bound. */
+        slx0 = 0; sly0 = 0;
+        slx1 = s_sm_off_w / starmap_scale - 1;
+        sly1 = s_sm_off_h / starmap_scale - 1;
+        x = 0; y = 0;                           /* the galaxy-content block draws relative to x,y */
+        /* text/name clip: lbxfont_*_limit takes the limits in SCREEN coords (it divides by scale
+           internally), so use the offscreen px bounds. STARMAP_TEXT_LIMITS (window coords) would clip
+           most names away during the offscreen render -- the name-print calls below use these instead. */
+        stl_x0 = 0; stl_y0 = 0; stl_x1 = s_sm_off_w - 1; stl_y1 = s_sm_off_h - 1;
     {
         uint8_t *gfx1, *gfx2;
         int x0, y0, x1, y1, lx, ly;
+        /* 1oom-mp: rendered into the offscreen at the fixed REF_SCALE with origin 0, so the parallax is
+           baked into the buffer; it pans/zooms with everything else via the downscale-blit. Original
+           1oom origin-based parallax (layer 1 = -origin/4, layer 2 = -origin/2), tiled to cover the
+           whole offscreen. (origin x,y are 0 here, so the offsets are just +6.) */
+        gfx1 = ui_fixbugs_enabled ? ui_data.gfx.starmap.starbak2 : ui_data.gfx.starmap.starback;
+        gfx2 = ui_fixbugs_enabled ? ui_data.gfx.starmap.starback : ui_data.gfx.starmap.starbak2;
         x0 = (-x / 4) + 6;
         y0 = (-y / 4) + 6;
         x1 = ((-x + 1) / 2) + 6;
         y1 = ((-y + 1) / 2) + 6;
-        gfx1 = ui_fixbugs_enabled ? ui_data.gfx.starmap.starbak2 : ui_data.gfx.starmap.starback;
-        gfx2 = ui_fixbugs_enabled ? ui_data.gfx.starmap.starback : ui_data.gfx.starmap.starbak2;
-        lx = 222 * ui_scale - 1;
-        ly = 178 * ui_scale - 1;
+        lx = slx1;
+        ly = sly1;
         for (int yb = y0; yb < ly; yb += 200) {
             for (int xb = x0; xb < lx; xb += 320) {
                 lbxgfx_draw_frame_offs(xb, yb, gfx1, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
@@ -434,24 +572,24 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
     }
     for (int i = 0; i < g->nebula_num; ++i) {
         int tx, ty;
-        tx = (g->nebula_x[i] - x) * 2 + 7;
-        ty = (g->nebula_y[i] - y) * 2 + 7;
+        tx = sm_span_x(g->nebula_x[i] - x) + 7;
+        ty = sm_span_y(g->nebula_y[i] - y) + 7;
         lbxgfx_draw_frame_offs(tx, ty, ui_data.gfx.starmap.nebula[i], STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
     }
     if (ui_data.starmap.flag_show_grid) {
         int x0, y0, x1, y1;
         for (y0 = 10; y0 < g->galaxy_maxy; y0 += 50) {
             int ty;
-            x0 = (-x) * 2 + 6;
-            x1 = (g->galaxy_maxx - x) * 2 + 6;
-            ty = (y0 - y) * 2 + 6;
+            x0 = sm_span_x(-x) + 6;
+            x1 = sm_span_x(g->galaxy_maxx - x) + 6;
+            ty = sm_span_y(y0 - y) + 6;
             ui_draw_line_limit(x0, ty, x1, ty, 4, starmap_scale);
         }
         for (x0 = 10; x0 < g->galaxy_maxx; x0 += 50) {
             int tx;
-            y0 = (-y) * 2 + 6;
-            y1 = (g->galaxy_maxy - y) * 2 + 6;
-            tx = (x0 - x) * 2 + 6;
+            y0 = sm_span_y(-y) + 6;
+            y1 = sm_span_y(g->galaxy_maxy - y) + 6;
+            tx = sm_span_x(x0 - x) + 6;
             ui_draw_line_limit(tx, y0, tx, y1, 4, starmap_scale);
         }
     }
@@ -460,10 +598,10 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         if ((p->owner == d->api) && (p->reloc != pi)) {
             const planet_t *p2 = &g->planet[p->reloc];
             int x0, y0, x1, y1;
-            x0 = (p->x - x) * 2 + 14;
-            x1 = (p2->x - x) * 2 + 14;
-            y0 = (p->y - y) * 2 + 14;
-            y1 = (p2->y - y) * 2 + 14;
+            x0 = sm_span_x(p->x - x) + 14;
+            x1 = sm_span_x(p2->x - x) + 14;
+            y0 = sm_span_y(p->y - y) + 14;
+            y1 = sm_span_y(p2->y - y) + 14;
             ui_draw_line_limit_ctbl(x0, y0, x1, y1, colortbl_line_reloc, 5, ui_data.starmap.line_anim_phase, starmap_scale);
         }
     }
@@ -477,11 +615,11 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         lbxgfx_set_new_frame(gfx, (anim_frame < 4) ? anim_frame : 0);
         gfx_aux_draw_frame_to(gfx, &ui_data.starmap.star_aux);
         if (p->look > 0) {
-            tx = (p->x - x) * 2 + 8;
-            ty = (p->y - y) * 2 + 9;
+            tx = sm_span_x(p->x - x) + 8;
+            ty = sm_span_y(p->y - y) + 9;
         } else {
-            tx = (p->x - x) * 2 + 11;
-            ty = (p->y - y) * 2 + 11;
+            tx = sm_span_x(p->x - x) + 11;
+            ty = sm_span_y(p->y - y) + 11;
         }
         gfx_aux_draw_frame_from_limit(tx, ty, &ui_data.starmap.star_aux, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         { /* 1oom-mp live teammate visibility: a teammate is about to colonize this world this turn --
@@ -508,8 +646,8 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             }
             ui_data.star_frame[pi] = anim_frame;
         }
-        tx = (p->x - x) * 2 + 14;
-        ty = (p->y - y) * 2 + 22;
+        tx = sm_span_x(p->x - x) + 14;
+        ty = sm_span_y(p->y - y) + 22;
         /* 1oom-mp: a teammate settling this world this turn owns it in the live overlay but not yet in
            my synced state -> render its name as THEIR colony (banner colour, and actually shown) now,
            instead of a bare unowned star until the turn resolves. */
@@ -527,7 +665,7 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         }
         if (ui_extra_enabled && explored && ui_data.starmap.star_text_type != UI_SM_STAR_TEXT_NAME) {
             if (p->type == PLANET_TYPE_NOT_HABITABLE) {
-                lbxfont_print_str_center_limit(tx, ty, "0/0", STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+                lbxfont_print_str_center_limit(tx, ty, "0/0", stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
                 done = true;
             } else if (visible && ui_data.starmap.star_text_type == UI_SM_STAR_TEXT_POPULATION) {
                 int max_pop = p->max_pop3;
@@ -539,11 +677,11 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                 } else {
                     lib_sprintf(str, sizeof(str), "%i/%i", p->pop, max_pop);
                 }
-                lbxfont_print_str_center_limit(tx, ty, str, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+                lbxfont_print_str_center_limit(tx, ty, str, stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
                 done = true;
             } else if (ui_data.starmap.star_text_type == UI_SM_STAR_TEXT_ENVIRONMENT) {
                 lib_sprintf(str, sizeof(str), "%s", game_str_tbl_sm_pltype[p->type]);
-                lbxfont_print_str_center_limit(tx, ty, str, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+                lbxfont_print_str_center_limit(tx, ty, str, stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
                 done = true;
             } else if (ui_data.starmap.star_text_type == UI_SM_STAR_TEXT_SPECIAL) {
                 if (p->special == PLANET_SPECIAL_NORMAL) {
@@ -551,14 +689,14 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                 } else {
                     lib_sprintf(str, sizeof(str), "%s", game_str_tbl_sm_pspecial[p->special]);
                 }
-                lbxfont_print_str_center_limit(tx, ty, str, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+                lbxfont_print_str_center_limit(tx, ty, str, stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
                 done = true;
             }
         }
         if (ui_data.starmap.star_text_type == UI_SM_STAR_TEXT_DISTANCE) {
             if (p->owner != d->api) {
                 lib_sprintf(str, sizeof(str), "%d parsecs", game_get_min_dist(g, d->api, pi));
-                lbxfont_print_str_center_limit(tx, ty, str, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+                lbxfont_print_str_center_limit(tx, ty, str, stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
                 done = true;
             }
         }
@@ -569,7 +707,7 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                         || (p->within_frange[d->api] == 1)
                         || (eff_owner != p->owner); /* 1oom-mp: a teammate's just-settled colony (overlay owner, synced still NONE) -> show its name via shared team vision even out of my scanner range */
             if (eff_owner != PLAYER_NONE && do_print) {
-                lbxfont_print_str_center_limit(tx, ty, p->name, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+                lbxfont_print_str_center_limit(tx, ty, p->name, stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
             }
         }
     }
@@ -582,8 +720,8 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
       && (ui_data.ui_main_loop_action != UI_MAIN_LOOP_ORBIT_EN_SEL)
     ) {
         const planet_t *p = &g->planet[g->planet_focus_i[d->api]];
-        tx = (p->x - x) * 2 + 8;
-        ty = (p->y - y) * 2 + 8;
+        tx = sm_span_x(p->x - x) + 8;
+        ty = sm_span_y(p->y - y) + 8;
         lbxgfx_draw_frame_offs_delay(tx, ty, !d->anim_delay, ui_data.gfx.starmap.planbord, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
     }
     if (d->anim_delay == 0) {
@@ -597,8 +735,8 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         if (BOOLVEC_IS1(r->visible, d->api)) {
             uint8_t *gfx = ui_data.gfx.starmap.smalship[g->eto[r->owner].banner];
             const planet_t *p = &g->planet[r->dest];
-            tx = (r->x - x) * 2 + 8;
-            ty = (r->y - y) * 2 + 8;
+            tx = sm_span_x(r->x - x) + 8;
+            ty = sm_span_y(r->y - y) + 8;
             if (p->x < r->x) {
                 lbxgfx_set_new_frame(gfx, 1);
             } else {
@@ -606,13 +744,13 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             }
             p = &g->planet[g->planet_focus_i[d->api]];
             if (g->eto[d->api].have_ia_scanner && (p->owner == d->api) && (r->owner != d->api) && (r->dest == g->planet_focus_i[d->api])) {
-                ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_red, 5, ui_data.starmap.line_anim_phase, starmap_scale);
+                ui_draw_line_limit_ctbl(tx + 5, ty + 2, sm_span_x(p->x - x) + 14, sm_span_y(p->y - y) + 14, colortbl_line_red, 5, ui_data.starmap.line_anim_phase, starmap_scale);
             }
             if (ui_extra_enabled && (r->owner == d->api) && (r->dest < g->galaxy_stars)) {
                 /* 1oom-mp: show MY OWN fleets'/transports' destinations too (like teammates'), always
                    (not just the focused planet), each line drawn in MY banner colour. */
                 const planet_t *pdst = &g->planet[r->dest];
-                ui_draw_line_limit(tx + 5, ty + 2, (pdst->x - x) * 2 + 14, (pdst->y - y) * 2 + 14, tbl_banner_color[g->eto[r->owner].banner], starmap_scale);
+                ui_draw_line_limit(tx + 5, ty + 2, sm_span_x(pdst->x - x) + 14, sm_span_y(pdst->y - y) + 14, tbl_banner_color[g->eto[r->owner].banner], starmap_scale);
             }
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }
@@ -629,10 +767,10 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             if ((fdest < 0) || (fdest >= g->galaxy_stars)) { continue; }
             pd = &g->planet[fdest];
             gfx = ui_data.gfx.starmap.smalship[g->eto[fo].banner];
-            tx = (fx - x) * 2 + 8;
-            ty = (fy - y) * 2 + 8;
+            tx = sm_span_x(fx - x) + 8;
+            ty = sm_span_y(fy - y) + 8;
             if (pd->x < fx) { lbxgfx_set_new_frame(gfx, 1); } else { lbxgfx_set_frame_0(gfx); }
-            ui_draw_line_limit(tx + 5, ty + 2, (pd->x - x) * 2 + 14, (pd->y - y) * 2 + 14, tbl_banner_color[g->eto[fo].banner], starmap_scale); /* 1oom-mp: teammate fleet route in THEIR banner colour */
+            ui_draw_line_limit(tx + 5, ty + 2, sm_span_x(pd->x - x) + 14, sm_span_y(pd->y - y) + 14, tbl_banner_color[g->eto[fo].banner], starmap_scale); /* 1oom-mp: teammate fleet route in THEIR banner colour */
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }
     }
@@ -641,8 +779,8 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         if (BOOLVEC_IS1(r->visible, d->api)) {
             uint8_t *gfx = ui_data.gfx.starmap.smaltran[g->eto[r->owner].banner];
             const planet_t *p = &g->planet[r->dest];
-            tx = (r->x - x) * 2 + 8;
-            ty = (r->y - y) * 2 + 8;
+            tx = sm_span_x(r->x - x) + 8;
+            ty = sm_span_y(r->y - y) + 8;
             if (p->x < r->x) {
                 lbxgfx_set_new_frame(gfx, 1);
             } else {
@@ -650,30 +788,30 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             }
             p = &g->planet[g->planet_focus_i[d->api]];
             if (g->eto[d->api].have_ia_scanner && (p->owner == d->api) && (r->owner != d->api) && (r->dest == g->planet_focus_i[d->api])) {
-                ui_draw_line_limit_ctbl(tx + 5, ty + 2, (p->x - x) * 2 + 14, (p->y - y) * 2 + 14, colortbl_line_red, 5, ui_data.starmap.line_anim_phase, starmap_scale);
+                ui_draw_line_limit_ctbl(tx + 5, ty + 2, sm_span_x(p->x - x) + 14, sm_span_y(p->y - y) + 14, colortbl_line_red, 5, ui_data.starmap.line_anim_phase, starmap_scale);
             }
             if (ui_extra_enabled && (r->owner == d->api) && (r->dest < g->galaxy_stars)) {
                 /* 1oom-mp: show MY OWN fleets'/transports' destinations too (like teammates'), always
                    (not just the focused planet), each line drawn in MY banner colour. */
                 const planet_t *pdst = &g->planet[r->dest];
-                ui_draw_line_limit(tx + 5, ty + 2, (pdst->x - x) * 2 + 14, (pdst->y - y) * 2 + 14, tbl_banner_color[g->eto[r->owner].banner], starmap_scale);
+                ui_draw_line_limit(tx + 5, ty + 2, sm_span_x(pdst->x - x) + 14, sm_span_y(pdst->y - y) + 14, tbl_banner_color[g->eto[r->owner].banner], starmap_scale);
             }
             lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         }
     }
     if (g->evn.crystal.exists && (g->evn.crystal.killer == PLAYER_NONE)) {
-        tx = (g->evn.crystal.x - x) * 2 + 8;
-        ty = (g->evn.crystal.y - y) * 2 + 8;
+        tx = sm_span_x(g->evn.crystal.x - x) + 8;
+        ty = sm_span_y(g->evn.crystal.y - y) + 8;
         lbxgfx_draw_frame_offs(tx, ty, ui_data.gfx.planets.smonster, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         lbxfont_select(2, 8, 0, 0);
-        lbxfont_print_str_center_limit(tx + 2, ty + 5, game_str_sm_crystal, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+        lbxfont_print_str_center_limit(tx + 2, ty + 5, game_str_sm_crystal, stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
     }
     if ((g->evn.amoeba.exists != 0) && (g->evn.amoeba.killer == PLAYER_NONE)) {
-        tx = (g->evn.amoeba.x - x) * 2 + 8;
-        ty = (g->evn.amoeba.y - y) * 2 + 8;
+        tx = sm_span_x(g->evn.amoeba.x - x) + 8;
+        ty = sm_span_y(g->evn.amoeba.y - y) + 8;
         lbxgfx_draw_frame_offs(tx, ty, ui_data.gfx.planets.smonster, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
         lbxfont_select(2, 8, 0, 0);
-        lbxfont_print_str_center_limit(tx + 2, ty + 5, game_str_sm_amoeba, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+        lbxfont_print_str_center_limit(tx + 2, ty + 5, game_str_sm_amoeba, stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
     }
     for (int pi = 0; pi < g->galaxy_stars; ++pi) {
         const planet_t *p = &g->planet[pi];
@@ -699,16 +837,16 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
                     }
                 }
             }
-            tx = (p->x - x) * 2 + 25;
+            tx = sm_span_x(p->x - x) + 25;
             if (p->have_stargate) {
-                lbxgfx_draw_frame_offs(tx, (p->y - y) * 2 + 7, ui_data.gfx.starmap.stargate2, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
+                lbxgfx_draw_frame_offs(tx, sm_span_y(p->y - y) + 7, ui_data.gfx.starmap.stargate2, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
             }
             ++tx;
             for (player_id_t i = PLAYER_0; i < num; ++i) {
                 player_id_t i2 = tblorbit[i];
                 uint8_t *gfx = ui_data.gfx.starmap.smalship[g->eto[i2].banner];
                 lbxgfx_set_frame_0(gfx);
-                ty = (p->y - y) * 2 + i * 6 + 8;
+                ty = sm_span_y(p->y - y) + i * 6 + 8;
                 lbxgfx_draw_frame_offs(tx, ty, gfx, STARMAP_LIMITS, UI_SCREEN_W, starmap_scale);
             }
             /* 1oom-mp teams: stacked-fleet indicator. When more than one fleet (typically your own +
@@ -718,16 +856,25 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
             if (num > 1) {
                 uint8_t bc = tbl_banner_color[g->eto[tblorbit[0]].banner];
                 int bx = tx + 7;
-                int by = (p->y - y) * 2 + 8;
+                int by = sm_span_y(p->y - y) + 8;
                 char nb[8];
                 ui_draw_box1(bx - 1, by - 1, bx + 5, by + 5, 0, 0, starmap_scale);
                 ui_draw_filled_rect(bx, by, bx + 4, by + 4, bc, starmap_scale);
                 lib_sprintf(nb, sizeof(nb), "%d", num);
                 lbxfont_select(2, 0, 0, 0);
                 lbxfont_set_color0(0);
-                lbxfont_print_str_center_limit(bx + 2, by, nb, STARMAP_TEXT_LIMITS, UI_SCREEN_W, starmap_scale);
+                lbxfont_print_str_center_limit(bx + 2, by, nb, stl_x0, stl_y0, stl_x1, stl_y1, UI_SCREEN_W, starmap_scale);
             }
         }
+    }
+        /* === end of the galaxy-content draw; it ran into the offscreen at the reference scale === */
+        hw_video_set_draw_buf(NULL);
+        /* restore real view params + clip limits */
+        ui_data.starmap.x = rx; ui_data.starmap.y = ry;
+        sm_zoom_f16 = rf16; starmap_scale = rsc; sm_frac_x16 = rfx; sm_frac_y16 = rfy; ui_screen_w = rsw;
+        slx0 = rlx0; sly0 = rly0; slx1 = rlx1; sly1 = rly1;
+        /* blit offscreen -> framebuffer map window at the real origin + zoom */
+        sm_offscreen_blit(rx, ry, rfx, rfy, rf16);
     }
 }
 
@@ -753,13 +900,41 @@ void ui_starmap_draw_button_text(struct starmap_data_s *d, bool highlight)
 
 void ui_starmap_clamp_xy(const struct game_s *g, int *x, int *y)
 {
+    ui_starmap_zoom_sync_scale();   /* 1oom-mp: ensure sm_zoom_f16 init'd & starmap_scale derived */
     if (!ui_sm_expanded_scroll) {
-        SETRANGE(*x, 0, g->galaxy_maxx - ((108 * ui_scale) / starmap_scale));
-        SETRANGE(*y, 0, g->galaxy_maxy - ((86 * ui_scale) / starmap_scale));
+        SETRANGE(*x, 0, g->galaxy_maxx - ((108 * 32 * ui_scale) / sm_zoom_f16));
+        SETRANGE(*y, 0, g->galaxy_maxy - ((86 * 32 * ui_scale) / sm_zoom_f16));
     } else {
-        SETRANGE(*x, -((54 * ui_scale) / starmap_scale), g->galaxy_maxx - ((54 * ui_scale) / starmap_scale));
-        SETRANGE(*y, -((43 * ui_scale) / starmap_scale), g->galaxy_maxy - ((43 * ui_scale) / starmap_scale));
+        SETRANGE(*x, -((54 * 32 * ui_scale) / sm_zoom_f16), g->galaxy_maxx - ((54 * 32 * ui_scale) / sm_zoom_f16));
+        SETRANGE(*y, -((43 * 32 * ui_scale) / sm_zoom_f16), g->galaxy_maxy - ((43 * 32 * ui_scale) / sm_zoom_f16));
     }
+}
+
+/* 1oom-mp: continuous map zoom. sm_span() converts a galaxy-coord delta to render-coord spacing using
+   the fractional sm_zoom_f16 (screen px per galaxy unit, 4-bit fixed pt); replaces the classic "* 2".
+   The draw primitives still multiply the result by starmap_scale (the integer ICON scale), so star icons
+   step while spacing is smooth. sm_zoom_f16 == 32*starmap_scale reproduces the classic "* 2" exactly. */
+static int sm_span_axis(int d, int frac16)
+{
+    int den = 256 * starmap_scale;
+    int num = (d * 16 - frac16) * sm_zoom_f16;   /* (d - frac) * F, in render-coord, *16*16 fixed */
+    if (den <= 0) { return d * 2; }
+    return (num >= 0) ? ((num + den / 2) / den) : -(((-num) + den / 2) / den);
+}
+int sm_span_x(int d) { return sm_span_axis(d, sm_frac_x16); }
+int sm_span_y(int d) { return sm_span_axis(d, sm_frac_y16); }
+int sm_span(int d)   { return sm_span_axis(d, 0); }   /* fallback: no sub-unit offset (any unconverted site) */
+
+/* 1oom-mp: derive the integer ICON scale (starmap_scale) from the fractional zoom (sm_zoom_f16). Call
+   after setting either. Self-initialises sm_zoom_f16 from starmap_scale when it is still 0/uninit. */
+void ui_starmap_zoom_sync_scale(void)
+{
+    int s;
+    if (sm_zoom_f16 < 32) { sm_zoom_f16 = 32 * (starmap_scale > 0 ? starmap_scale : 1); } /* init from scale */
+    s = (sm_zoom_f16 + 16) / 32;         /* round(F/2) */
+    if (s < 1) { s = 1; }
+    if (s > ui_scale) { s = ui_scale; }
+    starmap_scale = s;
 }
 
 void ui_starmap_set_pos_focus(const struct game_s *g, player_id_t active_player)
@@ -770,13 +945,67 @@ void ui_starmap_set_pos_focus(const struct game_s *g, player_id_t active_player)
 
 void ui_starmap_set_pos(const struct game_s *g, int x, int y)
 {
-    x -= (54 * ui_scale) / starmap_scale;
-    y -= (43 * ui_scale) / starmap_scale;
+    ui_starmap_zoom_sync_scale();   /* 1oom-mp: ensure sm_zoom_f16 init'd before extent math */
+    x -= (54 * 32 * ui_scale) / sm_zoom_f16;
+    y -= (43 * 32 * ui_scale) / sm_zoom_f16;
     ui_starmap_clamp_xy(g, &x, &y);
     ui_data.starmap.x = x;
     ui_data.starmap.x2 = x;
     ui_data.starmap.y = y;
     ui_data.starmap.y2 = y;
+    sm_frac_x16 = 0; sm_frac_y16 = 0;
+}
+
+/* 1oom-mp: set the pan origin from a galaxy*16 fixed-point position. Splits into the integer origin
+   (clamped, used by logic/save) plus the 1/16-unit fractional remainder (used by sm_span_x/y for a
+   smooth sub-pixel render offset). */
+void ui_starmap_set_origin16(const struct game_s *g, int ox16, int oy16)
+{
+    int xi = ox16 >> 4, yi = oy16 >> 4;
+    int fx = ox16 - (xi << 4), fy = oy16 - (yi << 4);   /* in [0,16) */
+    ui_starmap_clamp_xy(g, &xi, &yi);
+    ui_data.starmap.x = xi; ui_data.starmap.x2 = xi;
+    ui_data.starmap.y = yi; ui_data.starmap.y2 = yi;
+    sm_frac_x16 = fx; sm_frac_y16 = fy;
+}
+
+/* 1oom-mp: continuous map zoom to an absolute fixed-point level (sm_zoom_f16 = screen px per galaxy
+   unit * 16), holding the galaxy point under the cursor (mx,my) fixed when the cursor is over the map,
+   else holding the view centre. NOTE: mx,my are SCALED game coords (moouse_x/y, i.e. *ui_scale), so the
+   map window and the (mouse-left)/F anchor are all in *ui_scale units. Range: F in [1, 4*ui_scale] px
+   per galaxy unit; the icon scale (starmap_scale) caps at ui_scale, so beyond that spacing keeps growing
+   with icons held at max size (deeper zoom-in on a big galaxy). */
+void ui_starmap_zoom_to_f16(const struct game_s *g, int new_f16, int mx, int my)
+{
+    int lo = 16, hi = 32 * ui_scale * 2;
+    int old_f16 = sm_zoom_f16;
+    int ax16, ay16;     /* galaxy*16 anchor point held fixed on screen across the zoom */
+    int ox, oy;         /* anchor's offset from the map top-left, in screen px */
+    if (old_f16 < 16) { old_f16 = 32 * (starmap_scale > 0 ? starmap_scale : 1); }
+    if (new_f16 < lo) { new_f16 = lo; }
+    if (new_f16 > hi) { new_f16 = hi; }
+    if (new_f16 == old_f16) { return; }
+    /* anchor = the galaxy point under the cursor when it's over the map (zoom-to-cursor); otherwise the
+       view centre (slider/keyboard zoom). map window = [6,222)x[6,178) * ui_scale; offset*256/f16 converts
+       a screen-px offset to a galaxy*16 delta (256/f16 = 16/F, F = f16/16). */
+    if ((mx >= 6 * ui_scale) && (mx < 222 * ui_scale) && (my >= 6 * ui_scale) && (my < 178 * ui_scale)) {
+        ox = mx - 6 * ui_scale;
+        oy = my - 6 * ui_scale;
+    } else {
+        ox = 108 * ui_scale;    /* map centre: half of the 216*ui_scale-wide window */
+        oy = 86 * ui_scale;     /* half of the 172*ui_scale-tall window */
+    }
+    ax16 = (ui_data.starmap.x << 4) + sm_frac_x16 + (ox * 256) / old_f16;
+    ay16 = (ui_data.starmap.y << 4) + sm_frac_y16 + (oy * 256) / old_f16;
+    sm_zoom_f16 = new_f16; ui_starmap_zoom_sync_scale();
+    ui_starmap_set_origin16(g, ax16 - (ox * 256) / sm_zoom_f16,
+                               ay16 - (oy * 256) / sm_zoom_f16);
+}
+
+/* 1oom-mp: integer-scale entry point (zoom slider / legacy callers). Maps scale -> f16 (32*scale). */
+void ui_starmap_set_zoom(const struct game_s *g, int new_scale)
+{
+    ui_starmap_zoom_to_f16(g, 32 * new_scale, moouse_x, moouse_y);
 }
 
 static void ui_starmap_select_target(struct starmap_data_s *d, planet_id_t planet_i)
@@ -808,8 +1037,7 @@ void ui_starmap_handle_oi_ctrl(struct starmap_data_s *d, int16_t oi)
             y += d->scrolly - 43;
             changed = true;
         } else {
-            starmap_scale = d->scrollz;
-            d->set_pos_focus(g, g->active_player);
+            ui_starmap_set_zoom(g, d->scrollz);   /* 1oom-mp: zoom on the view centre, not the homeworld */
         }
     } else if (oi == d->oi_ctrl_ul) {
         x -= XSTEP;
@@ -840,20 +1068,19 @@ void ui_starmap_handle_oi_ctrl(struct starmap_data_s *d, int16_t oi)
         y += YSTEP;
         changed = true;
     } else if (oi == d->oi_pgdown) {
-        --d->scrollz;
-        SETMAX(d->scrollz, 1);
-        starmap_scale = d->scrollz;
-        ui_starmap_set_pos_focus(g, g->active_player);
+        /* 1oom-mp: fine continuous zoom-out (~12.5%/press, min step 2 f16); keep scrollz = derived icon scale */
+        ui_starmap_zoom_to_f16(g, sm_zoom_f16 - (sm_zoom_f16 / 8 > 2 ? sm_zoom_f16 / 8 : 2), moouse_x, moouse_y);
+        d->scrollz = starmap_scale;
     } else if (oi == d->oi_pgup) {
-        ++d->scrollz;
-        SETMIN(d->scrollz, ui_scale);
-        starmap_scale = d->scrollz;
-        ui_starmap_set_pos_focus(g, g->active_player);
+        /* 1oom-mp: fine continuous zoom-in (~12.5%/press, min step 2 f16); keep scrollz = derived icon scale */
+        ui_starmap_zoom_to_f16(g, sm_zoom_f16 + (sm_zoom_f16 / 8 > 2 ? sm_zoom_f16 / 8 : 2), moouse_x, moouse_y);
+        d->scrollz = starmap_scale;
     }
     if (changed) {
         ui_starmap_clamp_xy(g, &x, &y);
         ui_data.starmap.x2 = x;
         ui_data.starmap.y2 = y;
+        sm_frac_x16 = 0; sm_frac_y16 = 0;
     }
 #undef XSTEP
 #undef YSTEP
@@ -1029,8 +1256,6 @@ bool ui_starmap_handle_oi_misc(struct starmap_data_s *d, int16_t oi)
 void ui_starmap_fill_oi_tbls(struct starmap_data_s *d)
 {
     const struct game_s *g = d->g;
-    const int x = ui_data.starmap.x;
-    const int y = ui_data.starmap.y;
     STARMAP_LIM_INIT();
     uiobj_set_limits(STARMAP_LIMITS);
     UIOBJI_SET_TBL_INVALID(d->oi_tbl_enroute);
@@ -1044,7 +1269,7 @@ void ui_starmap_fill_oi_tbls(struct starmap_data_s *d)
     for (int i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p = &(g->planet[i]);
         if (BOOLVEC_IS1(p->within_srange, d->api) || BOOLVEC_IS1(g->eto[d->api].orbit[i].visible, d->api)) {
-            int numorbits, x0, y0;
+            int numorbits;
             player_id_t tblpl[PLAYER_NUM];
             numorbits = 0;
             for (int j = 0; j < g->players; ++j) {
@@ -1068,10 +1293,10 @@ void ui_starmap_fill_oi_tbls(struct starmap_data_s *d)
                     }
                 }
             }
-            x0 = (p->x - x) * 2 + 26;
-            y0 = (p->y - y) * 2 + 8;
-            for (int j = 0; j < numorbits; ++j, y0 += 6) {
-                d->oi_tbl_pl_stars[tblpl[j]][i] = uiobj_add_mousearea_limited(x0, y0, x0 + 8, y0 + 4, starmap_scale, MOO_KEY_UNKNOWN);
+            /* badges stack vertically (offscreen render-coord 2*p + offset; +6 per badge), placed where
+               the downscale-blit draws them so clicking your badge selects YOUR co-located ships. */
+            for (int j = 0; j < numorbits; ++j) {
+                d->oi_tbl_pl_stars[tblpl[j]][i] = sm_add_galaxy_mousearea(p->x, p->y, 26, 8 + j * 6, 34, 12 + j * 6);
             }
         }
     }
@@ -1081,33 +1306,19 @@ void ui_starmap_fill_oi_tbls(struct starmap_data_s *d)
 void ui_starmap_fill_oi_tbl_stars(struct starmap_data_s *d)
 {
     const struct game_s *g = d->g;
-    const int x = ui_data.starmap.x;
-    const int y = ui_data.starmap.y;
-    STARMAP_LIM_INIT();
-    uiobj_set_limits(STARMAP_LIMITS);
     for (int i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p = &(g->planet[i]);
-        int x0, y0;
-        x0 = (p->x - x) * 2 + 8;
-        y0 = (p->y - y) * 2 + 8;
-        d->oi_tbl_stars[i] = uiobj_add_mousearea_limited(x0, y0, x0 + 13, y0 + 13, starmap_scale, MOO_KEY_UNKNOWN);
+        d->oi_tbl_stars[i] = sm_add_galaxy_mousearea(p->x, p->y, 8, 8, 21, 21);
     }
 }
 
 void ui_starmap_fill_oi_tbl_stars_own(struct starmap_data_s *d, player_id_t owner)
 {
     const struct game_s *g = d->g;
-    const int x = ui_data.starmap.x;
-    const int y = ui_data.starmap.y;
-    STARMAP_LIM_INIT();
-    uiobj_set_limits(STARMAP_LIMITS);
     for (int i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p = &(g->planet[i]);
         if (p->owner == owner) {
-            int x0, y0;
-            x0 = (p->x - x) * 2 + 8;
-            y0 = (p->y - y) * 2 + 8;
-            d->oi_tbl_stars[i] = uiobj_add_mousearea_limited(x0, y0, x0 + 13, y0 + 13, starmap_scale, MOO_KEY_UNKNOWN);
+            d->oi_tbl_stars[i] = sm_add_galaxy_mousearea(p->x, p->y, 8, 8, 21, 21);
         }
     }
 }
@@ -1266,6 +1477,10 @@ void ui_starmap_common_init(struct game_s *g, struct starmap_data_s *d, player_i
     d->planet_draw_name = true;
     d->scrollx = 0;
     d->scrolly = 0;
+    /* 1oom-mp: do NOT reset the zoom on every sub-mode entry -- that snapped a fractional continuous zoom
+       to the nearest integer icon level when you e.g. clicked a ship. Preserve the current sm_zoom_f16
+       (zoom_sync_scale only inits it from starmap_scale the very first time, when it's still unset). */
+    ui_starmap_zoom_sync_scale();
     d->scrollz = starmap_scale;
 }
 

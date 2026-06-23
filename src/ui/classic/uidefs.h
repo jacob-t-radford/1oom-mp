@@ -298,6 +298,9 @@ extern struct ui_data_s ui_data;
 extern int ui_scale;
 extern int ui_scale_hint;
 extern int starmap_scale;
+extern int sm_zoom_f16; /* 1oom-mp: continuous map zoom (screen px per galaxy unit, 4-bit fixed point) */
+extern int sm_frac_x16;
+extern int sm_frac_y16;
 extern int ui_screen_w;
 extern int ui_screen_h;
 extern bool ui_extra_enabled;

@@ -197,6 +197,19 @@ static void gmap_draw_cb(void *vptr)
         }
     }
 
+    /* 1oom-mp teams: ring any world flagged with a beacon (mine or a teammate's) in the owner's banner colour. */
+    for (int i = 0; i < g->galaxy_stars; ++i) {
+        int pgr = ui_mp_team_plan_ping_at(i);
+        if (pgr >= 0) {
+            const planet_t *p = &(g->planet[i]);
+            int x = (p->x * 224) / g->galaxy_maxx + 7;
+            int y = (p->y * 185) / g->galaxy_maxy + 7;
+            uint8_t bc = tbl_banner_color[g->eto[pgr].banner];
+            ui_draw_box1(x - 2, y - 2, x + 4, y + 4, 0, 0, ui_scale);
+            ui_draw_box1(x - 1, y - 1, x + 3, y + 3, bc, bc, ui_scale);
+        }
+    }
+
     for (int i = 0; i < g->galaxy_stars; ++i) {
         const planet_t *p = &(g->planet[i]);
         uint8_t *gfx;

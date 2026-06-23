@@ -52,9 +52,15 @@ void hw_video_refresh_palette(void)
     video.setpal(ui_palette, 0, 256);
 }
 
+/* 1oom-mp: when set, drawing is redirected to this caller-owned 8-bit buffer instead of the framebuffer.
+   The starmap uses it to render the galaxy into an offscreen buffer at a fixed reference scale, then
+   downscale-blits that to the window for smooth continuous zoom (see uistarmap). NULL = normal. */
+static uint8_t *s_hw_draw_override = NULL;
+void hw_video_set_draw_buf(uint8_t *buf) { s_hw_draw_override = buf; }
+
 uint8_t *hw_video_get_buf(void)
 {
-    return video.buf[video.bufi];
+    return s_hw_draw_override ? s_hw_draw_override : video.buf[video.bufi];
 }
 
 uint8_t *hw_video_get_buf_front(void)
