@@ -158,6 +158,16 @@ static void cl_team_plan_send_impl(const void *data, int len) {
 void (*g_mp_cl_team_plan_send)(const void *, int) = NULL;
 void (*g_mp_team_plan_recv)(const void *, int) = NULL;
 
+/* client: send a typed chat line to the server (best-effort; the server stamps the sender + broadcasts). */
+static void cl_chat_send_impl(const void *data, int len) {
+    if (!s_cl_conn) { return; }
+    if (len < 0) { len = 0; }
+    if (len > MP_CHAT_MAX) { len = MP_CHAT_MAX; }
+    mp_send_besteffort(s_cl_conn, MP_MSG_CHAT, data, (uint32_t)len);
+}
+void (*g_mp_cl_chat_send)(const void *, int) = NULL;
+void (*g_mp_chat_recv)(const void *, int) = NULL;
+
 /* client: service the socket once during planning. The server is silent until everyone is
    ready, then sends RESOLVE_START; returns 1 once that arrives (or the link drops), which
    tells the interactive turn UI to stop and hand off to the resolution wait loop. */
@@ -175,6 +185,7 @@ static int cl_poll_impl(void) {
         if ((id >= MP_MSG_DIPLO_INVITE) && (id <= MP_MSG_DIPLO_CANCEL)) { cl_diplo_stash(id, s_cl_blob, dl); return 0; }
         if (id == MP_MSG_TEAM_STANCE) { cl_diplo_stash(id, s_cl_blob, dl); return 0; } /* 1oom-mp teams: drains through the same diplo inbox/pump */
         if ((id == MP_MSG_TEAM_PLAN) && g_mp_team_plan_recv) { g_mp_team_plan_recv(s_cl_blob, dl); return 0; }
+        if ((id == MP_MSG_CHAT) && g_mp_chat_recv) { g_mp_chat_recv(s_cl_blob, dl); return 0; }
         /* nothing else is expected before resolution; ignore */
     }
     return 0;
@@ -527,6 +538,21 @@ static void mp_team_plan_server_handle(net_conn_t **conns, int num, int from_i, 
     }
 }
 
+/* server: a client sent a chat line -> stamp the sender id and broadcast to EVERYONE (incl. the sender,
+   so their own line echoes into their history). Best-effort: chat is not game state. */
+static void mp_chat_server_handle(net_conn_t **conns, int num, int from_i, const uint8_t *blob, uint32_t dl) {
+    uint8_t m[2 + MP_CHAT_MAX];
+    uint32_t n;
+    if (dl > MP_CHAT_MAX) { dl = MP_CHAT_MAX; }
+    m[0] = (uint8_t)((from_i >> 8) & 0xff);   /* sender id, big-endian (matches the diplo messages) */
+    m[1] = (uint8_t)(from_i & 0xff);
+    if (dl) { memcpy(m + 2, blob, dl); }
+    n = 2 + dl;
+    for (int j = 0; j < num; ++j) {
+        if (conns[j]) { mp_send_besteffort(conns[j], MP_MSG_CHAT, m, n); }
+    }
+}
+
 /* read + validate a just-connected client's HELLO ([u16 proto][u32 wire_id]) with a short timeout.
    The client sends it immediately on connect, so this returns within a round-trip in the normal case;
    a silent / mismatched-build client is refused (caller closes it). Returns true iff the handshake is OK. */
@@ -789,6 +815,8 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 } else if (id == MP_MSG_SAVE_REQUEST) {  /* a player chose Esc -> Save -> write a named snapshot */
                     MP_MSG("server: save requested by player %d\n", i);
                     if (gi->save_request) { gi->save_request(gi->ctx, i); }
+                } else if (id == MP_MSG_CHAT) {          /* a chat line -> stamp sender + broadcast to all */
+                    mp_chat_server_handle(conns, num_clients, i, blob, dl);
                 } else {                                 /* live-diplomacy messages (0x20-0x2A) */
                     mp_diplo_server_handle(conns, num_clients, i, id, blob, dl);
                 }
@@ -952,10 +980,12 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
             g_mp_cl_poll = cl_poll_impl;
             g_mp_cl_diplo_recv = cl_diplo_recv_impl; g_mp_cl_diplo_send = cl_diplo_send_impl;
             g_mp_cl_team_plan_send = cl_team_plan_send_impl;
+            g_mp_cl_chat_send = cl_chat_send_impl;
             if (gi->write_orders) { (void)gi->write_orders(gi->ctx, player_id, blob + 2, blobcap - 2); }
             g_mp_cl_poll = NULL; g_mp_cl_send_ready = NULL; s_cl_conn = NULL; s_cl_blob = NULL;
             g_mp_cl_diplo_recv = NULL; g_mp_cl_diplo_send = NULL;
             g_mp_cl_team_plan_send = NULL;
+            g_mp_cl_chat_send = NULL;
             if (s_cl_game_over) { MP_MSG("client: game over\n"); goto done; }
         } else {
             /* submit my turn: [u16 player_id][orders blob] */

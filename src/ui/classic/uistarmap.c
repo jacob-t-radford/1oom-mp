@@ -311,6 +311,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
 {
     bool flag_done = false;
     int16_t oi_b, oi_c, oi_starview1, oi_starview2, oi_shippic, oi_finished, oi_equals, oi_hash, oi_diplo, oi_ping,
+            oi_chat, oi_chat_min,
             oi_f2, oi_f3, oi_f4, oi_f5, oi_f6, oi_f7, oi_f8, oi_f9, oi_f10,
             oi_alt_galaxy, oi_alt_p, oi_alt_events,
             oi_wheelname, oi_wheelshippic, oi_search, oi_rename,
@@ -342,6 +343,8 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
         oi_hash = UIOBJI_INVALID; \
         oi_diplo = UIOBJI_INVALID; \
         oi_ping = UIOBJI_INVALID; \
+        oi_chat = UIOBJI_INVALID; \
+        oi_chat_min = UIOBJI_INVALID; \
         oi_wheelname = UIOBJI_INVALID; \
         oi_wheelshippic = UIOBJI_INVALID; \
         oi_rename = UIOBJI_INVALID; \
@@ -439,6 +442,22 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             ui_sound_play_sfx_24();
         } else if ((oi_ping != UIOBJI_INVALID) && (oi1 == oi_ping)) {
             ui_mp_set_ping(g->planet_focus_i[active_player]); /* 1oom-mp teams: flag/unflag this world for allies (stays on the map) */
+            ui_sound_play_sfx_24();
+        } else if ((oi_chat != UIOBJI_INVALID) && (oi1 == oi_chat)) {
+            /* 1oom-mp chat: Enter -> type a line -> Enter sends, Esc cancels. */
+            const uint8_t ctbl[8] = { 0x34, 0x34, 0x34, 0x34, 0x34, 0x34, 0x34, 0x34 };
+            char buf[100];
+            buf[0] = 0;
+            ui_draw_filled_rect(6, 167, 222 - 1, 178 - 1, 0, ui_scale);
+            ui_draw_box1(6, 167, 222 - 1, 178 - 1, 0xe, 0xe, ui_scale);
+            lbxfont_select_set_12_4(4, 0xf, 0, 0);
+            lbxfont_print_str_normal(9, 170, "Say:", UI_SCREEN_W, ui_scale);
+            if (uiobj_read_str(30, 170, 184, buf, 90, 0, false, ctbl)) {
+                util_trim_whitespace(buf, sizeof(buf));
+                if (buf[0] != 0) { ui_mp_chat_send(buf); }
+            }
+        } else if ((oi_chat_min != UIOBJI_INVALID) && (oi1 == oi_chat_min)) {
+            ui_mp_chat_toggle_min();
             ui_sound_play_sfx_24();
         } else if (oi1 == oi_c) {
             ui_data.ui_main_loop_action = UI_MAIN_LOOP_SPIES_CAUGHT;
@@ -836,6 +855,15 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
                 for (int i = 0; i < PLANET_SLIDER_NUM; ++i) {
                     oi_adj[i] = uiobj_add_mousearea( 288, y0, 312, y0 + 6, MOO_KEY_UNKNOWN );
                     y0 += 11;
+                }
+            }
+            /* 1oom-mp chat: Enter opens the chat box; a small [-]/[+] toggle (top-left) minimizes the
+               overlay. Registered BEFORE the stars so the tiny toggle wins the click in its corner.
+               DISABLED for now (text box / cursor showed persistently) -- re-enable by removing "0 &&". */
+            if (0 && ui_mp_turn_active && ui_mp_turn_active()) {
+                oi_chat = uiobj_add_inputkey(MOO_KEY_RETURN);
+                if (ui_mp_chat_count() > 0) {
+                    oi_chat_min = uiobj_add_mousearea(7, 6, 17, 14, MOO_KEY_UNKNOWN);
                 }
             }
             ui_starmap_fill_oi_tbls(&d);

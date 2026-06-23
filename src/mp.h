@@ -43,6 +43,7 @@ enum mp_msg_e {
     MP_MSG_DIPLO_CANCEL        = 0x2a, /* both: [u16 sid][u8 why] = aborted (esc/disconnect) */
     MP_MSG_TEAM_PLAN           = 0x2b, /* C->S->C (planning): a teammate's live plan snapshot (fleets + colonizes + planet sliders) */
     MP_MSG_TEAM_STANCE         = 0x2c, /* C->S->C (planning): [u16 from][u16 to][u8 kind][u8 enemy][u8 verb][u8 accept] = team foreign-policy consensus; kind 0=propose,1=vote,2=enact. Server forwards to 'to'. */
+    MP_MSG_CHAT                = 0x2d, /* C->S: [text]; S->C: [u16 sender][text] = global chat line, server stamps sender and broadcasts to all (best-effort, not game state) */
     MP_MSG_DECISION_REQ = 0x30, /* S->C: [u16 dtype][req] = a mid-resolution interactive decision the server is blocking on */
     MP_MSG_DECISION_RESP= 0x31, /* C->S: [u16 dtype][resp] = the human's answer */
     MP_MSG_GAME_OVER = 0x40, /* S->C: session ended */
@@ -238,6 +239,12 @@ extern void (*g_mp_cl_timer_notify)(int seconds);
    incoming teammate snapshot is delivered to the game layer through g_mp_team_plan_recv. */
 extern void (*g_mp_cl_team_plan_send)(const void *data, int len);
 extern void (*g_mp_team_plan_recv)(const void *data, int len);
+
+/* client-side chat primitives. _send streams a typed line to the server (which stamps the sender and
+   broadcasts to everyone); incoming lines are delivered to the game layer through g_mp_chat_recv. */
+#define MP_CHAT_MAX 96   /* max chat text bytes on the wire (excludes the leading u16 sender) */
+extern void (*g_mp_cl_chat_send)(const void *data, int len);
+extern void (*g_mp_chat_recv)(const void *data, int len);
 
 /* on_wait reason codes */
 #define MP_WAIT_LOBBY  0 /* waiting for the game to start / other players to join */

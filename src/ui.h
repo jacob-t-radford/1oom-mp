@@ -118,6 +118,12 @@ extern void ui_mp_save_game(struct game_s *g);     /* 1oom-mp: Esc -> Save in MP
 extern int ui_mp_team_plan_ping_at(int planet_i);  /* 1oom-mp teams: teammate who pinged planet_i this turn, else -1 */
 extern void ui_mp_team_plan_reset(void);
 extern bool ui_mp_team_plan_active(int player);
+/* 1oom-mp: global chat overlay (best-effort, not game state). */
+extern void ui_mp_chat_send(const char *text);                       /* send a typed line to everyone */
+extern int ui_mp_chat_count(void);                                   /* lines held (0..5) */
+extern bool ui_mp_chat_get(int i, int *sender, const char **text);   /* i: 0 = oldest shown, last = newest */
+extern bool ui_mp_chat_minimized(void);
+extern void ui_mp_chat_toggle_min(void);
 extern bool ui_mp_team_plan_orbit_has(int player, int planet_i);
 extern int ui_mp_team_plan_fleet_total(void);
 extern bool ui_mp_team_plan_fleet_get(int idx, int *owner, int *x, int *y, int *dest);

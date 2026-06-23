@@ -469,6 +469,37 @@ static void sm_offscreen_blit(int ox, int oy, int ofx, int ofy, int f16)
 
 /* -------------------------------------------------------------------------- */
 
+/* 1oom-mp: draw the chat overlay (last few lines, "Race: message" in the sender's banner colour) top-left
+   over the map, on the framebuffer after the galaxy blit. Click the [-]/[+] (oi_chat_min) to minimize. */
+static void ui_starmap_draw_chat(const struct game_s *g)
+{
+    int n = ui_mp_chat_count();
+    int y;
+    return;   /* 1oom-mp: chat overlay DISABLED for now (remove this line to re-enable) */
+    if (n <= 0) { return; }
+    if (ui_mp_chat_minimized()) {
+        ui_draw_filled_rect(6, 6, 22, 15, 0, ui_scale);
+        lbxfont_select(2, 0xf, 0, 0);
+        lbxfont_print_str_normal(9, 8, "[+]", UI_SCREEN_W, ui_scale);
+        return;
+    }
+    ui_draw_filled_rect(6, 6, 158, 9 + 8 * (n + 1), 0, ui_scale);
+    lbxfont_select(2, 0xf, 0, 0);
+    lbxfont_print_str_normal(9, 8, "[-]", UI_SCREEN_W, ui_scale);
+    y = 8 + 8;
+    for (int i = 0; i < n; ++i) {
+        int sender = 0;
+        const char *text = NULL;
+        char line[160];
+        if (!ui_mp_chat_get(i, &sender, &text)) { break; }
+        if ((sender < 0) || (sender >= g->players)) { y += 8; continue; }
+        lib_sprintf(line, sizeof(line), "%s: %s", game_str_tbl_race[g->eto[sender].race], text ? text : "");
+        lbxfont_select(2, tbl_banner_fontparam[g->eto[sender].banner], 0, 0);
+        lbxfont_print_str_normal(9, y, line, UI_SCREEN_W, ui_scale);
+        y += 8;
+    }
+}
+
 void ui_starmap_draw_starmap(struct starmap_data_s *d)
 {
     const struct game_s *g = d->g;
@@ -876,6 +907,7 @@ void ui_starmap_draw_starmap(struct starmap_data_s *d)
         /* blit offscreen -> framebuffer map window at the real origin + zoom */
         sm_offscreen_blit(rx, ry, rfx, rfy, rf16);
     }
+    ui_starmap_draw_chat(g);   /* 1oom-mp: chat overlay on top of the galaxy (all starmap modes) */
 }
 
 void ui_starmap_draw_button_text(struct starmap_data_s *d, bool highlight)

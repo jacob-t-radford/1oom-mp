@@ -1775,9 +1775,58 @@ static void mp_team_plan_recv(const void *data, int len) {
 }
 
 /* client: called each planning frame -> stream my current plan to teammates (throttled). */
+/* 1oom-mp: global chat -- a ring of the last few lines (best-effort overlay, NOT game state). Persists
+   across turns (no per-turn reset), so recent messages stay visible. */
+#define MP_CHAT_HIST 5
+struct mp_chat_line_s { int sender; char text[MP_CHAT_MAX + 1]; };
+static struct mp_chat_line_s s_chat[MP_CHAT_HIST];
+static int s_chat_num = 0;       /* lines held (0..MP_CHAT_HIST) */
+static int s_chat_head = 0;      /* index of the oldest held line */
+static bool s_chat_min = false;  /* overlay minimized? */
+
+/* client: a chat line arrived ([u16 sender][text]) -> push it into the ring (overwriting the oldest). */
+static void mp_chat_recv(const void *data, int len) {
+    const uint8_t *b = (const uint8_t *)data;
+    int sender, tlen, slot;
+    if (len < 2) { return; }
+    sender = (b[0] << 8) | b[1];
+    tlen = len - 2;
+    if (tlen > MP_CHAT_MAX) { tlen = MP_CHAT_MAX; }
+    slot = (s_chat_head + s_chat_num) % MP_CHAT_HIST;
+    if (s_chat_num == MP_CHAT_HIST) { s_chat_head = (s_chat_head + 1) % MP_CHAT_HIST; }
+    else { ++s_chat_num; }
+    s_chat[slot].sender = sender;
+    if (tlen > 0) { memcpy(s_chat[slot].text, b + 2, (size_t)tlen); }
+    s_chat[slot].text[tlen] = '\0';
+}
+
+/* client: send a typed line to everyone (the server stamps the sender). */
+void ui_mp_chat_send(const char *text) {
+    int n;
+    if (!g_mp_cl_chat_send || !text) { return; }
+    n = (int)strlen(text);
+    if (n <= 0) { return; }
+    if (n > MP_CHAT_MAX) { n = MP_CHAT_MAX; }
+    g_mp_cl_chat_send(text, n);
+}
+
+/* overlay accessors. i in [0, ui_mp_chat_count): 0 = oldest shown, last = newest. */
+int ui_mp_chat_count(void) { return s_chat_num; }
+bool ui_mp_chat_get(int i, int *sender, const char **text) {
+    int idx;
+    if ((i < 0) || (i >= s_chat_num)) { return false; }
+    idx = (s_chat_head + i) % MP_CHAT_HIST;
+    if (sender) { *sender = s_chat[idx].sender; }
+    if (text) { *text = s_chat[idx].text; }
+    return true;
+}
+bool ui_mp_chat_minimized(void) { return s_chat_min; }
+void ui_mp_chat_toggle_min(void) { s_chat_min = !s_chat_min; }
+
 void ui_mp_team_plan_tick(void) {
     static int ctr = 0;
     if (g_mp_team_plan_recv != mp_team_plan_recv) { g_mp_team_plan_recv = mp_team_plan_recv; }
+    if (g_mp_chat_recv != mp_chat_recv) { g_mp_chat_recv = mp_chat_recv; } /* wire chat recv for ALL MP games (before the team gate) */
     if (!g_mp_cl_team_plan_send || (s_mp_my_pid < 0) || (game.mp_team[s_mp_my_pid] == 0)) { return; }
     if (++ctr < 8) { return; }
     ctr = 0;
