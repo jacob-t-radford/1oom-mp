@@ -1,46 +1,160 @@
 # 1oom-mp — Master of Orion 1 with online multiplayer
 
-A fork of [1oom](https://github.com/1oom-fork/1oom) that adds **simultaneous-turn network
-multiplayer** (plus a few modern conveniences) to the 1993 classic *Master of Orion*. 1oom is a
-faithful, from-scratch GPLv2 reimplementation of the original DOS engine; this fork leaves the
-single-player game intact and layers networked play on top.
+A fork of [1oom](https://github.com/1oom-fork/1oom) that adds **simultaneous-turn online
+multiplayer** — with **team play** — plus a handful of modern conveniences, to the 1993 classic
+*Master of Orion*. 1oom is a faithful, from-scratch GPLv2 reimplementation of the original DOS
+engine; this fork leaves single-player untouched and layers networked play on top.
 
 > **Status:** work in progress, actively playtested. Single-player is upstream 1oom; the
 > multiplayer is new and still evolving. Expect rough edges.
 
-## Multiplayer features
+---
 
-- **Authoritative headless server** + SDL2 clients, with **simultaneous-turn** play — everyone
-  plans at once and the server resolves the turn when all players are ready.
-- **Pre-game lobby**: pick race and color, host chooses AI count and galaxy size, everyone readies up.
-- **Live human-to-human diplomacy** mirroring the AI audience menu — propose treaties
-  (non-aggression / alliance / peace), declare war, break a treaty, **form trade agreements**,
-  **exchange technology**, and break trade.
-- **Interactive combat**: you control your own ships in battle; the server runs the fight and
-  relays it to the players involved.
-- **Result playback**: galaxy-map fleet-movement animation, ground-invasion animations (shown to
-  both attacker and defender), and orbital-bombing results.
-- **Autosave & crash recovery**: the server saves every turn, so a dropped or crashed game can be
+## Features
+
+**Multiplayer**
+- **Authoritative headless server + SDL2 clients**, with **simultaneous turns** — everyone plans at
+  once and the server resolves the turn once all players are ready. An optional **per-turn timer**
+  keeps games moving.
+- **Pre-game lobby** — pick your race and color, choose teams, and (host) set AI count, galaxy size,
+  and difficulty, then ready up.
+- **Team play** — put two or more players on the same team for a **locked alliance** (you can't war
+  or spy on each other), **shared vision**, and a **shared victory**. Works for human teams,
+  human+AI teams, and all-AI teams.
+- **Live human-to-human diplomacy** — the full audience menu against real players: treaties
+  (non-aggression / alliance / peace), declare war, break treaties, trade agreements, and
+  **technology exchange**.
+- **Interactive combat** — you fly your own ships in battle; the server runs the fight and relays it
+  to the players involved, and teammates can **watch** a teammate's battle live.
+- **Team coordination overlays** — see teammates' in-progress plans (planned fleets, colonization,
+  live world stats) during planning, and drop **map beacons** to flag targets for your allies.
+- **Autosave & crash recovery** — the server saves every turn, so a dropped or crashed game can be
   resumed with `-mpload`.
-- **Cross-platform networking**: the server and client build on macOS and Linux today, and the
-  socket layer includes Winsock support so the client can be built for Windows.
+
+**Conveniences (single- and multiplayer)**
+- **Smooth galaxy map** — click-and-drag panning and continuous zoom-to-cursor.
+- **Bigger galaxies** — the **Enormous** and **Galactic** sizes are selectable (in addition to the
+  stock Small–Huge).
+
+---
+
+## Setting up a multiplayer match
+
+The fastest path depends on your group. Everyone needs a working client, a copy of the
+[game data](#game-data), and to be running the **same build**.
+
+### 1. Get a client
+
+- **Build from source** (macOS / Linux — see [Building](#building)), **or**
+- **Windows, no build:** the repo includes `build-win.sh`, which cross-compiles an
+  *unzip-and-double-click* Windows bundle (`Surprise.zip`). Its **`Play Together.bat`** launcher just
+  asks **Host or Join** — no command line needed. (Building the bundle needs an `llvm-mingw` +
+  `SDL2-mingw` cross-toolchain; the resulting zip is what you hand to friends.)
+
+### 2. One person hosts
+
+The host runs the headless server **and** joins it with their own client.
+
+```sh
+# Terminal 1 — the server (waits for 2 humans; any extra empires are AI)
+1oom_server -mphost 24695 -mphumans 2 -data /path/to/moo-data
+
+# Terminal 2 — the host's own client
+1oom_classic_sdl2 -mpjoin 127.0.0.1:24695 -data /path/to/moo-data
+```
+
+Then share your address with the other players (the host's machine must be reachable on the port —
+see [Connecting](#connecting-over-the-network)).
+
+### 3. Everyone else joins
+
+```sh
+1oom_classic_sdl2 -mpjoin <host-address>:24695 -data /path/to/moo-data
+```
+
+On Windows with the bundle: double-click **`Play Together.bat`**, press **J**, and type the host's
+address. (To host from the bundle instead, press **H** — it starts the server, shows your IP
+addresses, and waits for one player to join.)
+
+### 4. In the lobby
+
+Once everyone's connected you all land in the shared lobby:
+
+- **Each player** picks a **Race** and **Color**, and clicks their **team chip** to choose a team
+  (it cycles `FFA → T1 → T2 …`). Players on the **same team number** start allied with shared sight.
+- **The host** (the first slot) sets the number of **AI opponents**, the **galaxy size** and
+  **difficulty**, and the optional **turn timer**.
+- Everyone clicks **Ready**; the game begins.
+
+### 5. Playing
+
+Turns are **simultaneous**: everyone plans at the same time, and locking in your turn ("Next Turn")
+readies you. The server resolves the turn once all players are ready, then plays back movement and
+combat. Handy in-game controls:
+
+| Action | Control |
+|---|---|
+| Pan the galaxy map | click-and-drag |
+| Zoom | scroll / trackpad over the map (zoom-to-cursor) |
+| Beacon a world for your team | focus a star, press **B** (up to 3; press **B** again to clear) |
+| Diplomacy with another player | the **audience** menu, same as vs. the AI |
+
+### Quick local test (one machine)
+
+You can run the whole thing on a single computer to try it out — start the server and **two** clients
+(alt-tab between the windows). `-uiscale N` shrinks the windows so they fit side by side:
+
+```sh
+1oom_server -mphost 24695 -mphumans 2 -data /path/to/moo-data &
+1oom_classic_sdl2 -uiscale 2 -mpjoin 127.0.0.1:24695 -data /path/to/moo-data &
+1oom_classic_sdl2 -uiscale 2 -mpjoin 127.0.0.1:24695 -data /path/to/moo-data &
+```
+
+### Connecting over the network
+
+Any TCP reachability between the players and the host works:
+- **Same LAN:** use the host's local `192.168.x.x` address.
+- **Over the internet:** a mesh VPN such as [Tailscale](https://tailscale.com) is easiest — every
+  machine gets a stable `100.x.x.x` address and **no port-forwarding** is needed. Otherwise forward
+  the port on the host's router, or run `1oom_server` on a public-IP box / VPS.
+- **Dedicated server:** `1oom_server` is headless (no SDL or audio), so it runs fine on a minimal
+  Linux VPS — build it, copy the game data up, open the port, and have everyone connect as clients.
+
+### Saving & resuming
+
+The server writes a per-turn autosave (`mp_autosave.blob`) to your 1oom user directory, and a player
+can trigger a named save in-game (**Esc → Save**). Resume any of them by passing the file to the
+server with `-mpload`:
+
+```sh
+1oom_server -mphost 24695 -mpload ~/.config/1oom/mp_autosave.blob -data /path/to/moo-data
+```
+
+The human count is baked into the save, so `-mphumans` isn't needed when resuming. Everyone rejoins
+as before.
+
+> **Same build, both ends.** Multiplayer syncs game state as raw structures, so the server and every
+> client must be built from the **same commit**. A version handshake rejects mismatches at join — if
+> someone can't connect, have them pull and rebuild.
+
+---
 
 ## Building
 
-You need a C toolchain and SDL2 (for the graphical client). The original Master of Orion **game
-data is not included** — see [Game data](#game-data).
+You need a C toolchain, the autotools, and SDL2 (for the graphical client). The original Master of
+Orion **game data is not included** — see [Game data](#game-data).
 
 **macOS (Homebrew):**
 ```sh
 brew install sdl2 sdl2_mixer libsamplerate autoconf automake pkg-config
-./configure && make -j4
+autoreconf -i && ./configure && make -j4
 ```
 
 **Debian / Ubuntu:**
 ```sh
 sudo apt install build-essential libsdl2-dev libsdl2-mixer-dev libsamplerate0-dev \
                  autoconf automake pkg-config
-./configure && make -j4
+autoreconf -i && ./configure && make -j4
 ```
 
 This produces, under `src/`:
@@ -48,38 +162,14 @@ This produces, under `src/`:
 - `1oom_classic_sdl2` — the graphical client
 - `1oom_cmdline` — a text client
 
+See [`COMPILING`](COMPILING) for the full list of `./configure` options.
+
 ## Game data
 
-1oom needs the data files from an original **Master of Orion (1993)** installation (for example a
-GOG copy) — the `*.LBX` files. These are copyrighted and are **not** distributed here. Point any
-binary at them with `-data <dir>`. See upstream [1oom](https://github.com/1oom-fork/1oom) for help
-locating the data.
-
-## Playing multiplayer
-
-Every player must run the **same build** and use the **same game data**.
-
-**Host** — runs the authoritative server (a player's machine or a dedicated box):
-```sh
-1oom_server -mphost 24695 -mphumans 2 -data /path/to/moo-data
-```
-- `-mphost <port>` — host a game on `<port>`.
-- `-mphumans <N>` — number of human players to wait for; the remaining `-new` empires are AI.
-- `-mpload <file>` — resume a saved game instead of starting a new one. The per-turn autosave is
-  written to your 1oom user directory as `mp_autosave.blob`.
-
-**Join** — every player (including the host) runs a client:
-```sh
-1oom_classic_sdl2 -mpjoin <host-address>:24695 -data /path/to/moo-data
-```
-Use `127.0.0.1` for a local test, or the host's reachable address. For internet play any TCP
-reachability works — a mesh VPN such as [Tailscale](https://tailscale.com) is the easiest (no
-port-forwarding required), or run the headless server on a public-IP host.
-
-### Dedicated server
-
-Because `1oom_server` is headless, it runs fine on a minimal Linux VPS: build the server, copy your
-game data up, open the port, and have all players connect as clients.
+1oom needs the data files from an original **Master of Orion (1993)** installation (e.g. a GOG copy)
+— the `*.LBX` files. These are copyrighted and are **not** distributed here. Point any binary at
+them with `-data <dir>`. See upstream [1oom](https://github.com/1oom-fork/1oom) for help locating the
+data.
 
 ## Credits & license
 
