@@ -166,10 +166,29 @@ See [`COMPILING`](COMPILING) for the full list of `./configure` options.
 
 ## Game data
 
-1oom needs the data files from an original **Master of Orion (1993)** installation (e.g. a GOG copy)
-— the `*.LBX` files. These are copyrighted and are **not** distributed here. Point any binary at
-them with `-data <dir>`. See upstream [1oom](https://github.com/1oom-fork/1oom) for help locating the
-data.
+1oom is only the engine — it needs the original **Master of Orion (1993, v1.3)** data files (the
+`*.LBX` files) from a legitimately-owned copy of the game. Those assets are copyrighted and are
+**not** included in this repository.
+
+**Where to get them:** install an original copy of MOO1 — for example GOG's *Master of Orion 1+2*
+bundle. The `*.LBX` files live in the game's install directory.
+
+**Pointing the engine at them:** pass the folder that contains the `.LBX` files with `-data` (every
+binary — server, client, tools — takes the same flag):
+
+```sh
+1oom_classic_sdl2 -data "/path/to/Master of Orion" -mpjoin <host>:24695
+1oom_server       -data "/path/to/Master of Orion" -mphost 24695 -mphumans 2
+```
+
+Alternatively, run the binary from *inside* the MOO1 directory (it looks there automatically), or
+copy the `1oom_*` executables and their DLLs into that directory. All players in a multiplayer game
+must use the **same data version (1.3)**. See upstream
+[1oom](https://github.com/1oom-fork/1oom) for more on locating the files.
+
+> The Windows `Surprise.zip` bundle ships a `data/` folder so the person you hand it to can play
+> without locating the files themselves — share it only with people who own the game; **don't post
+> it publicly**, since it contains those copyrighted assets.
 
 ## Credits & license
 
