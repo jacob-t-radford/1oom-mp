@@ -504,6 +504,30 @@ void game_update_empire_contact(struct game_s *g)
             }
         }
     }
+    /* 1oom-mp teams: contact is recomputed from colony range every turn, but the team stance-sync
+       propagates a WAR (or peace/NAP) onto every ally regardless of range -- war-on-one is war-on-all.
+       That leaves an ally holding a treaty toward an empire it is NOT within range of: contact recomputes
+       to 0, so that empire never appears on its Races tab even though the ally is at war with it. (It also
+       got a first-contact "greeting": game_diplo_start_war latches have_met without contact, and the AI
+       greeting in game_ai_classic.c fires off have_met alone -- hence "greeted but never on the tab, even
+       the same turn".) In the original game you can't be at war out of range -- war always implies contact
+       -- so restore that invariant on the server: any human holding an ACTIVE treaty (!= NONE: war / NAP /
+       alliance / ...) with an empire is kept in contact with it, both ways, so it shows on the diplomacy
+       screen. A merely-met-but-neutral empire (treaty == NONE) is deliberately NOT floored, so ordinary
+       range-gating still drops it when you leave -- matching the OG game. Server-only (game_mp_is_server)
+       so single-player is unchanged; runs after the team-pooling loop; keyed on a human side so AI<->AI
+       contact (which feeds AI diplomacy) is never widened. */
+    if (game_mp_is_server) {
+        for (player_id_t h = PLAYER_0; h < g->players; ++h) {
+            if (!IS_HUMAN(g, h)) { continue; }
+            for (player_id_t j = PLAYER_0; j < g->players; ++j) {
+                if ((j != h) && (g->eto[h].treaty[j] != TREATY_NONE)) {
+                    BOOLVEC_SET1(g->eto[h].contact, j);
+                    BOOLVEC_SET1(g->eto[j].contact, h);
+                }
+            }
+        }
+    }
 }
 
 bool game_check_coord_is_visible(const struct game_s *g, player_id_t pi, int range, int x, int y)

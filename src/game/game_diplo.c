@@ -504,6 +504,30 @@ bool game_diplo_is_gone(struct game_s *g, player_id_t api, player_id_t pi)
    whole teams share it. Reuses the primitives (so each mirrored pair gets correct relations/mood),
    guarded by s_diplo_in_team_sync so the primitives' own sync calls no-op while we run. A solo
    empire is its own team of one. Trade is intentionally not mirrored; FINAL_WAR is left alone. */
+
+/* 1oom-mp teams: a human ally dragged into a war by the team sync (below) inherits the WAR treaty but
+   no declaration of its own, so game_turn_audiences would never announce it -- it would be silently at
+   war. If the AI enemy `e` actually DECLARED war on someone on h's team THIS turn, that ally still has a
+   pending audience from e (set during the AI diplo phase, not yet consumed by game_turn_audiences, which
+   runs right after). In that case queue h the standard war-declaration audience too, so every ally is
+   notified -- not just the one the AI happened to name. A war the team itself CHOSE (consensus vote) is
+   excluded for free: last turn's diplo_type was already cleared, so no ally has a pending audience and
+   nothing is fabricated. h is notified via the same server->client audience relay as the direct target. */
+static void game_diplo_team_notify_dragged_war(struct game_s *g, player_id_t h, player_id_t e)
+{
+    if ((h >= g->players) || (e >= g->players)) { return; }
+    if (!IS_HUMAN(g, h) || !IS_AI(g, e)) { return; }   /* only notify humans; only AI wars use this audience path */
+    if (g->mp_team[h] == 0) { return; }                /* h is not on a team -> nothing was inherited */
+    if (g->eto[h].diplo_type[e] != 0) { return; }      /* h is the direct target -> it gets its own audience */
+    for (player_id_t k = PLAYER_0; k < g->players; ++k) {
+        if ((k != h) && (g->mp_team[k] == g->mp_team[h]) && (g->eto[k].diplo_type[e] != 0)) {
+            g->eto[h].diplo_type[e] = 13;  /* canonical "declare war" audience (cf. game_event.c) */
+            g->eto[h].diplo_val[e] = 100;
+            return;
+        }
+    }
+}
+
 static void game_diplo_team_sync_stance(struct game_s *g, player_id_t pi, player_id_t pi2)
 {
     uint8_t ta, tb;
@@ -551,6 +575,11 @@ static void game_diplo_team_sync_stance(struct game_s *g, player_id_t pi, player
             }
             if (tr == TREATY_WAR) {
                 game_diplo_start_war(g, tx, ty);
+                /* 1oom-mp teams: notify whichever side is a human ally dragged into this war (the enemy
+                   is the other side). Both orderings are tried because the sync's pi/pi2 -> tx/ty mapping
+                   depends on which team is the lone-AI side. */
+                game_diplo_team_notify_dragged_war(g, tx, ty);
+                game_diplo_team_notify_dragged_war(g, ty, tx);
             } else {
                 if (cur == TREATY_WAR) {
                     game_diplo_stop_war(g, tx, ty); /* leave war cleanly (relations/ceasefire) first */
