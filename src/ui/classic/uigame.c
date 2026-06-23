@@ -1130,11 +1130,18 @@ void ui_game_start(struct game_s *g)
     g_mp_team_stance_propose_hook = mp_team_stance_propose; /* 1oom-mp teams: enemy-stance changes route through team consensus */
     ui_mp_tech_notify_reset(); /* MP: re-baseline the completed-tech diff for a fresh game */
     ui_mp_contact_notify_reset(); /* MP: re-baseline first-contact tracking for a fresh game */
-    for (int i = 0; i < g->nebula_num; ++i) {
-        ui_data.gfx.starmap.nebula[i] = lbxfile_item_get(LBXFILE_STARMAP, 0xf + g->nebula_type[i]);
-        ui_data.gfx.starmap.smnebula[i] = ui_data.gfx.starmap.smneb[g->nebula_type[i] + g->galaxy_size * 10];
+    {
+        /* 1oom-mp: the small-nebula array (smneb[4*10]) and the bmap viewport graphic (LBXFILE_V11) only
+           have art for Small..Huge. Enormous/Galactic have no art of their own, so index the GRAPHICS as
+           Huge -- otherwise we read past the array / LBX and draw garbage boxes on the galaxy map. The big
+           nebula (line below) is keyed by type only, so it's already fine at any size. */
+        int gsz_gfx = (g->galaxy_size > GALAXY_SIZE_HUGE) ? GALAXY_SIZE_HUGE : g->galaxy_size;
+        for (int i = 0; i < g->nebula_num; ++i) {
+            ui_data.gfx.starmap.nebula[i] = lbxfile_item_get(LBXFILE_STARMAP, 0xf + g->nebula_type[i]);
+            ui_data.gfx.starmap.smnebula[i] = ui_data.gfx.starmap.smneb[g->nebula_type[i] + gsz_gfx * 10];
+        }
+        ui_data.gfx.starmap.bmap = lbxfile_item_get(LBXFILE_V11, 1 + gsz_gfx);
     }
-    ui_data.gfx.starmap.bmap = lbxfile_item_get(LBXFILE_V11, 1 + g->galaxy_size);
 
     /* HACK remove visual glitch on load game */
     ui_draw_erase_buf();
