@@ -44,7 +44,7 @@ static void ui_starmap_ships_draw_cb1(void *vptr)
     const struct game_s *g = d->g;
     const planet_t *p = &(g->planet[g->planet_focus_i[d->api]]);
     char buf[0x80];
-    ui_starmap_draw_basic(d);
+    ui_starmap_drag_pan(d); ui_starmap_draw_basic(d);
     lbxgfx_draw_frame(222, 80, ui_data.gfx.starmap.relocate, UI_SCREEN_W, ui_scale);
     ui_draw_filled_rect(225, 81, 312, 160, 0, ui_scale);
 
@@ -118,7 +118,7 @@ void ui_starmap_ships(struct game_s *g, player_id_t active_player)
 
     while (!flag_done) {
         int16_t oi1, oi2;
-        oi1 = uiobj_handle_input_cond();
+        oi1 = uiobj_handle_input_cond(); if (ui_starmap_drag_panned_consume()) { oi1 = 0; }
         oi2 = uiobj_at_cursor();
         ui_delay_prepare();
         ui_starmap_handle_scrollkeys(&d, oi1);

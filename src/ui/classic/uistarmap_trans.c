@@ -44,7 +44,7 @@ static void ui_starmap_trans_draw_cb(void *vptr)
     int x0, y0, trans_max = pf->pop / 2;
     STARMAP_LIM_INIT();
     uiobj_set_help_id(17);
-    ui_starmap_draw_basic(d);
+    ui_starmap_drag_pan(d); ui_starmap_draw_basic(d);
     x0 = ui_starmap_ovl_x(pf->x, 8);
     y0 = ui_starmap_ovl_y(pf->y, 8);
     if (pt->owner == d->api) {
@@ -210,7 +210,7 @@ void ui_starmap_trans(struct game_s *g, player_id_t active_player)
     while (!flag_done) {
         int16_t oi1, oi2;
         const planet_t *pt;
-        oi1 = uiobj_handle_input_cond();
+        oi1 = uiobj_handle_input_cond(); if (ui_starmap_drag_panned_consume()) { oi1 = 0; }
         oi2 = uiobj_at_cursor();
         ui_delay_prepare();
         pt = &(g->planet[g->planet_focus_i[active_player]]);

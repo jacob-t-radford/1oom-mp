@@ -191,6 +191,8 @@ extern void ui_starmap_set_origin16(const struct game_s *g, int ox16, int oy16);
 extern void ui_starmap_zoom_sync_scale(void); /* derive starmap_scale (icon) from sm_zoom_f16; call after setting either */
 extern void ui_starmap_zoom_to_f16(const struct game_s *g, int new_f16, int mx, int my); /* cursor/centre-anchored zoom to absolute f16 level */
 extern void ui_starmap_draw_basic(struct starmap_data_s *d);
+extern void ui_starmap_drag_pan(struct starmap_data_s *d);       /* 1oom-mp: click-drag map panning (call in a draw cb) */
+extern bool ui_starmap_drag_panned_consume(void);               /* 1oom-mp: read-and-clear "the drag just panned" */
 extern void ui_starmap_draw_starmap(struct starmap_data_s *d);
 extern void ui_starmap_draw_button_text(struct starmap_data_s *d, bool highlight);
 extern void ui_starmap_sn0_setup(struct shipnon0_s *sn0, int sd_num, const shipcount_t *ships);

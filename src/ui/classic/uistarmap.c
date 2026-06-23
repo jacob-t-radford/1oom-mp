@@ -43,7 +43,7 @@ static bool sm_drag_panned = false;
 static int sm_drag_px = 0;
 static int sm_drag_py = 0;
 
-static void ui_starmap_drag_pan(struct starmap_data_s *d)
+void ui_starmap_drag_pan(struct starmap_data_s *d)
 {
     const struct game_s *g = d->g;
     bool lb = (mouse_buttons & MOUSE_BUTTON_MASK_LEFT) != 0;
@@ -79,6 +79,16 @@ static void ui_starmap_drag_pan(struct starmap_data_s *d)
     } else {
         sm_drag_active = false;
     }
+}
+
+/* 1oom-mp: did the drag actually pan since the last drag-start? Read-and-clear. Sub-mode loops call this
+   right after uiobj_handle_input_cond() to swallow the button-release click so a drag-pan doesn't also
+   pick a target/destination (the main loop does the equivalent inline against oi_scroll). */
+bool ui_starmap_drag_panned_consume(void)
+{
+    bool r = sm_drag_panned;
+    sm_drag_panned = false;
+    return r;
 }
 
 static void ui_starmap_draw_cb1(void *vptr)

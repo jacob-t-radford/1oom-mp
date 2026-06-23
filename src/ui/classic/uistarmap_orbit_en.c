@@ -36,7 +36,7 @@ static void ui_starmap_orbit_en_draw_cb(void *vptr)
     char buf[0x80];
     STARMAP_LIM_INIT();
 
-    ui_starmap_draw_basic(d);
+    ui_starmap_drag_pan(d); ui_starmap_draw_basic(d);
     {
         int x, y;
         x = ui_starmap_ovl_x(p->x, 23);
@@ -134,7 +134,7 @@ void ui_starmap_orbit_en(struct game_s *g, player_id_t active_player)
 
     while (!flag_done) {
         int16_t oi1, oi2;
-        oi1 = uiobj_handle_input_cond();
+        oi1 = uiobj_handle_input_cond(); if (ui_starmap_drag_panned_consume()) { oi1 = 0; }
         oi2 = uiobj_at_cursor();
         ui_delay_prepare();
         ui_starmap_handle_scrollkeys(&d, oi1);
