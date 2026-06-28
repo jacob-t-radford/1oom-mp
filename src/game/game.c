@@ -29,6 +29,8 @@
 #include "game_strp.h"
 #include "game_turn.h"
 #include "game_tech.h"
+#include "game_shiptech.h"
+#include "util_math.h"
 #include "log.h"
 #include "hw.h"
 #include "mp.h"
@@ -39,6 +41,8 @@
 #include "util.h"
 #include <stdio.h>
 #include <time.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 /* -------------------------------------------------------------------------- */
 
@@ -464,7 +468,7 @@ const struct cmdline_options_s main_cmdline_options[] = {
       "N", "Multiplayer (host): number of human players to wait for (default 1; rest of -new empires are AI)" },
     { "-mpload", 1,
       options_set_str_var, (void *)&opt_mp_load,
-      "FILE", "Multiplayer (host): resume a saved game from FILE in the user dir (an autosave mp_auto_<id>.blob or an on-command save mp_save_<id>_y<year>.blob) instead of starting a new one" },
+      "FILE", "Multiplayer (host): resume instead of starting a new game. FILE may be a game folder (games/<id> -> loads its latest turn), a specific turn save (games/<id>/y<year>.blob), or a legacy autosave (mp_auto_<id>.blob)" },
     { "-mpopen", 1,
       options_set_int_var, (void *)&opt_mp_open,
       "MAXHUMANS", "Multiplayer (host): OPEN lobby -- players join freely (up to MAXHUMANS) and the host clicks Start to begin, instead of -mphumans' fixed count" },
@@ -812,6 +816,32 @@ static void game_mp_autosave(struct game_s *g) {
     mp_write_save_blob(g, fname);
 }
 
+/* 1oom-mp: every game gets its own folder, <userdir>/games/<game_id>/, that accumulates one save blob
+   per turn. Returns the folder path in buf and creates the tree (games/, then games/<id>/). os_make_path
+   only makes one level at a time, so we create the parent first. */
+static const char *game_mp_game_dir(char *buf, size_t bufsize) {
+    char gamesdir[1024];
+    os_make_path_user();
+    lib_sprintf(gamesdir, sizeof(gamesdir), "%s/games", os_get_path_user());
+    os_make_path(gamesdir);
+    if (s_mp_game_id[0]) { lib_sprintf(buf, bufsize, "%s/%s", gamesdir, s_mp_game_id); }
+    else { lib_sprintf(buf, bufsize, "%s/default", gamesdir); }
+    os_make_path(buf);
+    return buf;
+}
+
+/* 1oom-mp: keep an immutable per-turn save in this game's folder (games/<id>/y<year>.blob). Always on
+   -- a save is only ~20 KB, so a whole game is a few MB -- so any game can be resumed at, or rewound to,
+   any turn, and the full history can be re-analyzed later. Resuming an earlier turn simply overwrites
+   the now-superseded later turns (a clean branch). */
+static void game_mp_turnsave(struct game_s *g) {
+    char dir[1024], fname[1152];
+    int year = (int)g->year + YEAR_BASE;
+    game_mp_game_dir(dir, sizeof(dir));
+    lib_sprintf(fname, sizeof(fname), "%s/y%d.blob", dir, year);
+    mp_write_save_blob(g, fname);
+}
+
 /* 1oom-mp: an on-command save (a player chose Esc -> Save). A permanent NAMED snapshot, separate from the
    rolling autosave, so you can keep several and resume any: mp_save_<game_id>_y<year>.blob (one per
    in-game year). Lives on the server's machine, where -mpload reads. */
@@ -823,6 +853,96 @@ static void game_mp_save_named(struct game_s *g) {
     else { lib_sprintf(fname, sizeof(fname), "%s/mp_save_y%d.blob", os_get_path_user(), year); }
     if (mp_write_save_blob(g, fname)) { log_message("MP: saved game to %s\n", fname); }
     else { log_error("MP: save to %s FAILED\n", fname); }
+}
+
+/* 1oom-mp: env-gated (MP_AIDUMP) per-turn expansion trace. Appends one section per turn to
+   <userdir>/mp_aidump_<game_id>.txt so the WHOLE game's AI-expansion history can be reviewed after
+   the fact -- when/why an AI stopped colonizing -- not just the current snapshot. Mirrors
+   game_ai_classic_turn_p1_send_colony_ships's target test exactly: can_colonize comes from the
+   colony SHIP's module (not empire tech), and the classic AI also needs a colony ship within fuel
+   range of the target (line-614 check). Cheap (a few fprintf's per turn). */
+static void game_mp_aidump(struct game_s *g) {
+    char fname[1024];
+    FILE *f;
+    if (!getenv("MP_AIDUMP")) { return; }
+    game_update_within_range(g);
+    os_make_path_user();
+    if (s_mp_game_id[0]) { lib_sprintf(fname, sizeof(fname), "%s/mp_aidump_%s.txt", os_get_path_user(), s_mp_game_id); }
+    else { lib_sprintf(fname, sizeof(fname), "%s/mp_aidump.txt", os_get_path_user()); }
+    f = fopen(fname, "a");
+    if (!f) { log_error("MP_AIDUMP: cannot open %s for append\n", fname); return; }
+    fprintf(f, "=== year %d | %d empires | %d stars | ai_id=%d (CLASSIC=%d CLASSICPLUS=%d) ===\n",
+        (int)g->year + YEAR_BASE, g->players, g->galaxy_stars,
+        (int)g->ai_id, (int)GAME_AI_CLASSIC, (int)GAME_AI_CLASSICPLUS);
+    for (player_id_t pi = PLAYER_0; pi < g->players; ++pi) {
+        empiretechorbit_t *e = &g->eto[pi];
+        int shipi = e->shipi_colony;
+        int owned = 0, colships = 0, developing = 0;
+        int reservefuel = ((shipi >= 0) && g->srd[pi].have_reserve_fuel[shipi]) ? 1 : 0;
+        int hcontact = 0, expansionist = (e->trait2 == TRAIT2_EXPANSIONIST), send_colony;
+        int range_units = e->fuel_range * 15;   /* line-614 source<->target distance budget */
+        /* replicate send_colony_ships's can_colonize (the colony SHIP's module, not empire tech) */
+        planet_type_t can_col = PLANET_TYPE_MINIMAL;
+        if (shipi >= 0) {
+            const shipdesign_t *sd = &g->srd[pi].design[shipi];
+            for (int k = 0; k < SPECIAL_SLOT_NUM; ++k) {
+                ship_special_t s = sd->special[k];
+                if ((s >= SHIP_SPECIAL_STANDARD_COLONY_BASE) && (s <= SHIP_SPECIAL_RADIATED_COLONY_BASE)) {
+                    can_col = PLANET_TYPE_MINIMAL - (s - SHIP_SPECIAL_STANDARD_COLONY_BASE);
+                }
+            }
+        }
+        if (e->race == RACE_SILICOID) { can_col = PLANET_TYPE_RADIATED; }
+        int r1_total = 0, r1_typeok = 0, r1_wrongtype = 0, r1_enroute = 0, r1_noship = 0;
+        int r1_toohostile = 0, r1_modulelag = 0;
+        int r1_send_classic = 0, r1_send_plus = 0, r2_total = 0, r2_typeok = 0;
+        for (int i = 0; i < g->galaxy_stars; ++i) {
+            const planet_t *p = &g->planet[i];
+            if (p->owner == pi) {
+                owned++;
+                if (shipi >= 0) { colships += e->orbit[i].ships[shipi]; }
+                if ((p->missile_bases < (p->max_pop3 / 20)) && (p->pop < ((p->max_pop3 * 2) / 3))) { developing++; }
+                continue;
+            }
+            if (p->owner != PLAYER_NONE) { continue; }
+            int fr = p->within_frange[pi];
+            if (fr == 2) { r2_total++; if (p->type >= can_col) { r2_typeok++; } continue; }
+            if (fr != 1) { continue; }
+            r1_total++;
+            if (p->type < can_col) {
+                r1_wrongtype++;
+                if (p->type < e->have_colony_for) { r1_toohostile++; } else { r1_modulelag++; }
+                continue;
+            }
+            r1_typeok++;
+            int enr = 0;
+            for (int j = 0; j < g->enroute_num; ++j) {
+                if ((g->enroute[j].owner == pi) && (g->enroute[j].dest == i) && (shipi >= 0) && (g->enroute[j].ships[shipi] > 0)) { enr = 1; break; }
+            }
+            if (enr) { r1_enroute++; continue; }
+            int mind = 1000000, found = 0;
+            if (shipi >= 0) {
+                for (int j = 0; j < g->galaxy_stars; ++j) {
+                    if (e->orbit[j].ships[shipi] > 0) {
+                        int d = util_math_dist_fast(p->x, p->y, g->planet[j].x, g->planet[j].y);
+                        if (d < mind) { mind = d; found = 1; }
+                    }
+                }
+            }
+            if (!found) { r1_noship++; continue; }
+            r1_send_plus++;                               /* CLASSICPLUS: any orbiting colony ship can be sent */
+            if (mind <= range_units) { r1_send_classic++; } /* CLASSIC: source must also be within fuel range */
+        }
+        for (int i = 0; i < g->enroute_num; ++i) { if ((g->enroute[i].owner == pi) && (shipi >= 0)) { colships += g->enroute[i].ships[shipi]; } }
+        for (player_id_t pj = PLAYER_0; pj < g->players; ++pj) { if ((pj != pi) && IS_HUMAN(g, pj) && BOOLVEC_IS1(g->eto[pj].contact, pi)) { hcontact = 1; } }
+        send_colony = !((!expansionist) && ((owned / 2) < developing) && hcontact);
+        fprintf(f, "  P%d race=%d %s planets=%2d colships=%d range=%d resfuel=%d can_col=%d have_col=%d SEND_COLONY=%d\n",
+            pi, (int)e->race, IS_AI(g, pi) ? "AI " : "HUM", owned, colships, (int)e->fuel_range,
+            reservefuel, (int)can_col, (int)e->have_colony_for, send_colony);
+        fprintf(f, "      range1: unowned=%d type_ok=%d DELIVERABLE[classic=%d plus=%d] (wrongtype=%d[too_hostile=%d module_lag=%d] noship_inrange=%d enroute=%d) | range2: unowned=%d type_ok=%d\n",
+            r1_total, r1_typeok, r1_send_classic, r1_send_plus, r1_wrongtype, r1_toohostile, r1_modulelag, r1_noship, r1_enroute, r2_total, r2_typeok);
+    }
+    fclose(f);
 }
 
 /* server: a client requested a save (Esc -> Save) -> write a named snapshot of the authoritative state. */
@@ -878,6 +998,7 @@ static int mp_if_advance(void *ctx) {
     /* apply diplomacy actions AFTER turn processing (it clears queued proposals) */
     game_mp_diplo_apply_pending(g);
     game_mp_autosave(g); /* persist the resolved turn so a crash/restart can resume it */
+    game_mp_turnsave(g); /* keep this turn forever in the game's folder (games/<id>/y<year>.blob) */
     /* return >0 to tell mp_server_run the game has ended (someone won/lost) */
     {
         int over = ((ge.type == GAME_END_NONE) || (ge.type == GAME_END_FINAL_WAR)) ? 0 : 1;
@@ -2180,6 +2301,39 @@ static void game_mp_set_game_id(void) {
     }
 }
 
+/* 1oom-mp: resolve a -mpload argument. If it names a directory (a game folder under games/), return a
+   freshly-allocated path to its latest-turn save (highest y<year>.blob) so "resume" picks up the last
+   turn by default. To resume a SPECIFIC turn instead, point -mpload straight at games/<id>/y<year>.blob.
+   A plain file (or a folder with no turn saves) is returned unchanged. Caller frees the result. */
+static char *game_mp_resolve_load_path(const char *path) {
+    struct stat st;
+    if ((stat(path, &st) == 0) && S_ISDIR(st.st_mode)) {
+        DIR *d = opendir(path);
+        if (d) {
+            struct dirent *de;
+            int best = -1;
+            char bestname[64] = {0};
+            while ((de = readdir(d)) != NULL) {
+                int y = 0;
+                if ((sscanf(de->d_name, "y%d.blob", &y) == 1) && (y > best)) {
+                    best = y;
+                    lib_strcpy(bestname, de->d_name, sizeof(bestname));
+                }
+            }
+            closedir(d);
+            if (best >= 0) {
+                size_t n = strlen(path) + 1 + strlen(bestname) + 1;
+                char *full = lib_malloc(n);
+                lib_sprintf(full, n, "%s/%s", path, bestname);
+                log_message("MP: resuming game folder %s at latest turn (%s)\n", path, bestname);
+                return full;
+            }
+            log_error("MP: -mpload folder '%s' has no y<year>.blob turn saves\n", path);
+        }
+    }
+    return lib_stralloc(path);
+}
+
 static int game_mp_host(void) {
     int humans, rc;
     bool resume = (opt_mp_load != NULL);
@@ -2192,7 +2346,12 @@ static int game_mp_host(void) {
     if (resume) {
         /* resume a crashed/saved game: the save blob takes the place of game_new (it also restores the
            per-game id, so we keep autosaving to the same mp_auto_<id>.blob). */
-        if (game_mp_load_autosave(opt_mp_load, &humans)) { game_aux_shutdown(&game_aux); return 1; }
+        {   /* a -mpload folder resumes its latest turn; a y<year>.blob resumes that exact turn */
+            char *loadpath = game_mp_resolve_load_path(opt_mp_load);
+            int lr = game_mp_load_autosave(loadpath, &humans);
+            lib_free(loadpath);
+            if (lr) { game_aux_shutdown(&game_aux); return 1; }
+        }
         if (s_mp_game_id[0] == 0) { game_mp_set_game_id(); } /* an old-format save carried no id -> stamp a fresh one */
     } else {
         /* honor -new (galaxy size, races, empire count, difficulty); GAME_NEW_OPTS_DEFAULT otherwise */
@@ -2215,6 +2374,7 @@ static int game_mp_host(void) {
     game_aux_start(&game_aux, &game);
     game_start(&game);      /* sets game_ai dispatch + per-empire derived values (eco/tech/production) */
     ui_game_start(&game);
+    game_mp_aidump(&game); /* MP_AIDUMP: write the loaded/initial state as the first trace section */
     /* arm turn-movement playback: snapshot the pre-movement state each turn so the
        client can animate fleets moving (see mp_premove_capture / mp_if_get_movement). */
     s_mp_premove_cap = game_save_blob_maxlen(&game);
