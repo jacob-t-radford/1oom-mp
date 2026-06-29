@@ -71,12 +71,38 @@ static void game_election_prepare(struct election_s *el)
             }
         }
     }
-    if (IS_AI(g, tbl_ei[0]) && IS_HUMAN(g, tbl_ei[1])) {
-        el->candidate[0] = tbl_ei[1];
-        el->candidate[1] = tbl_ei[0];
-    } else {
-        el->candidate[0] = tbl_ei[0];
-        el->candidate[1] = tbl_ei[1];
+    /* 1oom-mp teams: the two nominees are the strongest member of each of the two strongest TEAMS, so a
+       locked team (which votes as a bloc) can't take both council seats. FFA empires (mp_team==0) each
+       count as their own team, so with nobody teamed this reduces to the vanilla "two strongest empires". */
+    {
+        int tkey[PLAYER_NUM];          /* distinct team: the mp_team value, or -(empire+1) for an FFA empire */
+        uint32_t tsum[PLAYER_NUM];     /* total votes of the team (a bloc) */
+        player_id_t trep[PLAYER_NUM];  /* the team's strongest member -> its nominee */
+        int nt = 0;
+        for (player_id_t i = PLAYER_0; i < g->players; ++i) {
+            int key, t = -1;
+            if (!IS_ALIVE(g, i)) { continue; }
+            key = (g->mp_team[i] != 0) ? (int)g->mp_team[i] : (-((int)i + 1));
+            for (int j = 0; j < nt; ++j) { if (tkey[j] == key) { t = j; break; } }
+            if (t < 0) { t = nt++; tkey[t] = key; tsum[t] = 0; trep[t] = i; }
+            tsum[t] += el->tbl_votes[i];
+            if (el->tbl_votes[i] > el->tbl_votes[trep[t]]) { trep[t] = i; }
+        }
+        if (nt >= 2) {
+            int b0 = 0, b1;
+            for (int j = 1; j < nt; ++j) { if (tsum[j] > tsum[b0]) { b0 = j; } }
+            b1 = (b0 == 0) ? 1 : 0;
+            for (int j = 0; j < nt; ++j) { if ((j != b0) && (tsum[j] > tsum[b1])) { b1 = j; } }
+            el->candidate[0] = trep[b0];
+            el->candidate[1] = trep[b1];
+        } else { /* single bloc / everyone allied -> vanilla top-2-empires fallback */
+            el->candidate[0] = tbl_ei[0];
+            el->candidate[1] = tbl_ei[1];
+        }
+        /* keep a human in slot 0 when the other nominee is an AI (preserves vanilla's slot roles) */
+        if (IS_AI(g, el->candidate[0]) && IS_HUMAN(g, el->candidate[1])) {
+            player_id_t tmp = el->candidate[0]; el->candidate[0] = el->candidate[1]; el->candidate[1] = tmp;
+        }
     }
     el->flag_show_votes = false;
     el->got_votes[0] = 0;
