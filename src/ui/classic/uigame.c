@@ -802,8 +802,16 @@ static void ui_mp_discovery_incoming(struct game_s *g, player_id_t pi)
 /* MP: the completed-tech announcement (g->evn.newtech) is neither serialized nor reset by the state
    sync, so we detect completions ourselves by diffing the synced per-field completed-count
    turn-over-turn and rebuilding the newtech entries client-side (reset in ui_game_start). */
-static uint16_t s_mp_tech_completed[TECH_FIELD_NUM];
+/* researchcompleted[] is kept SORTED BY TECH ID (game_tech_get_new), NOT in completion order, so we
+   must NOT diff by array index: when a lower-id tech completes it shifts higher-id techs up an index and
+   an index-diff would re-announce the field's top tech (the "got Fusion Bombs again" bug). Track the
+   actual SET of announced tech ids per field (256-bit mask) and announce by membership instead, so each
+   tech is announced exactly once regardless of where the sort places it. */
+static uint8_t s_mp_tech_seen[TECH_FIELD_NUM][32];
 static bool s_mp_tech_snap_valid = false;
+
+#define MP_TECH_SEEN_GET(f, t) (s_mp_tech_seen[f][(t) >> 3] &  (uint8_t)(1u << ((t) & 7)))
+#define MP_TECH_SEEN_SET(f, t) (s_mp_tech_seen[f][(t) >> 3] |= (uint8_t)(1u << ((t) & 7)))
 
 void ui_mp_tech_notify_reset(void) { s_mp_tech_snap_valid = false; }
 
@@ -812,24 +820,31 @@ static void ui_mp_research_select(struct game_s *g, player_id_t pi)
     g->evn.newtech[pi].num = 0; /* client newtech isn't synced/reset -- clear to avoid cross-turn buildup */
     game_tech_finish_new(g, pi);
     if (!s_mp_tech_snap_valid) {
-        /* first turn: baseline the counts so we don't announce the starting techs */
-        for (tech_field_t f = 0; f < TECH_FIELD_NUM; ++f) { s_mp_tech_completed[f] = g->eto[pi].tech.completed[f]; }
+        /* first turn: mark every already-completed tech as seen so we don't announce the starting set */
+        memset(s_mp_tech_seen, 0, sizeof(s_mp_tech_seen));
+        for (tech_field_t f = 0; f < TECH_FIELD_NUM; ++f) {
+            int cnt = g->eto[pi].tech.completed[f];
+            for (int i = 0; i < cnt; ++i) { MP_TECH_SEEN_SET(f, g->srd[pi].researchcompleted[f][i]); }
+        }
         s_mp_tech_snap_valid = true;
     } else {
         for (tech_field_t f = 0; f < TECH_FIELD_NUM; ++f) {
-            uint16_t now = g->eto[pi].tech.completed[f];
-            for (uint16_t k = s_mp_tech_completed[f]; k < now; ++k) {
-                int n = g->evn.newtech[pi].num;
-                if (n >= NEWTECH_MAX) { break; }
+            int cnt = g->eto[pi].tech.completed[f];
+            for (int i = 0; i < cnt; ++i) {
+                uint8_t tech = g->srd[pi].researchcompleted[f][i];
+                int n;
+                if (MP_TECH_SEEN_GET(f, tech)) { continue; } /* already announced */
+                n = g->evn.newtech[pi].num;
+                if (n >= NEWTECH_MAX) { break; }             /* announce the rest next turn */
+                MP_TECH_SEEN_SET(f, tech);
                 newtech_t *nt = &(g->evn.newtech[pi].d[n]);
                 nt->field = f;
-                nt->tech = g->srd[pi].researchcompleted[f][k];
+                nt->tech = tech;
                 nt->source = TECHSOURCE_RESEARCH;
                 nt->v06 = 0; nt->stolen_from = PLAYER_NONE; nt->frame = false;
                 nt->other1 = PLAYER_NONE; nt->other2 = PLAYER_NONE;
                 g->evn.newtech[pi].num = n + 1;
             }
-            s_mp_tech_completed[f] = now;
         }
     }
     /* ui_newtech announces what we just completed (rebuilt above) AND lets us pick the next target. */
