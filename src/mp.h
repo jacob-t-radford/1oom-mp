@@ -9,7 +9,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define MP_PROTO_VERSION 1
+/* v2 (2026-06-28): per-planet reserve added to the turn-order wire (reserve-transfer fix). The build
+   fingerprint is struct-size based and wouldn't catch an order-format-only change, so bump the protocol
+   version too -- an out-of-date client is then cleanly refused ("update the client") instead of silently
+   desyncing on the wider order stream. */
+#define MP_PROTO_VERSION 2
 #define MP_MAX_PLAYERS   6
 
 /* message ids. S->C and C->S noted. Mirrors the 2018 protocol's intent. */

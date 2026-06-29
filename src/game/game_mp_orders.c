@@ -155,6 +155,7 @@ int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, i
         PUT(&p->trans_num, sizeof(p->trans_num));
         PUT(&p->trans_dest, sizeof(p->trans_dest));
         PUT(p->name, sizeof(p->name)); /* 1oom-mp: relay a renamed planet so it doesn't revert at resolution */
+        PUT(&p->reserve, sizeof(p->reserve)); /* 1oom-mp: relay reserve-transfer-to-planet (treasury debit derived server-side) */
     }
     {
         uint16_t term = 0xffff;
@@ -288,6 +289,7 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         uint16_t lk[PLANET_SLIDER_NUM], reloc, trans_num, trans_dest;
         uint8_t buildship;
         char name[PLANET_NAME_LEN];
+        uint32_t reserve_new;
         GET(sl, sizeof(sl));
         GET(lk, sizeof(lk));
         GET(&buildship, 1);
@@ -295,6 +297,7 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         GET(&trans_num, sizeof(trans_num));
         GET(&trans_dest, sizeof(trans_dest));
         GET(name, sizeof(name));
+        GET(&reserve_new, sizeof(reserve_new));
         name[PLANET_NAME_LEN - 1] = '\0'; /* keep it a valid string */
         /* anti-cheat: only touch planets this player actually owns */
         if (p->owner != pi) {
@@ -310,6 +313,17 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
         p->trans_num = trans_num;
         p->trans_dest = trans_dest;
         memcpy(p->name, name, sizeof(p->name)); /* 1oom-mp: persist a renamed planet */
+        /* 1oom-mp: apply a reserve-to-planet transfer. The treasury debit is DERIVED from the
+           increase in this planet's reserve vs the server's authoritative value, then taken out of
+           reserve_bc -- so it composes cleanly with tribute gifts and tax income (pure subtraction,
+           never an absolute overwrite). The transfer screen can only ADD to a planet's reserve, so a
+           decrease is ignored defensively, and the debit is capped by the treasury on hand. */
+        if (reserve_new > p->reserve) {
+            uint32_t spent = reserve_new - p->reserve;
+            if (spent > e->reserve_bc) { spent = e->reserve_bc; }
+            e->reserve_bc -= spent;
+            p->reserve += spent;
+        }
         ++applied;
     }
     /* fleet movement: copy orbit ship-counts; replace this player's in-transit
