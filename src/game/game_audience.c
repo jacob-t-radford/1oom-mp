@@ -433,7 +433,12 @@ static bool game_audience_check_alliances(struct audience_s *au)
     empiretechorbit_t *ea = &(g->eto[pa]);
     bool retval;
     for (player_id_t i = PLAYER_0; i < g->players; ++i) {
-        if ((i != ph) && (i != pa) && (ea->treaty[i] >= TREATY_WAR) && (eh->treaty[i] == TREATY_ALLIANCE)) {
+        if ((i != ph) && (i != pa) && (ea->treaty[i] >= TREATY_WAR) && (eh->treaty[i] == TREATY_ALLIANCE)
+          /* 1oom-mp teams: never demand the player break a LOCKED teammate alliance -- it can't be broken,
+             so the condition is a no-op that just blocks the AI's real offer. Skip teammates; the AI then
+             makes its peace/deal offer directly instead of gating it on the impossible break. */
+          && !((g->mp_team[ph] != 0) && (g->mp_team[ph] == g->mp_team[i]))
+        ) {
             pf = i;
         }
     }
