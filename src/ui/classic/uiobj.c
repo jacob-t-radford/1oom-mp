@@ -1613,8 +1613,18 @@ void uiobj_table_num_restore(void)
     }
 }
 
+/* 1oom-mp: planning-timer auto-end. Declared in ui.h, but uiobj is a low-level primitive that doesn't
+   pull ui.h, so forward-declare the one pointer we need here. */
+extern bool (*ui_mp_turn_force_unwind)(void);
+
 int16_t uiobj_handle_input_cond(void)
 {
+    /* 1oom-mp: the planning timer ran out and we haven't submitted -> hand every open sub-screen an ESC
+       so the player unwinds back to the starmap, where the turn auto-submits and resolves. Without this
+       a nested screen (e.g. ship design) never pumps the timer and the turn stalls for the whole game. */
+    if (ui_mp_turn_force_unwind && ui_mp_turn_force_unwind()) {
+        return UIOBJI_ESC;
+    }
     if (uiobj_handle_downcount > 0) {
         --uiobj_handle_downcount;
         return 0;

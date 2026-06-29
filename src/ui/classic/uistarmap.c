@@ -398,6 +398,12 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
             oi1 = 0;
         }
         sm_drag_panned = false;
+        /* 1oom-mp: when the planning timer runs out, uiobj_handle_input_cond returns ESC every frame to
+           unwind any open sub-screen back here. Swallow that ESC so it doesn't trip the starmap's own
+           menu/finish -- ui_mp_turn_poll just below submits our orders and the turn resolves. */
+        if (ui_mp_turn_force_unwind && ui_mp_turn_force_unwind()) {
+            oi1 = 0;
+        }
         /* 1oom-mp live teammate visibility: stream my in-progress plan to teammates each frame. */
         if (ui_mp_turn_active && ui_mp_turn_active()) { ui_mp_team_plan_tick(); }
         /* 1oom-mp soft-ready: pump the net each frame while browsing. Once the server says

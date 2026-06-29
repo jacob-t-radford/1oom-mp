@@ -2083,11 +2083,21 @@ static bool mp_turn_poll_impl(void) {
     return g_mp_cl_poll ? (g_mp_cl_poll() != 0) : false;
 }
 
+/* 1oom-mp: true once the planning timer has run out but we haven't submitted yet. Nested UI screens
+   (ship design, planet transfer, research, ...) run their own input loops that never pump the timer,
+   so the auto-submit can't fire there and the turn stalls for everyone. Those loops poll this and bail
+   out (the shared input handler returns ESC) so the player unwinds back to the starmap, where
+   mp_turn_poll_impl auto-submits and the turn resolves. Clears the instant mp_submit_orders sets ready. */
+static bool mp_turn_force_unwind_impl(void) {
+    return s_mp_timer_active && !s_mp_ready && (hw_get_time_us() >= s_mp_timer_deadline_us);
+}
+
 bool (*ui_mp_turn_active)(void) = mp_turn_active_impl;
 void (*ui_mp_turn_set_ready)(int ready) = mp_turn_set_ready_impl;
 bool (*ui_mp_turn_is_ready)(void) = mp_turn_is_ready_impl;
 bool (*ui_mp_turn_poll)(void) = mp_turn_poll_impl;
 int (*ui_mp_turn_timer_remaining_s)(void) = mp_turn_timer_remaining_s_impl;
+bool (*ui_mp_turn_force_unwind)(void) = mp_turn_force_unwind_impl;
 bool ui_mp_active = false; /* true while this process is a networked client (set in game_mp_join) */
 bool game_mp_is_server = false; /* true while this process is the headless MP server (set in game_mp_host) */
 
