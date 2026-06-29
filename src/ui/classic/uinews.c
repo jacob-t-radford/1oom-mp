@@ -406,6 +406,14 @@ static void ui_combat_report_draw_cb(void *vptr)
     lib_sprintf(buf, sizeof(buf), "%s   vs   %s", myrace, erace);
     lbxfont_print_str_center(160, 36, buf, UI_SCREEN_W, ui_scale);
     lbxfont_print_str_center(160, 50, outcome, UI_SCREEN_W, ui_scale);
+    /* 1oom-mp: bombing outcome -- so an auto-resolved bomb run isn't reported as just an empty planet */
+    if (r->colony_destroyed) {
+        lib_sprintf(buf, sizeof(buf), "%s COLONY DESTROYED!", loc);
+        lbxfont_print_str_center(160, 59, buf, UI_SCREEN_W, ui_scale);
+    } else if ((r->pop_dmg > 0) || (r->fact_dmg > 0)) {
+        lib_sprintf(buf, sizeof(buf), "Bombed %s:  -%i pop  -%i factories", loc, r->pop_dmg, r->fact_dmg);
+        lbxfont_print_str_center(160, 59, buf, UI_SCREEN_W, ui_scale);
+    }
     /* before/after table: column headers, then each side's designs */
     y = 68;
     lbxfont_print_str_normal(206, y, "start", UI_SCREEN_W, ui_scale);

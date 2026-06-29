@@ -204,6 +204,9 @@ struct ui_combat_report_s {
     struct ui_combat_ships_s ships[2][6]; /* NUM_SHIPDESIGNS: before/after counts per design */
     uint16_t bases_before[2]; /* defending planet's missile bases at battle start, per side */
     uint16_t bases_after[2];  /* ...and at battle end (only the planet-owner side is non-zero) */
+    uint8_t colony_destroyed; /* 1oom-mp: the attacker bombed this world to 0 pop during the battle */
+    uint16_t pop_dmg;         /* 1oom-mp: population killed by in-battle bombing (0 if none) */
+    uint16_t fact_dmg;        /* 1oom-mp: factories destroyed by in-battle bombing (0 if none) */
 };
 extern void ui_combat_report(struct game_s *g, int pi, const struct ui_combat_report_s *reps, int n);
 

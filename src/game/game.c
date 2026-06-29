@@ -27,6 +27,7 @@
 #include "os.h"
 #include "game_save_moo13.h"
 #include "game_strp.h"
+#include "game_str.h"
 #include "game_turn.h"
 #include "game_tech.h"
 #include "game_shiptech.h"
@@ -78,6 +79,7 @@ static char *opt_mp_join = NULL;
 static int opt_mp_humans = 1; /* host: number of human clients to wait for (empires 0..N-1) */
 static int opt_mp_open = 0;   /* host: >0 = open lobby -- players join freely up to this many and the host clicks Start */
 static char *opt_mp_load = NULL; /* host: path to an MP autosave to resume instead of starting a new game */
+static char *opt_mp_race = NULL; /* client: race name/id to claim when joining a RESUMED game (-mprace) */
 static int s_mp_humans = 1;      /* host: human-client count, recorded in the autosave header for -mpload */
 static char s_mp_game_id[24] = {0}; /* 1oom-mp: per-game id (timestamp at game start), kept in the save header so each game has its own autosave file (no clobber) and the id is stable across -mpload resumes */
 #define MP_DEFAULT_PORT 24444
@@ -463,6 +465,9 @@ const struct cmdline_options_s main_cmdline_options[] = {
     { "-mpjoin", 1,
       options_set_str_var, (void *)&opt_mp_join,
       "HOST[:PORT]", "Join a multiplayer game as a client" },
+    { "-mprace", 1,
+      options_set_str_var, (void *)&opt_mp_race,
+      "RACE", "Join (resumed game): claim the empire of this race (name e.g. Silicoid, or id 0-9) instead of the next free slot" },
     { "-mphumans", 1,
       options_set_int_var, (void *)&opt_mp_humans,
       "N", "Multiplayer (host): number of human players to wait for (default 1; rest of -new empires are AI)" },
@@ -2153,6 +2158,12 @@ static int mp_if_get_team(void *ctx, int player) {
     return ((player >= 0) && (player < (int)game.players)) ? game.mp_team[player] : 0;
 }
 
+/* 1oom-mp: a player's race id, so the server can hand a -mprace joiner the empire it asked for. */
+static int mp_if_player_race(void *ctx, int player) {
+    (void)ctx;
+    return ((player >= 0) && (player < (int)game.players)) ? (int)game.eto[player].race : -1;
+}
+
 /* 1oom-mp: fingerprint the raw-struct wire layout. The relays memcpy whole structs (battle/election/
    audience/ground) and the orders/team-plan ship per-planet state, and GAME_DATA is the field-by-field
    save blob keyed to the build's save version -- all of which assume the SAME build on both ends. Fold
@@ -2177,6 +2188,7 @@ static mp_game_iface_t mp_make_iface(void) {
     mp_game_iface_t gi;
     gi.ctx = &game;
     gi.get_team = mp_if_get_team;
+    gi.player_race = mp_if_player_race;
     gi.wire_id = mp_if_wire_id;
     gi.get_game_over = mp_if_get_game_over;
     gi.on_game_over = mp_if_on_game_over;
@@ -2406,10 +2418,39 @@ static int game_mp_host(void) {
     return rc ? 1 : 0;
 }
 
+/* 1oom-mp: map a -mprace argument (race name -- singular or plural, case-insensitive -- or a 0-9 id) to a
+   race id, or -1 if unrecognized. */
+static int mp_race_id_from_arg(const char *s) {
+    if (!s || !s[0]) { return -1; }
+    {   /* a bare number 0..RACE_NUM-1 */
+        char *end; long v = strtol(s, &end, 10);
+        if ((*end == '\0') && (v >= 0) && (v < RACE_NUM)) { return (int)v; }
+    }
+    for (int r = 0; r < RACE_NUM; ++r) {
+        const char *names[2]; names[0] = game_str_tbl_race[r]; names[1] = game_str_tbl_races[r];
+        for (int k = 0; k < 2; ++k) {
+            const char *a = s, *b = names[k];
+            while (*a && *b) {
+                char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+                char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+                if (ca != cb) { break; }
+                ++a; ++b;
+            }
+            if (!*a && !*b) { return r; }
+        }
+    }
+    return -1;
+}
+
 static int game_mp_join(void) {
     char host[128];
     uint16_t port = MP_DEFAULT_PORT;
     ui_mp_active = true; /* enable client-side turn-start prompts (e.g. planet discovery) */
+    if (opt_mp_race) { /* -mprace: ask the server (resumed game) for this race's empire instead of next free slot */
+        g_mp_cl_req_race = mp_race_id_from_arg(opt_mp_race);
+        if (g_mp_cl_req_race < 0) { log_warning("MP: -mprace '%s' not recognized -- joining by connection order\n", opt_mp_race); }
+        else { log_message("MP: will request race '%s' (id %d) on join\n", opt_mp_race, g_mp_cl_req_race); }
+    }
     const char *colon = strrchr(opt_mp_join, ':');
     if (colon) {
         size_t n = (size_t)(colon - opt_mp_join);

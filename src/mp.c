@@ -147,6 +147,7 @@ static void cl_diplo_send_impl(uint16_t id, const uint8_t *data, int len) {
 int (*g_mp_cl_diplo_recv)(uint16_t *, uint8_t *, int) = NULL;
 void (*g_mp_cl_diplo_send)(uint16_t, const uint8_t *, int) = NULL;
 void (*g_mp_cl_timer_notify)(int) = NULL;
+int g_mp_cl_req_race = -1; /* 1oom-mp: -mprace request for a resumed game (-1 = no preference / connection order) */
 
 /* client: stream this player's live plan snapshot to teammates (best-effort -- only the latest
    snapshot matters, so a dropped one self-heals on the next frame). */
@@ -556,8 +557,9 @@ static void mp_chat_server_handle(net_conn_t **conns, int num, int from_i, const
 /* read + validate a just-connected client's HELLO ([u16 proto][u32 wire_id]) with a short timeout.
    The client sends it immediately on connect, so this returns within a round-trip in the normal case;
    a silent / mismatched-build client is refused (caller closes it). Returns true iff the handshake is OK. */
-static bool mp_server_hello_ok(net_conn_t *c, const mp_game_iface_t *gi) {
+static bool mp_server_hello_ok(net_conn_t *c, const mp_game_iface_t *gi, int *req_race_out) {
     uint8_t buf[64]; uint16_t id; uint32_t dl;
+    if (req_race_out) { *req_race_out = 0xff; } /* default: no race preference */
     for (int tries = 0; tries < 3000; ++tries) { /* ~3s budget; HELLO normally arrives in <1ms */
         int r = mp_recv(c, &id, buf, sizeof(buf), &dl);
         if (r < 0) { MP_ERR("server: client dropped before HELLO\n"); return false; }
@@ -570,6 +572,7 @@ static bool mp_server_hello_ok(net_conn_t *c, const mp_game_iface_t *gi) {
                 uint32_t mine = (uint32_t)gi->wire_id(gi->ctx);
                 if (wid != mine) { MP_ERR("server: rejecting client -- wire fingerprint %08x != server %08x (mismatched build)\n", wid, mine); return false; }
             }
+            if (req_race_out && (dl >= 7)) { *req_race_out = buf[6]; } /* 1oom-mp: -mprace request (0xff = none) */
             return true;
         }
         usleep(1000);
@@ -586,10 +589,14 @@ static bool mp_server_hello_ok(net_conn_t *c, const mp_game_iface_t *gi) {
    slot / bad build). Called from the barrier only while a slot is actually dropped. */
 static int mp_server_try_reconnect(net_listener_t *l, net_conn_t **conns, int num_clients, const mp_game_iface_t *gi, uint8_t *blob, int blobcap) {
     net_conn_t *c = net_accept(l);
-    int slot = -1, len;
+    int slot = -1, len, req_race = 0xff;
     if (!c) { return -1; }
-    if (!mp_server_hello_ok(c, gi)) { net_conn_close(c); return -1; } /* must be the same build */
-    for (int i = 0; i < num_clients; ++i) { if (!conns[i]) { slot = i; break; } }
+    if (!mp_server_hello_ok(c, gi, &req_race)) { net_conn_close(c); return -1; } /* must be the same build */
+    /* 1oom-mp: honor a -mprace request -- reclaim the dropped empire with that race, else the lowest dropped slot */
+    if ((req_race != 0xff) && gi->player_race) {
+        for (int i = 0; i < num_clients; ++i) { if (!conns[i] && (gi->player_race(gi->ctx, i) == req_race)) { slot = i; break; } }
+    }
+    if (slot < 0) { for (int i = 0; i < num_clients; ++i) { if (!conns[i]) { slot = i; break; } } }
     if (slot < 0) { MP_MSG("server: reconnect refused -- no dropped slot (game full)\n"); net_conn_close(c); return -1; }
     {   /* WELCOME with the reconnect flag so the client skips the lobby and waits for the state below */
         uint8_t w[5] = { (uint8_t)(slot >> 8), (uint8_t)slot, (uint8_t)(num_clients >> 8), (uint8_t)num_clients, 1 };
@@ -624,18 +631,25 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
     int cap = num_clients;
     if (open_lobby && gi->setup_game) {
         MP_MSG("server: OPEN lobby on port %u -- waiting for host, then up to %d human(s)\n", (unsigned)port, cap);
-        for (;;) { net_conn_t *c = net_accept(l); if (c) { if (!mp_server_hello_ok(c, gi)) { net_conn_close(c); continue; } conns[0] = c; MP_MSG("server: host connected (%s)\n", net_conn_addr(c)); break; } usleep(2000); }
+        for (;;) { net_conn_t *c = net_accept(l); if (c) { if (!mp_server_hello_ok(c, gi, NULL)) { net_conn_close(c); continue; } conns[0] = c; MP_MSG("server: host connected (%s)\n", net_conn_addr(c)); break; } usleep(2000); }
         num_clients = 1;
     } else {
         open_lobby = 0; /* no lobby to drive (resume/legacy) -> fall back to the fixed accept */
         MP_MSG("server: waiting for %d client(s) on port %u\n", num_clients, (unsigned)port);
-        for (int i = 0; i < num_clients; ) {
+        for (int filled = 0; filled < num_clients; ) {
             net_conn_t *c = net_accept(l);
             if (c) {
-                if (!mp_server_hello_ok(c, gi)) { net_conn_close(c); continue; } /* refuse a mismatched-build client */
-                conns[i] = c;
-                ++i;
-                MP_MSG("server: client %d/%d connected (%s)\n", i, num_clients, net_conn_addr(c));
+                int req_race = 0xff, slot = -1;
+                if (!mp_server_hello_ok(c, gi, &req_race)) { net_conn_close(c); continue; } /* refuse a mismatched-build client */
+                /* 1oom-mp: honor a -mprace request -- hand this client the free empire with that race
+                   (resumed game: empire id == slot). Falls back to the lowest free slot otherwise. */
+                if ((req_race != 0xff) && gi->player_race) {
+                    for (int s = 0; s < num_clients; ++s) { if (!conns[s] && (gi->player_race(gi->ctx, s) == req_race)) { slot = s; break; } }
+                }
+                if (slot < 0) { for (int s = 0; s < num_clients; ++s) { if (!conns[s]) { slot = s; break; } } }
+                conns[slot] = c;
+                ++filled;
+                MP_MSG("server: client connected -> empire %d (%d/%d) (%s)%s\n", slot, filled, num_clients, net_conn_addr(c), (req_race != 0xff) ? " [by race]" : "");
             } else {
                 usleep(2000);
             }
@@ -694,7 +708,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                next contiguous slot, and clamp the AI count so humans+AI never exceeds MP_MAX_PLAYERS. */
             if (open_lobby && (num_clients < cap)) {
                 net_conn_t *c = net_accept(l);
-                if (c && !mp_server_hello_ok(c, gi)) { net_conn_close(c); c = NULL; } /* refuse a mismatched-build joiner */
+                if (c && !mp_server_hello_ok(c, gi, NULL)) { net_conn_close(c); c = NULL; } /* refuse a mismatched-build joiner */
                 if (c) {
                     int s = num_clients;
                     conns[s] = c;
@@ -931,8 +945,9 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
     /* handshake */
     {   /* HELLO: [u16 proto][u32 wire_id]. The server refuses us if either differs from its own build. */
         uint32_t wid = gi->wire_id ? (uint32_t)gi->wire_id(gi->ctx) : 0;
-        uint8_t h[6] = { 0, MP_PROTO_VERSION, (uint8_t)(wid >> 24), (uint8_t)(wid >> 16), (uint8_t)(wid >> 8), (uint8_t)wid };
-        if (mp_send(c, MP_MSG_HELLO, h, 6) != 0) { rc = -1; goto done; }
+        uint8_t h[7] = { 0, MP_PROTO_VERSION, (uint8_t)(wid >> 24), (uint8_t)(wid >> 16), (uint8_t)(wid >> 8), (uint8_t)wid,
+                         (uint8_t)((g_mp_cl_req_race >= 0) ? g_mp_cl_req_race : 0xff) }; /* 1oom-mp: -mprace request, 0xff = none */
+        if (mp_send(c, MP_MSG_HELLO, h, 7) != 0) { rc = -1; goto done; }
     }
     if (mp_recv_wait(c, MP_MSG_WELCOME, blob, blobcap, &dl, gi, MP_WAIT_LOBBY, 0) != 0) { rc = -1; goto done; }
     int player_id = (dl >= 2) ? ((blob[0] << 8) | blob[1]) : 0;

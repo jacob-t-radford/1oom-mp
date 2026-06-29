@@ -12,8 +12,10 @@
 /* v2 (2026-06-28): per-planet reserve added to the turn-order wire (reserve-transfer fix). The build
    fingerprint is struct-size based and wouldn't catch an order-format-only change, so bump the protocol
    version too -- an out-of-date client is then cleanly refused ("update the client") instead of silently
-   desyncing on the wider order stream. */
-#define MP_PROTO_VERSION 2
+   desyncing on the wider order stream.
+   v3 (2026-06-28): bombing outcome (colony_destroyed + pop/factory damage) added to the auto-resolve
+   combat-report wire payload (ui_combat_report_s). Another wire-size change -> bump again. */
+#define MP_PROTO_VERSION 3
 #define MP_MAX_PLAYERS   6
 
 /* message ids. S->C and C->S noted. Mirrors the 2018 protocol's intent. */
@@ -173,6 +175,10 @@ typedef struct mp_game_iface_s {
     int (*setup_game)(void *ctx, const struct mp_lobby_s *lobby);
     /* server: a player's team number (0 = none/FFA), so team-plan snapshots relay only to teammates. */
     int (*get_team)(void *ctx, int player);
+    /* server: a player's RACE id (0..RACE_NUM-1), so a RESUMED game can hand a connecting client the
+       empire it asked for (HELLO requested-race byte, set via -mprace) instead of the next free slot.
+       NULL => race requests are ignored (clients fall back to connection order). */
+    int (*player_race)(void *ctx, int player_id);
     /* both: a fingerprint of the raw-struct wire layout (sizes of the structs relayed by memcpy + the
        save-blob version). The client sends it in HELLO; the server refuses a client whose fingerprint
        differs from its own, so a mismatched build can't silently corrupt the same-build-both-ends wire.
@@ -249,6 +255,10 @@ extern void (*g_mp_team_plan_recv)(const void *data, int len);
 #define MP_CHAT_MAX 96   /* max chat text bytes on the wire (excludes the leading u16 sender) */
 extern void (*g_mp_cl_chat_send)(const void *data, int len);
 extern void (*g_mp_chat_recv)(const void *data, int len);
+
+/* client: race id requested via -mprace when joining a RESUMED game (the server then hands us the empire
+   with that race instead of the next free slot). -1 = no preference (connection order). */
+extern int g_mp_cl_req_race;
 
 /* on_wait reason codes */
 #define MP_WAIT_LOBBY  0 /* waiting for the game to start / other players to join */

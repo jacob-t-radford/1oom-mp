@@ -320,6 +320,14 @@ void ui_battle_shutdown(struct battle_s *bt, bool colony_destroyed, int winner)
                     rep.bases_before[s_battle_snap_pside] = s_battle_snap_bases;
                     rep.bases_after[s_battle_snap_pside] = (uint16_t)bt->bases;
                 }
+                /* 1oom-mp: carry the in-battle bombing outcome so the auto-resolve report isn't silent
+                   about a bomb run. bt->pop / bt->fact are the planet's pop/factories at battle start. */
+                {
+                    const planet_t *bp = &bt->g->planet[bt->planet_i];
+                    rep.colony_destroyed = colony_destroyed ? 1 : 0;
+                    rep.pop_dmg  = (bt->pop  > bp->pop)       ? (uint16_t)(bt->pop  - bp->pop)       : 0;
+                    rep.fact_dmg = (bt->fact > bp->factories) ? (uint16_t)(bt->fact - bp->factories) : 0;
+                }
                 g_mp_decision_hook_multi(players, n, MP_DEC_COMBAT_REPORT, &rep, (int)sizeof(rep), resp, 1);
             }
         }
