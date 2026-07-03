@@ -357,7 +357,11 @@ static bool game_audience_ai_offers_treaty(struct audience_s *au)
     if (selected == 0) {  /* Player accepted. */
         switch (au->dtype) {
             case 24:
-                game_diplo_set_treaty(g, ph, pa, TREATY_NONAGGRESSION);
+                /* 1oom-mp teams: accepting a NAP with a common enemy is a team stance -> consensus first,
+                   same as proposing one (game_audience_do). Apply directly only when there's no team. */
+                if (!(g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_NAP))) {
+                    game_diplo_set_treaty(g, ph, pa, TREATY_NONAGGRESSION);
+                }
                 break;
             case 25:
                 game_diplo_set_treaty(g, ph, pa, TREATY_ALLIANCE);
@@ -369,10 +373,14 @@ static bool game_audience_ai_offers_treaty(struct audience_s *au)
                 game_diplo_break_treaty(g, ph, eh->au_ask_break_treaty[pa]);
                 break;
             case 30:
-                game_diplo_stop_war(g, ph, pa);
-                if (eh->relation1[pa] < 80) {
-                    eh->relation1[pa] += 20;
-                    ea->relation1[ph] = eh->relation1[pa];
+                /* 1oom-mp teams: accepting peace with a common enemy is a team stance -> consensus first
+                   (the AI already agreed; now our allies must too). Apply directly only with no team. */
+                if (!(g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_PEACE))) {
+                    game_diplo_stop_war(g, ph, pa);
+                    if (eh->relation1[pa] < 80) {
+                        eh->relation1[pa] += 20;
+                        ea->relation1[ph] = eh->relation1[pa];
+                    }
                 }
                 game_diplo_annoy(g, ph, pa, 2);
                 break;
