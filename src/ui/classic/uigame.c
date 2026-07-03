@@ -341,60 +341,67 @@ static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t 
    deals are relayed and applied by the responder's ACCEPT record; unilateral acts are recorded here. */
 static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player_id_t pa, int sid, struct audience_s *au)
 {
-    treaty_t tr = g->eto[pi].treaty[pa];
-    const char *mopts[6]; int mcat[6]; int mn = 0;
-    mopts[mn] = "Propose treaty"; mcat[mn] = 0; ++mn;
-    mopts[mn] = "Form trade agreement"; mcat[mn] = 1; ++mn;
-    mopts[mn] = "Exchange technology"; mcat[mn] = 2; ++mn;
-    mopts[mn] = "Break treaty or trade"; mcat[mn] = 3; ++mn;
-    mopts[mn] = "Forget it"; mcat[mn] = 4; ++mn;
-    for (int i = 0; i < mn; ++i) { au->strtbl[i] = mopts[i]; }
-    au->strtbl[mn] = NULL;
-    au->buf = "What is your will?";
-    int16_t msel = ui_audience_ask4(au);
-    int cat = ((msel >= 0) && (msel < mn)) ? mcat[msel] : 4;
-    if (cat == 1) { mp_diplo_propose_trade(g, pi, pa, sid, au); return; }
-    if (cat == 2) { mp_diplo_propose_tech(g, pi, pa, sid, au); return; }
-    if (cat == 4) { return; }
-    {
-        const char *opts[AUDIENCE_STR_MAX];
-        uint8_t verbs[AUDIENCE_STR_MAX];
-        int n = 0;
-        if (cat == 0) { /* propose a treaty (consensual) */
-            if (tr == TREATY_WAR) { opts[n] = "Propose peace treaty"; verbs[n] = MP_DIPLO_PROPOSE_PEACE; ++n; }
-            else {
-                if (tr == TREATY_NONE) { opts[n] = "Non-aggression pact"; verbs[n] = MP_DIPLO_PROPOSE_NAP; ++n; }
-                if ((tr == TREATY_NONE) || (tr == TREATY_NONAGGRESSION)) { opts[n] = "Alliance"; verbs[n] = MP_DIPLO_PROPOSE_ALLIANCE; ++n; }
-            }
-        } else { /* cat == 3: break / declare (unilateral) */
-            /* 1oom-mp teams: never offer hostile acts against a teammate -- the alliance is locked.
-               (Only the per-empire trade agreement can still be broken.) War/break-treaty against an
-               ENEMY is routed through team consensus, not applied unilaterally from here. */
-            bool teammate = (g->mp_team[pi] != 0) && (g->mp_team[pi] == g->mp_team[pa]);
-            if ((tr != TREATY_WAR) && !teammate) { opts[n] = "Declare war"; verbs[n] = MP_DIPLO_DECLARE_WAR; ++n; }
-            if (((tr == TREATY_NONAGGRESSION) || (tr == TREATY_ALLIANCE)) && !teammate) { opts[n] = "Break treaty"; verbs[n] = MP_DIPLO_BREAK_TREATY; ++n; }
-            if (g->eto[pi].trade_bc[pa] != 0) { opts[n] = "Break trade agreement"; verbs[n] = MP_DIPLO_BREAK_TRADE; ++n; }
-        }
-        if (n == 0) { diplo_au_msg(au, "There is nothing to propose."); return; }
-        opts[n] = "Forget it"; verbs[n] = MP_DIPLO_NONE; ++n;
-        for (int i = 0; i < n; ++i) { au->strtbl[i] = opts[i]; }
-        au->strtbl[n] = NULL;
-        au->buf = "What is your will?";
-        int16_t sel = ui_audience_ask4(au);
-        uint8_t verb = ((sel >= 0) && (sel < n)) ? verbs[sel] : MP_DIPLO_NONE;
-        if (verb == MP_DIPLO_NONE) { return; }
-        if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY) || (verb == MP_DIPLO_BREAK_TRADE)) {
-            game_mp_diplo_record(pi, pa, verb, 0); /* unilateral: applies at resolution */
-            mp_diplo_apply_local(g, pi, pa, verb); /* and immediately, locally */
-            diplo_cl_proposal(sid, verb); /* 1oom-mp: relay it so the TARGET is notified + applies it too (was: never relayed -> target saw nothing, war waited for next turn) */
-            diplo_au_msg(au, "It is done.");
-            return;
-        }
-        /* consensual treaty proposal: relay + await the live answer (portrait stays up via the shared au) */
-        diplo_cl_proposal(sid, verb);
+    /* 1oom-mp: loop the whole audience -- after each deal, return to this menu ("Anything else?") so the
+       player can keep negotiating without re-requesting an audience. "Goodbye" ends it; a sub-menu
+       "Forget it" just steps back here. Returning from this function makes run_session relay the
+       session-end so the other side leaves too. */
+    bool first = true;
+    for (;;) {
+        treaty_t tr = g->eto[pi].treaty[pa];
+        const char *mopts[6]; int mcat[6]; int mn = 0;
+        mopts[mn] = "Propose treaty"; mcat[mn] = 0; ++mn;
+        mopts[mn] = "Form trade agreement"; mcat[mn] = 1; ++mn;
+        mopts[mn] = "Exchange technology"; mcat[mn] = 2; ++mn;
+        mopts[mn] = "Break treaty or trade"; mcat[mn] = 3; ++mn;
+        mopts[mn] = "Goodbye"; mcat[mn] = 4; ++mn;
+        for (int i = 0; i < mn; ++i) { au->strtbl[i] = mopts[i]; }
+        au->strtbl[mn] = NULL;
+        au->buf = first ? "What is your will?" : "Anything else?";
+        first = false;
+        int16_t msel = ui_audience_ask4(au);
+        int cat = ((msel >= 0) && (msel < mn)) ? mcat[msel] : 4;
+        if (cat == 4) { return; }   /* Goodbye -> end the audience (run_session relays the end) */
+        if (cat == 1) { mp_diplo_propose_trade(g, pi, pa, sid, au); continue; }
+        if (cat == 2) { mp_diplo_propose_tech(g, pi, pa, sid, au); continue; }
         {
-            int acc = mp_diplo_await_answer(au);
-            if (acc >= 0) {
+            const char *opts[AUDIENCE_STR_MAX];
+            uint8_t verbs[AUDIENCE_STR_MAX];
+            int n = 0;
+            if (cat == 0) { /* propose a treaty (consensual) */
+                if (tr == TREATY_WAR) { opts[n] = "Propose peace treaty"; verbs[n] = MP_DIPLO_PROPOSE_PEACE; ++n; }
+                else {
+                    if (tr == TREATY_NONE) { opts[n] = "Non-aggression pact"; verbs[n] = MP_DIPLO_PROPOSE_NAP; ++n; }
+                    if ((tr == TREATY_NONE) || (tr == TREATY_NONAGGRESSION)) { opts[n] = "Alliance"; verbs[n] = MP_DIPLO_PROPOSE_ALLIANCE; ++n; }
+                }
+            } else { /* cat == 3: break / declare (unilateral) */
+                /* 1oom-mp teams: never offer hostile acts against a teammate -- the alliance is locked.
+                   (Only the per-empire trade agreement can still be broken.) War/break-treaty against an
+                   ENEMY is routed through team consensus, not applied unilaterally from here. */
+                bool teammate = (g->mp_team[pi] != 0) && (g->mp_team[pi] == g->mp_team[pa]);
+                if ((tr != TREATY_WAR) && !teammate) { opts[n] = "Declare war"; verbs[n] = MP_DIPLO_DECLARE_WAR; ++n; }
+                if (((tr == TREATY_NONAGGRESSION) || (tr == TREATY_ALLIANCE)) && !teammate) { opts[n] = "Break treaty"; verbs[n] = MP_DIPLO_BREAK_TREATY; ++n; }
+                if (g->eto[pi].trade_bc[pa] != 0) { opts[n] = "Break trade agreement"; verbs[n] = MP_DIPLO_BREAK_TRADE; ++n; }
+            }
+            if (n == 0) { diplo_au_msg(au, "There is nothing to propose."); continue; }
+            opts[n] = "Forget it"; verbs[n] = MP_DIPLO_NONE; ++n;
+            for (int i = 0; i < n; ++i) { au->strtbl[i] = opts[i]; }
+            au->strtbl[n] = NULL;
+            au->buf = "What is your will?";
+            int16_t sel = ui_audience_ask4(au);
+            uint8_t verb = ((sel >= 0) && (sel < n)) ? verbs[sel] : MP_DIPLO_NONE;
+            if (verb == MP_DIPLO_NONE) { continue; }   /* Forget it -> back to the main menu (stay in the audience) */
+            if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY) || (verb == MP_DIPLO_BREAK_TRADE)) {
+                game_mp_diplo_record(pi, pa, verb, 0); /* unilateral: applies at resolution */
+                mp_diplo_apply_local(g, pi, pa, verb); /* and immediately, locally */
+                diplo_cl_proposal(sid, verb); /* 1oom-mp: relay it so the TARGET is notified + applies it too */
+                diplo_au_msg(au, "It is done.");
+                continue;
+            }
+            /* consensual treaty proposal: relay + await the live answer (portrait stays up via the shared au) */
+            diplo_cl_proposal(sid, verb);
+            {
+                int acc = mp_diplo_await_answer(au);
+                if (acc < 0) { return; } /* the other player ended the audience while we awaited */
                 if (acc) { mp_diplo_apply_local(g, pi, pa, verb); }
                 diplo_au_msg(au, acc ? "Excellent. So it is agreed." : "They refuse our offer.");
             }
@@ -406,56 +413,63 @@ static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player
    On accept, record MP_DIPLO_ACCEPT so the treaty applies bilaterally at this turn's resolution. */
 static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player_id_t pa, int sid, struct audience_s *au)
 {
-    uint8_t buf[MP_DIPLO_CL_MSGMAX]; int len = sizeof(buf);
-    /* 1oom-mp: the shared session audience is already on screen; the wait loop keeps the alien's
-       portrait up with this status line -- no black/map frame while we await their envoy. */
-    int id = ui_mp_diplo_wait("Receiving their envoy...", buf, &len);
-    if (id != MP_MSG_DIPLO_PROPOSAL) { return; } /* session ended / cancelled without an offer */
-    uint8_t verb = (len >= 3) ? buf[2] : MP_DIPLO_NONE;
-    uint8_t pp[4] = { 0, 0, 0, 0 };
-    int pn = len - 3;
-    if (pn < 0) { pn = 0; } if (pn > 4) { pn = 4; }
-    for (int i = 0; i < pn; ++i) { pp[i] = buf[3 + i]; }
-    if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY) || (verb == MP_DIPLO_BREAK_TRADE)) {
-        /* 1oom-mp: a unilateral act, not a proposal -> apply it locally (live immediately, like the
-           proposer) and show a notice on the alien portrait, instead of a bogus accept/reject prompt. */
-        mp_diplo_apply_local(g, pi, pa, verb);
-        diplo_au_msg(au,
-              (verb == MP_DIPLO_DECLARE_WAR)  ? "They have declared war upon us!"
-            : (verb == MP_DIPLO_BREAK_TREATY) ? "They have broken our treaty!"
-            :                                   "They have broken our trade agreement!");
-        return;
-    }
-    char msg[200];
-    if (verb == MP_DIPLO_PROPOSE_TRADE) {
-        lib_sprintf(msg, sizeof(msg), "They propose a trade agreement of %d %s. Do you accept?", pp[0] | (pp[1] << 8), game_str_au_bcpery);
-        au->buf = msg;
-    } else if (verb == MP_DIPLO_PROPOSE_TECH) {
-        char wn[48], gn[48];
-        game_tech_get_name(g->gaux, (tech_field_t)pp[0], pp[1], wn, sizeof(wn)); /* the tech they want from us */
-        game_tech_get_name(g->gaux, (tech_field_t)pp[2], pp[3], gn, sizeof(gn)); /* the tech they offer us */
-        lib_sprintf(msg, sizeof(msg), "They offer %s in exchange for your %s. Do you accept?", gn, wn);
-        au->buf = msg;
-    } else {
-        au->buf = (verb == MP_DIPLO_PROPOSE_PEACE) ? "They propose a peace treaty. Do you accept?"
-               : (verb == MP_DIPLO_PROPOSE_ALLIANCE) ? "They propose an alliance. Do you accept?"
-               : "They propose a non-aggression pact. Do you accept?";
-    }
-    au->strtbl[0] = "Accept"; au->strtbl[1] = "Reject"; au->strtbl[2] = NULL;
-    int16_t sel = ui_audience_ask4(au);
-    int acc = (sel == 0) ? 1 : 0;
-    diplo_cl_response(sid, acc, verb);
-    if (acc) {
-        if ((verb == MP_DIPLO_PROPOSE_TRADE) || (verb == MP_DIPLO_PROPOSE_TECH)) {
-            game_mp_diplo_record_p(pi, pa, MP_DIPLO_ACCEPT, verb, pp); /* authoritative at resolution */
-            if (verb == MP_DIPLO_PROPOSE_TRADE) { game_diplo_set_trade(g, pi, pa, pp[0] | (pp[1] << 8)); } /* optimistic */
-            else { game_tech_get_new(g, pi, (tech_field_t)pp[2], pp[3], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); } /* 1oom-mp: optimistic -- the offered tech is usable THIS turn (server re-grants authoritatively at resolution) */
-        } else {
-            game_mp_diplo_record(pi, pa, MP_DIPLO_ACCEPT, verb); /* authoritative at resolution */
-            mp_diplo_apply_local(g, pi, pa, verb);               /* and immediately, locally */
+    /* 1oom-mp: loop -- handle each incoming proposal, then wait for the next, keeping the audience open
+       until the proposer says Goodbye (relayed session-end) or we hit Esc to leave. */
+    bool first = true;
+    for (;;) {
+        uint8_t buf[MP_DIPLO_CL_MSGMAX]; int len = sizeof(buf);
+        /* 1oom-mp: the shared session audience is already on screen; the wait loop keeps the alien's
+           portrait up with this status line -- no black/map frame while we await their envoy. */
+        int id = ui_mp_diplo_wait(first ? "Receiving their envoy..." : "Awaiting their next proposal...", buf, &len);
+        first = false;
+        if (id != MP_MSG_DIPLO_PROPOSAL) { return; } /* session ended (their Goodbye) or Esc to leave */
+        uint8_t verb = (len >= 3) ? buf[2] : MP_DIPLO_NONE;
+        uint8_t pp[4] = { 0, 0, 0, 0 };
+        int pn = len - 3;
+        if (pn < 0) { pn = 0; } if (pn > 4) { pn = 4; }
+        for (int i = 0; i < pn; ++i) { pp[i] = buf[3 + i]; }
+        if ((verb == MP_DIPLO_DECLARE_WAR) || (verb == MP_DIPLO_BREAK_TREATY) || (verb == MP_DIPLO_BREAK_TRADE)) {
+            /* 1oom-mp: a unilateral act, not a proposal -> apply it locally (live immediately, like the
+               proposer) and show a notice on the alien portrait, instead of a bogus accept/reject prompt. */
+            mp_diplo_apply_local(g, pi, pa, verb);
+            diplo_au_msg(au,
+                  (verb == MP_DIPLO_DECLARE_WAR)  ? "They have declared war upon us!"
+                : (verb == MP_DIPLO_BREAK_TREATY) ? "They have broken our treaty!"
+                :                                   "They have broken our trade agreement!");
+            continue; /* stay in the audience for whatever they say next */
         }
+        char msg[200];
+        if (verb == MP_DIPLO_PROPOSE_TRADE) {
+            lib_sprintf(msg, sizeof(msg), "They propose a trade agreement of %d %s. Do you accept?", pp[0] | (pp[1] << 8), game_str_au_bcpery);
+            au->buf = msg;
+        } else if (verb == MP_DIPLO_PROPOSE_TECH) {
+            char wn[48], gn[48];
+            game_tech_get_name(g->gaux, (tech_field_t)pp[0], pp[1], wn, sizeof(wn)); /* the tech they want from us */
+            game_tech_get_name(g->gaux, (tech_field_t)pp[2], pp[3], gn, sizeof(gn)); /* the tech they offer us */
+            lib_sprintf(msg, sizeof(msg), "They offer %s in exchange for your %s. Do you accept?", gn, wn);
+            au->buf = msg;
+        } else {
+            au->buf = (verb == MP_DIPLO_PROPOSE_PEACE) ? "They propose a peace treaty. Do you accept?"
+                   : (verb == MP_DIPLO_PROPOSE_ALLIANCE) ? "They propose an alliance. Do you accept?"
+                   : "They propose a non-aggression pact. Do you accept?";
+        }
+        au->strtbl[0] = "Accept"; au->strtbl[1] = "Reject"; au->strtbl[2] = NULL;
+        int16_t sel = ui_audience_ask4(au);
+        int acc = (sel == 0) ? 1 : 0;
+        diplo_cl_response(sid, acc, verb);
+        if (acc) {
+            if ((verb == MP_DIPLO_PROPOSE_TRADE) || (verb == MP_DIPLO_PROPOSE_TECH)) {
+                game_mp_diplo_record_p(pi, pa, MP_DIPLO_ACCEPT, verb, pp); /* authoritative at resolution */
+                if (verb == MP_DIPLO_PROPOSE_TRADE) { game_diplo_set_trade(g, pi, pa, pp[0] | (pp[1] << 8)); } /* optimistic */
+                else { game_tech_get_new(g, pi, (tech_field_t)pp[2], pp[3], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); } /* 1oom-mp: optimistic -- usable THIS turn; server re-grants authoritatively at resolution */
+            } else {
+                game_mp_diplo_record(pi, pa, MP_DIPLO_ACCEPT, verb); /* authoritative at resolution */
+                mp_diplo_apply_local(g, pi, pa, verb);               /* and immediately, locally */
+            }
+        }
+        diplo_au_msg(au, acc ? "Excellent. So it is agreed." : "A pity.");
+        /* loop back to await their next proposal */
     }
-    diplo_au_msg(au, acc ? "Excellent. So it is agreed." : "A pity.");
 }
 
 /* enter an open session in the given role (0 = proposer, 1 = responder), then close it. */
