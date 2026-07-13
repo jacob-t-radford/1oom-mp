@@ -290,6 +290,9 @@ static int cl_lobby_poll_impl(struct mp_lobby_s *out) {
             s_cl_game_over = true; return -1;
         } else if ((id == MP_MSG_GAME_META) || (id == MP_MSG_SAVE_NAMED)) {
             cl_handle_save_sync(id, s_cl_blob, dl); /* save sync: META precedes the initial GAME_DATA */
+        } else if ((id == MP_MSG_SEAT) && (dl >= 2)) {
+            s_cl_pid = (s_cl_blob[0] << 8) | s_cl_blob[1]; /* resume lobby: my claimed seat = my final empire id */
+            MP_MSG("client: seat assigned - playing empire %d\n", s_cl_pid);
         }
     }
     if (out) { *out = s_cl_lobby; }
@@ -401,6 +404,27 @@ static int mp_decision_rpc_multi(const int *players, int n, int dtype, const voi
 /* server: apply one client's lobby field change, with validation. Returns true if the state
    changed (so it must be re-broadcast). slot is the requesting client's player id. */
 static bool mp_lobby_apply(struct mp_lobby_s *lob, int slot, uint8_t field, uint8_t value, int num_clients) {
+    if (lob->resume) {
+        /* RESUME lobby: the seats are the save's empires -- only seat claims, Ready and the timer
+           make sense; races/colors/teams/AI/galaxy/difficulty are fixed by the save. */
+        if (field == MP_LOBBY_F_SEAT) {
+            if (value >= lob->cap) { return false; }
+            if ((lob->seat_owner[value] != 0xff) && (lob->seat_owner[value] != (uint8_t)slot)) { return false; } /* taken */
+            for (int s2 = 0; s2 < MP_MAX_PLAYERS; ++s2) { if (lob->seat_owner[s2] == (uint8_t)slot) { lob->seat_owner[s2] = 0xff; } }
+            lob->seat_owner[value] = (uint8_t)slot;
+            return true;
+        }
+        if (field == MP_LOBBY_F_READY) {
+            if (value != 0) { /* must claim a seat before readying (un-readying is always fine) */
+                bool has = false;
+                for (int s2 = 0; s2 < lob->cap; ++s2) { if (lob->seat_owner[s2] == (uint8_t)slot) { has = true; break; } }
+                if (!has) { return false; }
+            }
+            lob->slot[slot].ready = (value != 0);
+            return true;
+        }
+        if (field != MP_LOBBY_F_TIMER) { return false; }
+    }
     switch (field) {
         case MP_LOBBY_F_RACE:
             for (int j = 0; j < num_clients; ++j) { if (j != slot && lob->slot[j].race == value) { return false; } } /* no two players share a race */
@@ -678,6 +702,8 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
     net_listener_t *l = net_listen(port);
     if (!l) { return -1; }
     net_conn_t *conns[MP_MAX_PLAYERS] = {0};
+    uint8_t reqrace_tbl[MP_MAX_PLAYERS]; /* each connection's -mprace/Claim Race HELLO request (0xff = none) */
+    for (int i = 0; i < MP_MAX_PLAYERS; ++i) { reqrace_tbl[i] = 0xff; }
     uint8_t *porders[MP_MAX_PLAYERS] = {0}; /* each client's latest orders (applied at resolution) */
     int blobcap = gi->max_blob_len(gi->ctx);
     uint8_t *blob = (uint8_t *)malloc(blobcap);
@@ -693,12 +719,13 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
        fixed mode: block until exactly num_clients connect. open mode: block only for the host
        (slot 0); the rest join during the lobby loop below, up to `cap`. */
     int cap = num_clients;
-    if (open_lobby && gi->setup_game) {
-        MP_MSG("server: OPEN lobby on port %u -- waiting for host, then up to %d human(s)\n", (unsigned)port, cap);
-        for (;;) { net_conn_t *c = net_accept(l); if (c) { if (!mp_server_hello_ok(c, gi, NULL)) { net_conn_close(c); continue; } conns[0] = c; MP_MSG("server: host connected (%s)\n", net_conn_addr(c)); break; } usleep(2000); }
+    bool resume_lobby = (gi->setup_game == NULL); /* 1oom-mp: a RESUMED game runs a seat-claiming lobby */
+    if ((open_lobby && gi->setup_game) || resume_lobby) {
+        MP_MSG("server: %s lobby on port %u -- waiting for host, then up to %d human(s)\n", resume_lobby ? "RESUME" : "OPEN", (unsigned)port, cap);
+        for (;;) { net_conn_t *c = net_accept(l); if (c) { int rr = 0xff; if (!mp_server_hello_ok(c, gi, &rr)) { net_conn_close(c); continue; } conns[0] = c; reqrace_tbl[0] = (uint8_t)rr; MP_MSG("server: host connected (%s)\n", net_conn_addr(c)); break; } usleep(2000); }
         num_clients = 1;
     } else {
-        open_lobby = 0; /* no lobby to drive (resume/legacy) -> fall back to the fixed accept */
+        open_lobby = 0; /* legacy fixed accept (fresh fixed-count game) */
         MP_MSG("server: waiting for %d client(s) on port %u\n", num_clients, (unsigned)port);
         for (int filled = 0; filled < num_clients; ) {
             {   /* an accepted client backing out pre-start frees its seat instead of wedging the count */
@@ -746,14 +773,10 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
     g_mp_spectate_hook = mp_spectate_send;
     g_mp_movement_hook = mp_movement_send;
 
-    /* --- assign empires + send initial state --- */
+    /* --- welcome the connected client(s); a lobby (fresh OR resume) follows for everyone --- */
     for (int i = 0; i < num_clients; ++i) {
-        /* 5th byte: 0 = lobby follows; 2 = RESUMED game (no setup_game) -- the client must skip the
-           lobby UI (there's no lobby state to show; it sat in a BLANK lobby) and wait for GAME_DATA
-           on the proper "waiting for players" screen. (1 = mid-game reconnect, sent elsewhere.) */
-        uint8_t skip_lobby = (gi->setup_game == NULL) ? 2 : 0;
-        uint8_t w[5] = { (uint8_t)(i >> 8), (uint8_t)i, (uint8_t)(num_clients >> 8), (uint8_t)num_clients, skip_lobby };
-        if (mp_send(conns[i], MP_MSG_WELCOME, w, skip_lobby ? 5 : 4) != 0) { rc = -1; goto done; }
+        uint8_t w[4] = { (uint8_t)(i >> 8), (uint8_t)i, (uint8_t)(num_clients >> 8), (uint8_t)num_clients };
+        if (mp_send(conns[i], MP_MSG_WELCOME, w, 4) != 0) { rc = -1; goto done; }
     }
     /* per-game turn timer (host-set in lobby; settable via MP_TIMER env for no-lobby mode too) */
     uint8_t turn_timer_secs = 120; /* family-friendly default; host can change it in the lobby */
@@ -762,7 +785,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
     /* --- lobby: maintain a shared state every client edits live (race/color/ready, plus the
        host's AI count & galaxy size). Re-broadcast on each change; once all clients are ready,
        build the game from it. --- */
-    if (gi->setup_game) {
+    if (gi->setup_game || resume_lobby) {
         struct mp_lobby_s lob;
         memset(&lob, 0, sizeof(lob));
         lob.num_humans = (uint8_t)num_clients;
@@ -770,7 +793,17 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         lob.galaxy_size = 1;                                 /* default medium */
         lob.difficulty = 2;                                  /* default average (DIFFICULTY_AVERAGE) */
         lob.open_lobby = open_lobby ? 1 : 0;
-        lob.cap = (uint8_t)(open_lobby ? cap : num_clients); /* seat cap, so the lobby can show "2/4 players" */
+        lob.cap = (uint8_t)((open_lobby || resume_lobby) ? cap : num_clients); /* seat cap, so the lobby can show "2/4 players" */
+        if (resume_lobby) { /* seats = the save's human empires; players CLAIM them */
+            lob.resume = 1;
+            lob.num_ai = 0;
+            lob.turn = (uint16_t)gi->turn_number(gi->ctx);
+            for (int i = 0; i < MP_MAX_PLAYERS; ++i) {
+                lob.seat_owner[i] = 0xff;
+                lob.seat_race[i] = (i < cap && gi->player_race) ? (uint8_t)gi->player_race(gi->ctx, i) : 0xff;
+                lob.seat_team[i] = (i < cap && gi->get_team) ? (uint8_t)gi->get_team(gi->ctx, i) : 0;
+            }
+        }
         lob.turn_timer_secs = turn_timer_secs;               /* default from env/hardcoded; host can adjust in lobby UI */
         { const char *e; /* host-launch overrides for the lobby defaults (still editable in the lobby UI) */
           if ((e = getenv("MP_GSIZE"))) { int v = atoi(e); if ((v >= 0) && (v <= 3)) { lob.galaxy_size = (uint8_t)v; } }
@@ -797,11 +830,13 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
             {
                 int freeslot = -1;
                 for (int i = 0; i < num_clients; ++i) { if (!conns[i]) { freeslot = i; break; } }
-                if ((freeslot >= 0) || (open_lobby && (num_clients < cap))) {
+                if ((freeslot >= 0) || ((open_lobby || lob.resume) && (num_clients < cap))) {
                     net_conn_t *c = net_accept(l);
-                    if (c && !mp_server_hello_ok(c, gi, NULL)) { net_conn_close(c); c = NULL; } /* refuse a mismatched-build joiner */
+                    int rr = 0xff;
+                    if (c && !mp_server_hello_ok(c, gi, &rr)) { net_conn_close(c); c = NULL; } /* refuse a mismatched-build joiner */
                     if (c) {
                         int s = (freeslot >= 0) ? freeslot : num_clients;
+                        reqrace_tbl[s] = (uint8_t)rr;
                         conns[s] = c;
                         lob.slot[s].connected = 1; lob.slot[s].race = 0xff; lob.slot[s].banner = 0xff; lob.slot[s].ready = 0; lob.slot[s].team = 0;
                         if (s == num_clients) {
@@ -828,7 +863,11 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                     net_conn_close(conns[i]);
                     conns[i] = NULL;
                     lob.slot[i].connected = 0; lob.slot[i].ready = 0; lob.slot[i].race = 0xff; lob.slot[i].banner = 0xff; lob.slot[i].team = 0;
-                    if (open_lobby) { /* shrink trailing empty seats so Start isn't blocked on a ghost */
+                    reqrace_tbl[i] = 0xff;
+                    if (lob.resume) { /* release any seat this connection had claimed */
+                        for (int s2 = 0; s2 < MP_MAX_PLAYERS; ++s2) { if (lob.seat_owner[s2] == (uint8_t)i) { lob.seat_owner[s2] = 0xff; } }
+                    }
+                    if (open_lobby || lob.resume) { /* shrink trailing empty seats so start isn't blocked on a ghost */
                         while ((num_clients > 1) && !conns[num_clients - 1]) { --num_clients; }
                         lob.num_humans = (uint8_t)num_clients;
                     }
@@ -852,6 +891,11 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                     for (int i = 1; started && (i < num_clients); ++i) { if (!lob.slot[i].ready) { started = false; } }
                     if (!started) { start_req = false; } /* someone un-readied/left -- wait for a fresh Start */
                 }
+            } else if (lob.resume) {
+                /* every seat explicitly claimed, everyone connected and ready -- no auto-assignment */
+                started = (num_clients == cap);
+                for (int s2 = 0; started && (s2 < cap); ++s2) { if (lob.seat_owner[s2] == 0xff) { started = false; } }
+                for (int i = 0; started && (i < num_clients); ++i) { if (!conns[i] || !lob.slot[i].ready) { started = false; } }
             } else {
                 started = true;
                 for (int i = 0; i < num_clients; ++i) { if (!conns[i] || !lob.slot[i].ready) { started = false; break; } }
@@ -860,8 +904,29 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         }
         if (open_lobby) { lob.slot[0].ready = 1; } /* the host's Start stands in for a Ready */
         turn_timer_secs = lob.turn_timer_secs; /* take the host's final choice */
-        if (gi->setup_game(gi->ctx, &lob) != 0) { MP_ERR("server: setup_game failed\n"); rc = -1; goto done; }
-        MP_MSG("server: game created from lobby (humans=%d ai=%d gsize=%d timer=%ds)\n", lob.num_humans, lob.num_ai, lob.galaxy_size, turn_timer_secs);
+        if (gi->setup_game) {
+            if (gi->setup_game(gi->ctx, &lob) != 0) { MP_ERR("server: setup_game failed\n"); rc = -1; goto done; }
+            MP_MSG("server: game created from lobby (humans=%d ai=%d gsize=%d timer=%ds)\n", lob.num_humans, lob.num_ai, lob.galaxy_size, turn_timer_secs);
+        } else {
+            /* RESUME: every seat was claimed in the lobby. Rearrange the connections so
+               conn index == empire id, and tell each client its final id. */
+            {
+                net_conn_t *nc[MP_MAX_PLAYERS] = {0};
+                uint8_t nr[MP_MAX_PLAYERS];
+                for (int s2 = 0; s2 < MP_MAX_PLAYERS; ++s2) { nr[s2] = 0xff; }
+                for (int s2 = 0; s2 < cap; ++s2) {
+                    int c2 = lob.seat_owner[s2];
+                    if ((c2 >= 0) && (c2 < num_clients)) { nc[s2] = conns[c2]; nr[s2] = reqrace_tbl[c2]; }
+                }
+                for (int s2 = 0; s2 < MP_MAX_PLAYERS; ++s2) { conns[s2] = nc[s2]; reqrace_tbl[s2] = nr[s2]; }
+                num_clients = cap;
+            }
+            for (int s2 = 0; s2 < num_clients; ++s2) {
+                uint8_t m[2] = { (uint8_t)(s2 >> 8), (uint8_t)s2 };
+                if (mp_send(conns[s2], MP_MSG_SEAT, m, 2) != 0) { rc = -1; goto done; }
+                MP_MSG("server: seat %d -> %s\n", s2, net_conn_addr(conns[s2]));
+            }
+        }
     }
     s_mp_num_conns = num_clients; /* an open lobby may have grown the human count -- lock it in for the decision/spectate hooks */
     {
@@ -1117,7 +1182,8 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
         if (lr < 0 || !s_cl_lobby_started) { rc = (lr < 0 && !s_cl_game_over) ? 0 : -1; goto done; } /* quit / link drop */
         got_initial = true;
         g_mp_cl_game_started = true;
-        MP_MSG("client: game started from lobby, turn %d\n", gi->turn_number(gi->ctx));
+        player_id = s_cl_pid; /* resume lobby: adopt the claimed seat (MP_MSG_SEAT) as our empire id */
+        MP_MSG("client: game started from lobby as player %d, turn %d\n", player_id, gi->turn_number(gi->ctx));
     }
 
     /* initial state (no-lobby/legacy path; the lobby loads it itself when present) */

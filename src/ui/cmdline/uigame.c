@@ -158,15 +158,33 @@ int ui_mp_battle_watch_prompt(void)
 
 int ui_mp_lobby_run(int my_id)
 {
-    /* cmdline client: no interactive lobby UI -- auto-pick a race by slot, ready up, and wait. */
+    /* cmdline client: no interactive lobby UI -- auto-pick a race by slot, ready up, and wait.
+       Resume lobby: readying needs a seat, so claim one first (-mprace's if given, else the
+       first open one; a claim lost to a race just retries on the next poll). */
     struct mp_lobby_s lob;
-    if (g_mp_cl_lobby_set) {
-        g_mp_cl_lobby_set(MP_LOBBY_F_RACE, my_id % RACE_NUM);
-        g_mp_cl_lobby_set(MP_LOBBY_F_READY, 1);
-    }
+    bool done_fresh = false, done_ready = false;
     while (g_mp_cl_lobby_poll) {
         int p = g_mp_cl_lobby_poll(&lob);
         if (p != 0) { return (p > 0) ? 0 : -1; }
+        if (g_mp_cl_lobby_set && lob.resume && !done_ready) {
+            bool seated = false;
+            for (int j = 0; (j < lob.cap) && (j < MP_MAX_PLAYERS); ++j) { if (lob.seat_owner[j] == my_id) { seated = true; break; } }
+            if (seated) {
+                g_mp_cl_lobby_set(MP_LOBBY_F_READY, 1);
+                done_ready = true;
+            } else {
+                int pick = -1;
+                if (g_mp_cl_req_race >= 0) {
+                    for (int j = 0; (j < lob.cap) && (j < MP_MAX_PLAYERS); ++j) { if ((lob.seat_owner[j] == 0xff) && (lob.seat_race[j] == g_mp_cl_req_race)) { pick = j; break; } }
+                }
+                if (pick < 0) { for (int j = 0; (j < lob.cap) && (j < MP_MAX_PLAYERS); ++j) { if (lob.seat_owner[j] == 0xff) { pick = j; break; } } }
+                if (pick >= 0) { g_mp_cl_lobby_set(MP_LOBBY_F_SEAT, pick); }
+            }
+        } else if (g_mp_cl_lobby_set && !lob.resume && !done_fresh) {
+            g_mp_cl_lobby_set(MP_LOBBY_F_RACE, my_id % RACE_NUM);
+            g_mp_cl_lobby_set(MP_LOBBY_F_READY, 1);
+            done_fresh = true;
+        }
         usleep(20000);
     }
     return 0;

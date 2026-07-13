@@ -1353,8 +1353,8 @@ int ui_mp_lobby_run(int my_id)
         int16_t oi;
         int16_t oi_my_race = UIOBJI_INVALID, oi_my_flag = UIOBJI_INVALID, oi_ready = UIOBJI_INVALID, oi_leave = UIOBJI_INVALID, oi_start = UIOBJI_INVALID;
         int16_t oi_galaxy = UIOBJI_INVALID, oi_diff = UIOBJI_INVALID, oi_ai = UIOBJI_INVALID, oi_timer = UIOBJI_INVALID;
-        int16_t oi_ai_race[MP_MAX_PLAYERS], oi_team[MP_MAX_PLAYERS];
-        for (int k = 0; k < MP_MAX_PLAYERS; ++k) { oi_ai_race[k] = UIOBJI_INVALID; oi_team[k] = UIOBJI_INVALID; }
+        int16_t oi_ai_race[MP_MAX_PLAYERS], oi_team[MP_MAX_PLAYERS], oi_seat[MP_MAX_PLAYERS];
+        for (int k = 0; k < MP_MAX_PLAYERS; ++k) { oi_ai_race[k] = UIOBJI_INVALID; oi_team[k] = UIOBJI_INVALID; oi_seat[k] = UIOBJI_INVALID; }
         char buf[64];
         /* pump the lobby: refresh shared state; leave the loop once the game starts (p>0) or drops (p<0) */
         int p = g_mp_cl_lobby_poll ? g_mp_cl_lobby_poll(&lob) : 1;
@@ -1365,14 +1365,56 @@ int ui_mp_lobby_run(int my_id)
         int my_race = lob.slot[my_id].race;
         int my_banner = lob.slot[my_id].banner;
         bool my_ready = (lob.slot[my_id].ready != 0);
+        bool my_seated = false; /* resume: do I own a seat yet? (READY needs one) */
+        if (lob.resume) {
+            for (int j = 0; (j < lob.cap) && (j < MP_MAX_PLAYERS); ++j) { if (lob.seat_owner[j] == my_id) { my_seated = true; break; } }
+        }
 
         ui_delay_prepare();
         ui_draw_erase_buf();
         lbxgfx_draw_frame(0, 0, gfx_custom, UI_SCREEN_W, ui_scale);
         lbxfont_select(5, 0xf, 0, 0);
-        lbxfont_print_str_center(160, 3, "MULTIPLAYER  LOBBY", UI_SCREEN_W, ui_scale);
+        if (lob.resume) {
+            lib_sprintf(buf, sizeof(buf), "RESUME GAME  -  TURN %d  -  CLICK YOUR EMPIRE", (int)lob.turn);
+            lbxfont_print_str_center(160, 3, buf, UI_SCREEN_W, ui_scale);
+        } else {
+            lbxfont_print_str_center(160, 3, "MULTIPLAYER  LOBBY", UI_SCREEN_W, ui_scale);
+        }
         uiobj_table_clear();
 
+        /* RESUME: the grid shows the save's empires as claimable SEATS */
+        if (lob.resume) {
+            for (int i = 0; (i < lob.cap) && (i < MP_MAX_PLAYERS); ++i) {
+                int x0 = 4 + (i / 3) * 160;
+                int y0 = 20 + (i % 3) * 50;
+                int race = lob.seat_race[i];
+                int owner = lob.seat_owner[i];
+                bool mine = (owner == my_id);
+                int tx = x0 + 46;
+                ui_draw_box1(x0, y0, x0 + 41, y0 + 35, mine ? 0xf : 0x9b, mine ? 0xf : 0x9b, ui_scale);
+                if ((race >= 0) && (race < RACE_NUM)) {
+                    lbxgfx_draw_frame(x0 + 1, y0 + 1, gfx_portrait[race], UI_SCREEN_W, ui_scale);
+                }
+                lbxfont_select(5, 0xf, 0, 0);
+                lbxfont_print_str_normal(tx, y0 + 2, ((race >= 0) && (race < RACE_NUM)) ? game_str_tbl_races[race] : "?", UI_SCREEN_W, ui_scale);
+                if (lob.seat_team[i] != 0) {
+                    char tbuf[8];
+                    lib_sprintf(tbuf, sizeof(tbuf), "T%d", lob.seat_team[i]);
+                    lbxfont_print_str_right(tx + 106, y0 + 2, tbuf, UI_SCREEN_W, ui_scale);
+                }
+                if (owner == 0xff) {
+                    lbxfont_print_str_normal(tx, y0 + 13, "open - click to claim", UI_SCREEN_W, ui_scale);
+                } else if (mine) {
+                    lbxfont_print_str_normal(tx, y0 + 13, "YOU", UI_SCREEN_W, ui_scale);
+                    lbxfont_print_str_normal(tx, y0 + 24, lob.slot[my_id].ready ? "READY" : "not ready", UI_SCREEN_W, ui_scale);
+                } else {
+                    lib_sprintf(buf, sizeof(buf), "Player %d", owner + 1);
+                    lbxfont_print_str_normal(tx, y0 + 13, buf, UI_SCREEN_W, ui_scale);
+                    lbxfont_print_str_normal(tx, y0 + 24, ((owner < MP_MAX_PLAYERS) && lob.slot[owner].ready) ? "READY" : "not ready", UI_SCREEN_W, ui_scale);
+                }
+                oi_seat[i] = uiobj_add_mousearea(x0, y0, x0 + 155, y0 + 35, MOO_KEY_UNKNOWN);
+            }
+        } else
         /* player-slot grid (same layout as the single-player custom-game screen): portrait | flag | info */
         for (int i = 0; i < total; ++i) {
             int x0 = 4 + (i / 3) * 160;
@@ -1428,7 +1470,16 @@ int ui_mp_lobby_run(int my_id)
            Galaxy and Diff keep their original widths (Diff needs 120px for "Diff: Impossible").
            The original AI box (x=232..318) is split into AI (x=232..271) and Timer (x=275..318).
            Host clicks a box to cycle its value; "T:" prefix keeps Timer label short enough. */
-        {
+        if (lob.resume) {
+            char tv[24];
+            if (lob.turn_timer_secs == 0) { lib_sprintf(tv, sizeof(tv), "T: Off"); }
+            else { lib_sprintf(tv, sizeof(tv), "T: %ds", lob.turn_timer_secs); }
+            ui_draw_filled_rect(276, 159, 317, 171, 0, ui_scale); ui_draw_box1(275, 158, 318, 172, 0x9b, 0x9b, ui_scale);
+            lbxfont_select(2, 0xf, 0, 0);
+            lbxfont_print_str_center(297, 161, tv, UI_SCREEN_W, ui_scale);
+            lbxfont_print_str_normal(6, 161, "The game starts when every empire is claimed and everyone is READY.", UI_SCREEN_W, ui_scale);
+            if (is_host) { oi_timer = uiobj_add_mousearea(275, 158, 318, 172, MOO_KEY_UNKNOWN); }
+        } else {
             char gv[40], dv[40], av[24], tv[24];
             lib_sprintf(gv, sizeof(gv), "Galaxy: %s", (lob.galaxy_size < GALAXY_SIZE_NUM) ? game_str_tbl_gsize[lob.galaxy_size] : "?");
             lib_sprintf(dv, sizeof(dv), "Diff: %s", (lob.difficulty < DIFFICULTY_NUM) ? game_str_tbl_diffic[lob.difficulty] : "?");
@@ -1476,8 +1527,9 @@ int ui_mp_lobby_run(int my_id)
             lbxfont_print_str_center(160, 189, (my_race >= RACE_NUM) ? "pick your race and color" : (can_start ? "everyone's ready -- click START to begin" : "waiting for players to ready up..."), UI_SCREEN_W, ui_scale);
         } else {
             lbxfont_print_str_center(280, 181, my_ready ? "WAITING" : "READY", UI_SCREEN_W, ui_scale);
-            if (my_race < RACE_NUM) { oi_ready = uiobj_add_mousearea(242, 174, 316, 197, MOO_KEY_SPACE); }
-            lbxfont_print_str_center(160, 189, my_ready ? ((lob.open_lobby != 0) ? "waiting for the host to start..." : "waiting for all players...") : "pick your race and color, then ready", UI_SCREEN_W, ui_scale);
+            if (lob.resume ? my_seated : (my_race < RACE_NUM)) { oi_ready = uiobj_add_mousearea(242, 174, 316, 197, MOO_KEY_SPACE); }
+            lbxfont_print_str_center(160, 189, my_ready ? ((lob.open_lobby != 0) ? "waiting for the host to start..." : "waiting for all players...")
+                : (lob.resume ? (my_seated ? "now click READY" : "click your empire to claim it") : "pick your race and color, then ready"), UI_SCREEN_W, ui_scale);
         }
 
         uiobj_finish_frame();
@@ -1492,6 +1544,11 @@ int ui_mp_lobby_run(int my_id)
         else if (is_host && oi_diff != UIOBJI_INVALID && oi == oi_diff) { g_mp_cl_lobby_set(MP_LOBBY_F_DIFFICULTY, (lob.difficulty + 1) % DIFFICULTY_NUM); }
         else if (is_host && oi_ai != UIOBJI_INVALID && oi == oi_ai) { int mx = MP_MAX_PLAYERS - lob.num_humans; g_mp_cl_lobby_set(MP_LOBBY_F_NUM_AI, (lob.num_ai >= mx) ? 0 : lob.num_ai + 1); }
         else if (is_host && oi_timer != UIOBJI_INVALID && oi == oi_timer) { g_mp_cl_lobby_set(MP_LOBBY_F_TIMER, lobby_next_timer(lob.turn_timer_secs)); }
+        if (lob.resume && (oi != 0)) { /* resume lobby: clicking a seat claims it (server validates) */
+            for (int j = 0; j < MP_MAX_PLAYERS; ++j) {
+                if ((oi_seat[j] != UIOBJI_INVALID) && (oi == oi_seat[j])) { ui_sound_play_sfx_24(); g_mp_cl_lobby_set(MP_LOBBY_F_SEAT, j); break; }
+            }
+        }
         else { /* per-slot clicks: AI portrait cycles its race (host); team tag cycles team (own/host) */
             for (int j = 0; j < total; ++j) {
                 if (is_host && (oi_ai_race[j] != UIOBJI_INVALID) && (oi == oi_ai_race[j])) {

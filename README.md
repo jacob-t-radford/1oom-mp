@@ -52,7 +52,9 @@ Launch the game and pick **Multiplayer** from the main menu:
   cap) and you click **Start** when everyone's in.
 - **Join Game** — type the host's address (it remembers the last one you used).
 - **Resume Game** — pick any save by name (saves are **synced to every player's machine** each
-  turn, so *anyone* can host the resume). Set **Claim Race** first to take your old empire.
+  turn, so *anyone* can host the resume). Everyone lands in a seat lobby showing the save's
+  empires — **click your empire** to claim it. The game starts once every seat is claimed and
+  everyone is READY.
 
 Saving in-game (**Esc → Save**) asks for a name and stores the save on every player's machine.
 The command-line flags below still work and do the same things.
@@ -145,7 +147,7 @@ server with `-mpload`:
 ```
 
 The human count is baked into the save, so `-mphumans` isn't needed when resuming. Everyone rejoins
-as before.
+and clicks their empire in the resume lobby.
 
 > **Same build, both ends.** Multiplayer syncs game state as raw structures, so the server and every
 > client must be built from the **same commit**. A version handshake rejects mismatches at join — if

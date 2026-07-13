@@ -350,13 +350,6 @@ static void main_menu_make_main_page(struct main_menu_data_s *d)
 /* ----- 1oom-mp: Multiplayer page (Host / Resume / Join without the command line) ----- */
 
 static uint32_t mm_mp_humans = 2;  /* HOST: how many human players the new game waits for */
-static uint32_t mm_mp_race = 0;    /* RESUME/JOIN: 0 = auto, 1..RACE_NUM = claim race id-1 */
-
-static const char *mm_get_mp_race_value(uint32_t i)
-{
-    return (i == 0) ? "Auto" : game_str_tbl_race[i - 1];
-}
-
 static void main_menu_make_multiplayer_page(struct main_menu_data_s *d)
 {
     d->set_item_dimensions = mm_game_set_item_dimensions;
@@ -364,7 +357,6 @@ static void main_menu_make_multiplayer_page(struct main_menu_data_s *d)
     menu_make_action(menu_allocate_item(), "Resume Game", MAIN_MENU_ACT_MP_RESUME, MOO_KEY_r);
     menu_make_action(menu_allocate_item(), "Join Game", MAIN_MENU_ACT_MP_JOIN, MOO_KEY_j);
     menu_make_int(menu_allocate_item(), "Max Players", &mm_mp_humans, 2, 6, MOO_KEY_p);
-    menu_make_enum(menu_allocate_item(), "Claim Race (resume)", mm_get_mp_race_value, &mm_mp_race, 0, RACE_NUM, MOO_KEY_c);
     menu_make_back(menu_allocate_item());
 }
 
@@ -1143,7 +1135,7 @@ static bool mm_mp_screen_resume(void)
     if (pick < 0) { return false; }
     lib_strcpy(ui_mp_setup.load_path, tbl[pick].path, sizeof(ui_mp_setup.load_path));
     ui_mp_setup.humans = 2; /* ignored on resume (the save carries it) */
-    ui_mp_setup.req_race = (mm_mp_race > 0) ? (int)(mm_mp_race - 1) : -1; /* the page's Claim Race pick */
+    ui_mp_setup.req_race = -1; /* seats are claimed in the resume lobby */
     ui_mp_setup.join_addr[0] = '\0';
     return true;
 }
@@ -1185,8 +1177,8 @@ static bool mm_mp_screen_join(void)
         oi_input = uiobj_add_textinput(82, 64, 156, addr, sizeof(addr) - 1, 1, false, true, ctbl, MOO_KEY_UNKNOWN);
         lbxfont_select(0, 6, 0, 0);
         lbxfont_print_str_center(160, 90, "e.g. 100.89.54.91  (port 24695 is assumed)", UI_SCREEN_W, ui_scale);
-        lbxfont_print_str_center(160, 104, "Resuming or rejoining a dropped empire? Set Claim Race", UI_SCREEN_W, ui_scale);
-        lbxfont_print_str_center(160, 114, "on the Multiplayer page to take it.", UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(160, 104, "Resumed games open a lobby where you CLICK your empire.", UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(160, 114, "Dropped mid-game? Join the same address again to rejoin.", UI_SCREEN_W, ui_scale);
         lbxfont_select(2, 6, 0, 0);
         lbxfont_print_str_center(120, 150, "[ Connect ]", UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(205, 150, "[ Back ]", UI_SCREEN_W, ui_scale);
@@ -1201,7 +1193,7 @@ static bool mm_mp_screen_join(void)
     uiobj_table_clear();
     if (confirmed) {
         lib_strcpy(ui_mp_setup.join_addr, addr, sizeof(ui_mp_setup.join_addr));
-        ui_mp_setup.req_race = (mm_mp_race > 0) ? (int)(mm_mp_race - 1) : -1;
+        ui_mp_setup.req_race = -1; /* reconnects auto-reclaim by address; resume uses the seat lobby */
         ui_mp_setup.load_path[0] = '\0';
         ui_mp_setup.humans = 2;
     }

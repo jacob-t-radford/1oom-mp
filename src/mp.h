@@ -17,8 +17,10 @@
    combat-report wire payload (ui_combat_report_s). Another wire-size change -> bump again.
    v4 (2026-07-03): save sync -- GAME_META + SAVE_NAMED messages, SAVE_REQUEST now carries a
    player-chosen save name. Every client stores each turn's state locally, so any machine can host
-   a resume. */
-#define MP_PROTO_VERSION 4
+   a resume.
+   v5 (2026-07-04): resume lobby -- mp_lobby_s gains seat arrays (resume/turn/seat_race/seat_team/
+   seat_owner), MP_LOBBY_F_SEAT claims a seat, MP_MSG_SEAT delivers each client's final empire id. */
+#define MP_PROTO_VERSION 5
 #define MP_MAX_PLAYERS   6
 
 /* message ids. S->C and C->S noted. Mirrors the 2018 protocol's intent. */
@@ -35,6 +37,7 @@ enum mp_msg_e {
     MP_MSG_SAVE_NAMED = 0x18, /* S->C: [u8 nlen][name][state blob] = a player made a named save; every client writes its own local copy (save sync) */
     MP_MSG_READY_STATUS = 0x19, /* S->C (best-effort): [u8 ready_bitmask][u8 num_players][u8 conn_bitmask] = who has readied up / is connected, for the planning banners */
     MP_MSG_WAIT_COUNT = 0x1a, /* S->C (best-effort, pre-WELCOME): [u8 joined][u8 total] = fixed-mode connect progress, so the waiting screen can show "2 of 3 connected" */
+    MP_MSG_SEAT = 0x1b, /* S->C (resume lobby, at start): [u16 empire_id] = the seat this client claimed is its FINAL player id; adopt it before the initial state arrives */
     MP_MSG_GAME_DATA = 0x08, /* S->C: [state blob] (save-format, authoritative) */
     MP_MSG_TURN_MOVE = 0x09, /* S->C: [pre-movement state blob] = animate this turn's fleet movement, sent just before GAME_DATA */
     MP_MSG_SPECTATE  = 0x0a, /* S->C: [battle_s] = a battle update to re-render (no reply); for watching the other side's turn */
@@ -109,7 +112,12 @@ struct mp_lobby_s {
     uint8_t difficulty;   /* host-set: AI difficulty (0..4) — global, all AIs share it */
     uint8_t open_lobby;   /* 1 = open lobby: humans join freely up to the cap and the host clicks Start to begin */
     uint8_t turn_timer_secs; /* host-set: per-turn countdown before auto-submit (0 = off, default 120) */
-    uint8_t cap;          /* max human seats (open lobby: the -mpopen cap; fixed: = num_humans) */
+    uint8_t cap;          /* max human seats (open lobby: the -mpopen cap; fixed/resume: the save's humans) */
+    uint8_t resume;       /* 1 = RESUME lobby: seats below are the save's empires; players CLAIM seats */
+    uint16_t turn;        /* resume: the save's turn number (display) */
+    uint8_t seat_race[MP_MAX_PLAYERS];  /* resume: each seat's (fixed) race from the save */
+    uint8_t seat_team[MP_MAX_PLAYERS];  /* resume: each seat's team from the save (0 = FFA) */
+    uint8_t seat_owner[MP_MAX_PLAYERS]; /* resume: which CONNECTION claimed the seat (0xff = open) */
     struct {
         uint8_t race;     /* 0xff = not yet chosen */
         uint8_t banner;   /* 0xff = not yet chosen */
@@ -131,6 +139,7 @@ enum mp_lobby_field_e {
     MP_LOBBY_F_TEAM = 7,       /* value = (slot << 4) | team -- set a player's team (own slot, or host any) */
     MP_LOBBY_F_START = 8,      /* open lobby, host (slot 0) only: value ignored -- begin the game with whoever has joined */
     MP_LOBBY_F_TIMER = 9,      /* host only: per-turn countdown in seconds (0 = off) */
+    MP_LOBBY_F_SEAT = 10,      /* resume lobby: value = seat index -- claim that empire (unclaimed or your own to move) */
 };
 
 /* The game, abstracted. ctx is opaque (the real impl passes a struct game_s *). */
