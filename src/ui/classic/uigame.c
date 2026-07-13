@@ -36,6 +36,7 @@
 #include "uigmap.h"
 #include "uigameopts.h"
 #include "uiobj.h"
+#include "uisound.h"
 #include "uipal.h"
 #include "uiplanets.h"
 #include "uiraces.h"
@@ -189,17 +190,68 @@ static void ui_mp_diplo_msgbox(struct game_s *g, player_id_t pi, player_id_t pa,
     ui_audience_end(&au);
 }
 
+/* 1oom-mp: ask the player for a save name (small text-entry box). Returns true to proceed (name may
+   be empty -> default naming), false on Esc/cancel. */
+static bool ui_mp_save_name_prompt(struct game_s *g, char *name, int namelen)
+{
+    bool flag_done = false, confirmed = false;
+    int16_t oi_input = UIOBJI_INVALID, oi_esc = UIOBJI_INVALID, oi_ok = UIOBJI_INVALID, oi_cancel = UIOBJI_INVALID;
+    const uint8_t ctbl[] = { 5, 6, 7, 8, 9, 10, 0, 0, 0, 0 };
+    uiobj_table_clear();
+    while (!flag_done) {
+        int16_t oi;
+        oi = uiobj_handle_input_cond();
+        ui_delay_prepare();
+        if ((oi == oi_esc) || (oi == oi_cancel) || (oi == UIOBJI_ESC)) {
+            ui_sound_play_sfx_06();
+            flag_done = true;
+        } else if ((oi == oi_input) || (oi == oi_ok)) { /* Enter in the field, or OK */
+            ui_sound_play_sfx_24();
+            confirmed = true;
+            flag_done = true;
+        }
+        uiobj_table_clear();
+        ui_draw_erase_buf();
+        lbxfont_select(2, 0xd, 0, 0);
+        lbxfont_print_str_center(160, 60, "SAVE GAME", UI_SCREEN_W, ui_scale);
+        lbxfont_select(0, 0xd, 0, 0);
+        lbxfont_print_str_center(160, 80, "Save name (all players get a copy):", UI_SCREEN_W, ui_scale);
+        ui_draw_filled_rect(78, 94, 242, 106, 0x00, ui_scale);
+        ui_draw_line1(78, 107, 242, 107, 0x2f, ui_scale);
+        lbxfont_select(0, 1, 0, 0);
+        oi_input = uiobj_add_textinput(82, 96, 156, name, namelen - 1, 1, false, true, ctbl, MOO_KEY_UNKNOWN);
+        lbxfont_select(2, 6, 0, 0);
+        lbxfont_print_str_center(120, 120, "[ Save ]", UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(200, 120, "[ Cancel ]", UI_SCREEN_W, ui_scale);
+        oi_ok = uiobj_add_mousearea(95, 116, 145, 128, MOO_KEY_UNKNOWN);
+        oi_cancel = uiobj_add_mousearea(175, 116, 225, 128, MOO_KEY_UNKNOWN);
+        oi_esc = uiobj_add_inputkey(MOO_KEY_ESCAPE);
+        if (!flag_done) {
+            uiobj_finish_frame();
+            ui_delay_ticks_or_click(1);
+        }
+    }
+    uiobj_table_clear();
+    return confirmed;
+}
+
 /* 1oom-mp: Esc -> Save in a networked game. The single-player save would only write a LOCAL,
-   non-resumable file on this machine; instead ask the authoritative SERVER to write a named snapshot
-   (mp_save_<game_id>_y<year>.blob, resumable with -mpload), then confirm. */
+   non-resumable file on this machine; instead ask for a name and have the authoritative SERVER write
+   the snapshot -- which it then broadcasts so EVERY player's machine stores a copy (save sync). */
 void ui_mp_save_game(struct game_s *g)
 {
     int pi;
+    char name[48];
     if (!g_mp_cl_diplo_send) { return; } /* not in a live MP turn */
-    g_mp_cl_diplo_send(MP_MSG_SAVE_REQUEST, NULL, 0);
     pi = mp_cl_player_id();
+    {   /* default name: "<Race> y<year>" -- easy to find, and the player can retype it */
+        const char *race = ((pi >= 0) && (pi < g->players)) ? game_str_tbl_races[g->eto[pi].race] : "Save";
+        lib_sprintf(name, sizeof(name), "%s y%d", race, (int)g->year + YEAR_BASE);
+    }
+    if (!ui_mp_save_name_prompt(g, name, sizeof(name))) { return; } /* canceled */
+    g_mp_cl_diplo_send(MP_MSG_SAVE_REQUEST, name, (int)strlen(name));
     if ((pi >= 0) && (pi < g->players)) {
-        ui_mp_diplo_msgbox(g, (player_id_t)pi, (player_id_t)pi, "Our records are committed to the archives. (Game saved on the server.)");
+        ui_mp_diplo_msgbox(g, (player_id_t)pi, (player_id_t)pi, "Our records are committed to the archives. (Saved on every player's machine.)");
     }
 }
 
@@ -330,7 +382,7 @@ static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t 
         diplo_cl_proposal_p(sid, MP_DIPLO_PROPOSE_TECH, pp, 4);
         int acc = mp_diplo_await_answer(au);
         if (acc >= 0) {
-            if (acc) { game_tech_get_new(g, pi, (tech_field_t)pp[0], pp[1], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); } /* 1oom-mp: optimistic -- the tech we wanted is usable THIS turn (server re-grants authoritatively at resolution) */
+            if (acc) { game_tech_get_new(g, pi, (tech_field_t)pp[0], pp[1], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); ui_mp_tech_note_seen(pp[0], pp[1]); } /* 1oom-mp: optimistic -- the tech we wanted is usable THIS turn (server re-grants authoritatively at resolution); note_seen stops the turn-start re-announce */
             diplo_au_msg(au, acc ? "Excellent. The exchange is agreed." : "They refuse our offer.");
         }
     }
@@ -349,6 +401,12 @@ static void ui_mp_diplo_session_propose(struct game_s *g, player_id_t pi, player
     for (;;) {
         treaty_t tr = g->eto[pi].treaty[pa];
         const char *mopts[6]; int mcat[6]; int mn = 0;
+        /* 1oom-mp: notice the other player leaving the audience between actions */
+        if (g_mp_cl_poll) { g_mp_cl_poll(); }
+        if (mp_cl_diplo_take_session_end()) {
+            diplo_au_msg(au, "They have departed.");
+            return;
+        }
         mopts[mn] = "Propose treaty"; mcat[mn] = 0; ++mn;
         mopts[mn] = "Form trade agreement"; mcat[mn] = 1; ++mn;
         mopts[mn] = "Exchange technology"; mcat[mn] = 2; ++mn;
@@ -461,7 +519,7 @@ static void ui_mp_diplo_session_respond(struct game_s *g, player_id_t pi, player
             if ((verb == MP_DIPLO_PROPOSE_TRADE) || (verb == MP_DIPLO_PROPOSE_TECH)) {
                 game_mp_diplo_record_p(pi, pa, MP_DIPLO_ACCEPT, verb, pp); /* authoritative at resolution */
                 if (verb == MP_DIPLO_PROPOSE_TRADE) { game_diplo_set_trade(g, pi, pa, pp[0] | (pp[1] << 8)); } /* optimistic */
-                else { game_tech_get_new(g, pi, (tech_field_t)pp[2], pp[3], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); } /* 1oom-mp: optimistic -- usable THIS turn; server re-grants authoritatively at resolution */
+                else { game_tech_get_new(g, pi, (tech_field_t)pp[2], pp[3], TECHSOURCE_TRADE, pa, PLAYER_NONE, false); ui_mp_tech_note_seen(pp[2], pp[3]); } /* 1oom-mp: optimistic -- usable THIS turn; server re-grants authoritatively at resolution; note_seen stops the re-announce */
             } else {
                 game_mp_diplo_record(pi, pa, MP_DIPLO_ACCEPT, verb); /* authoritative at resolution */
                 mp_diplo_apply_local(g, pi, pa, verb);               /* and immediately, locally */
@@ -554,6 +612,7 @@ static uint8_t s_team_enact_stance = 0;
 static void mp_team_stance_apply(struct game_s *g, player_id_t actor, player_id_t enemy, uint8_t stance) {
     switch (stance) {
         case MP_TEAM_STANCE_PEACE: game_diplo_stop_war(g, actor, enemy); break;
+        case MP_TEAM_STANCE_ALLIANCE: game_diplo_set_treaty(g, actor, enemy, TREATY_ALLIANCE); break;
         case MP_TEAM_STANCE_NAP:   game_diplo_set_treaty(g, actor, enemy, TREATY_NONAGGRESSION); break;
         case MP_TEAM_STANCE_BREAK:  game_diplo_break_treaty(g, actor, enemy); break;
         case MP_TEAM_STANCE_WAR:    game_diplo_start_war(g, actor, enemy); break;
@@ -563,6 +622,7 @@ static void mp_team_stance_apply(struct game_s *g, player_id_t actor, player_id_
 static uint8_t team_stance_to_diplo_verb(uint8_t stance) {
     switch (stance) {
         case MP_TEAM_STANCE_PEACE: return MP_DIPLO_PROPOSE_PEACE;
+        case MP_TEAM_STANCE_ALLIANCE: return MP_DIPLO_PROPOSE_ALLIANCE;
         case MP_TEAM_STANCE_NAP:   return MP_DIPLO_PROPOSE_NAP;
         case MP_TEAM_STANCE_BREAK:  return MP_DIPLO_BREAK_TREATY;
         case MP_TEAM_STANCE_WAR:    return MP_DIPLO_DECLARE_WAR;
@@ -701,6 +761,7 @@ void ui_mp_diplo_handle(struct game_s *g, int pi)
         const char *act = (st == MP_TEAM_STANCE_PEACE) ? "make peace with"
                         : (st == MP_TEAM_STANCE_NAP)   ? "sign a non-aggression pact with"
                         : (st == MP_TEAM_STANCE_WAR)   ? "declare war on"
+                        : (st == MP_TEAM_STANCE_ALLIANCE) ? "form an alliance with"
                         :                                "break our treaty with";
         struct audience_s au = {0}; char msg[200];
         au.g = g; au.ph = pi; au.pa = (player_id_t)from;
@@ -828,6 +889,12 @@ static bool s_mp_tech_snap_valid = false;
 #define MP_TECH_SEEN_SET(f, t) (s_mp_tech_seen[f][(t) >> 3] |= (uint8_t)(1u << ((t) & 7)))
 
 void ui_mp_tech_notify_reset(void) { s_mp_tech_snap_valid = false; }
+
+/* a tech arrived through its own UI (audience deal, h2h trade) -- don't re-announce it at turn start */
+void ui_mp_tech_note_seen(uint8_t field, uint8_t tech)
+{
+    if (s_mp_tech_snap_valid && (field < TECH_FIELD_NUM)) { MP_TECH_SEEN_SET(field, tech); }
+}
 
 static void ui_mp_research_select(struct game_s *g, player_id_t pi)
 {
@@ -1334,7 +1401,7 @@ int ui_mp_lobby_run(int my_id)
             }
             /* info text (font 5 like the single-player setup screen; font 2 renders dark in this palette) */
             lbxfont_select(5, 0xf, 0, 0);
-            lib_sprintf(buf, sizeof(buf), is_ai ? "Computer" : (mine ? "You (P%d)" : "Player %d"), i + 1);
+            lib_sprintf(buf, sizeof(buf), is_ai ? "CPU" : (mine ? "You (P%d)" : "Player %d"), i + 1);
             lbxfont_print_str_normal(tx, y0 + 2, buf, UI_SCREEN_W, ui_scale);
             {   /* team tag (top-right of the slot); click to cycle -- own slot, or host sets anyone */
                 char tbuf[8];
@@ -1385,6 +1452,14 @@ int ui_mp_lobby_run(int my_id)
             }
         }
 
+        {   /* 1oom-mp polish: connected-seat count, so joiners can see room remaining */
+            char pcb[24];
+            int conn = 0;
+            for (int j = 0; j < lob.num_humans; ++j) { if (lob.slot[j].connected) { ++conn; } }
+            lib_sprintf(pcb, sizeof(pcb), "%d/%d PLAYERS", conn, (lob.cap > 0) ? lob.cap : lob.num_humans);
+            lbxfont_select(2, 0xf, 0, 0);
+            lbxfont_print_str_center(160, 174, pcb, UI_SCREEN_W, ui_scale);
+        }
         /* LEAVE (bottom-left) + READY (bottom-right), over the backdrop's button corners */
         lbxfont_select(5, 0xf, 0, 0);
         lbxfont_print_str_center(40, 181, "LEAVE", UI_SCREEN_W, ui_scale);
@@ -1468,9 +1543,27 @@ int ui_mp_battle_watch_prompt(void)
 void ui_mp_wait(int reason)
 {
     hw_event_handle();          /* poll input + ~10ms delay; keeps the window responsive */
-    /* Before the game UI is live (lobby/initial sync) the font color palette isn't
-       loaded yet, so lbxfont_select would crash — just keep the window alive. */
-    if (!s_mp_ui_ready) { return; }
+    /* Before the game UI is live (lobby/initial sync) the font color palette isn't loaded yet --
+       load it once and show a REAL waiting screen ("2 of 3 connected") instead of a black stare. */
+    if (!s_mp_ui_ready) {
+        static bool pal_loaded = false;
+        char cbuf[64];
+        if (!pal_loaded) { lbxpal_select(2, -1, 0); pal_loaded = true; }
+        ui_draw_erase_buf();
+        lbxfont_select(2, 0xd, 0, 0);
+        lbxfont_print_str_center(160, 80, "MULTIPLAYER", UI_SCREEN_W, ui_scale);
+        lbxfont_select(0, 0xd, 0, 0);
+        if (g_mp_cl_wait_total) {
+            lib_sprintf(cbuf, sizeof(cbuf), "Waiting for players to connect... (%d of %d)", (int)g_mp_cl_wait_joined, (int)g_mp_cl_wait_total);
+        } else {
+            lib_strcpy(cbuf, "Waiting for players to connect...", sizeof(cbuf));
+        }
+        lbxfont_print_str_center(160, 96, cbuf, UI_SCREEN_W, ui_scale);
+        uiobj_table_clear();
+        ui_draw_finish_mode = 0;
+        ui_draw_finish();
+        return;
+    }
     if (reason == 2 /* MP_WAIT_BATTLE */) { return; } /* in a battle: just pumped events, keep the arena */
     const char *msg;
     if (reason == 4 /* MP_WAIT_COUNCIL */) { msg = "The Galactic Council is in session..."; }

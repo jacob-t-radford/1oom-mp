@@ -392,8 +392,25 @@ int hw_event_handle(void)
                 }
                 break;
             case SDL_QUIT:
-                hw_audio_shutdown_pre();
-                exit(EXIT_SUCCESS);
+                {   /* 1oom-mp: confirm before quitting -- the window X is easy to hit by accident,
+                       and in multiplayer it drops you from the live game. Native SDL dialog. */
+                    const SDL_MessageBoxButtonData btns[] = {
+                        { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Keep Playing" },
+                        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Quit" },
+                    };
+                    SDL_MessageBoxData mb;
+                    int pressed = 0;
+                    memset(&mb, 0, sizeof(mb));
+                    mb.flags = SDL_MESSAGEBOX_WARNING;
+                    mb.title = "Master of Orion";
+                    mb.message = "Quit the game?";
+                    mb.numbuttons = 2;
+                    mb.buttons = btns;
+                    if ((SDL_ShowMessageBox(&mb, &pressed) != 0) || (pressed == 1)) {
+                        hw_audio_shutdown_pre();
+                        exit(EXIT_SUCCESS);
+                    }
+                }
                 break;
             case SDL_WINDOWEVENT:
                 if (e.window.windowID == hw_video_get_window_id()) {

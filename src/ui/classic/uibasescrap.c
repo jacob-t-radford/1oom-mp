@@ -5,6 +5,7 @@
 #include "uibasescrap.h"
 #include "comp.h"
 #include "game.h"
+#include "game_mp_orders.h" /* 1oom-mp: econ-action record (base scrap must reach the server) */
 #include "game_str.h"
 #include "game_tech.h"
 #include "kbd.h"
@@ -101,6 +102,7 @@ void ui_basescrap(struct game_s *g, player_id_t active_player)
             n = (p->missile_bases * d.slider_var) / 100;
             p->missile_bases -= n;
             g->eto[active_player].reserve_bc += (n * game_get_base_cost(g, active_player)) / 4;
+            game_mp_econ_record_scrap_bases(active_player, g->planet_focus_i[active_player], n); /* 1oom-mp: reach the server (it recomputes the refund) */
             flag_done = true;
             SETMAX(p->missile_bases, 0);
         } else if (oi == oi_minus) {

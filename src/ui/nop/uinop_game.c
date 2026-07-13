@@ -9,6 +9,7 @@
 #include "game_planet.h"
 #include "game_audience.h"
 #include "game_battle.h"
+#include "game_battle_human.h" /* 1oom-mp: game_battle_owner_auto_set (pre-battle Auto = AI pilot, not flee) */
 #include "game_election.h"
 #include "game_ground.h"
 #include "game_turn.h"
@@ -231,6 +232,11 @@ ui_battle_autoresolve_t ui_battle_init(struct battle_s *bt)
                     if (modes[i] == UI_BATTLE_AUTORESOLVE_OFF) {
                         result = UI_BATTLE_AUTORESOLVE_OFF;
                         side_fights[sides[i]] = true;
+                    } else if (modes[i] == UI_BATTLE_AUTORESOLVE_AUTO) {
+                        /* 1oom-mp teams: pre-battle Auto = AI pilots THIS owner's ships (same as the
+                           mid-battle Auto button) -- NOT flee. Only matters when a teammate fights the
+                           battle live; an all-auto side takes the fast flag_auto path below anyway. */
+                        game_battle_owner_auto_set(players[i]);
                     } else if (modes[i] == UI_BATTLE_AUTORESOLVE_RETREAT) {
                         for (int it = 1; (it <= (int)bt->items_num) && (it < BATTLE_ITEM_MAX); ++it) {
                             if (bt->item[it].owner == players[i]) { bt->item[it].retreat = 1; }
@@ -656,6 +662,9 @@ void ui_landing(struct game_s *g, int pi, planet_id_t planet_i)
 {
 }
 
+bool ui_bomb_ask_took_all(void) { return false; } /* 1oom-mp QoL: classic-UI only */
+void ui_mp_tech_note_seen(uint8_t field, uint8_t tech) { (void)field; (void)tech; } /* classic-UI only */
+
 bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound)
 {
     /* 1oom-mp: ask the attacking human's client whether to bomb (the server blocks
@@ -830,6 +839,12 @@ void ui_turn_pre(const struct game_s *g)
 
 void ui_turn_msg(struct game_s *g, int pi, const char *str)
 {
+    /* 1oom-mp: a resolution-time inline message (e.g. "your transports were destroyed") -- relay it
+       to the human it's for, else it's silently lost on the headless server. */
+    if (g_mp_decision_hook && (pi >= 0) && (pi < g->players) && IS_HUMAN(g, pi) && str && str[0]) {
+        uint8_t ack = 0;
+        g_mp_decision_hook(pi, MP_DEC_TURN_MSG, str, (int)strlen(str) + 1, &ack, 1);
+    }
 }
 
 void ui_ground(struct game_s *g, struct ground_s *gr)

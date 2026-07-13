@@ -108,7 +108,12 @@ static void ui_starmap_draw_cb1(void *vptr)
     if (ui_mp_turn_active && ui_mp_turn_active()) {
         int rem = ui_mp_turn_timer_remaining_s ? ui_mp_turn_timer_remaining_s() : -1;
         bool is_ready = ui_mp_turn_is_ready && ui_mp_turn_is_ready();
-        if (is_ready || rem >= 0) {
+        const char *note = ui_mp_turn_note ? ui_mp_turn_note() : NULL;
+        if (note) { /* transient feedback ("ORDERS UPDATED" / "TIME'S UP") takes the banner slot briefly */
+            ui_draw_filled_rect(40, 0, 279, 8, 0 /*black*/, ui_scale);
+            lbxfont_select(2, 0xe, 0, 0);
+            lbxfont_print_str_center(160, 1, note, UI_SCREEN_W, ui_scale);
+        } else if (is_ready || rem >= 0) {
             char tbuf[48];
             ui_draw_filled_rect(40, 0, 279, 8, 0 /*black*/, ui_scale);
             lbxfont_select(2, 0xd /*bright*/, 0, 0);
@@ -116,22 +121,31 @@ static void ui_starmap_draw_cb1(void *vptr)
                 lib_sprintf(tbuf, sizeof(tbuf), "READY - TURN ENDS IN %d", rem);
                 lbxfont_print_str_center(160, 1, tbuf, UI_SCREEN_W, ui_scale);
             } else if (is_ready) {
-                lbxfont_print_str_center(160, 1, "READY - WAITING FOR OTHER PLAYERS", UI_SCREEN_W, ui_scale);
+                /* 1oom-mp: name who we're waiting on when the server has told us (READY_STATUS) */
+                const char *wrace = ui_mp_turn_waiting_race ? ui_mp_turn_waiting_race() : NULL;
+                if (wrace) { lib_sprintf(tbuf, sizeof(tbuf), "READY - WAITING FOR %s", wrace); }
+                else { lib_sprintf(tbuf, sizeof(tbuf), "READY - WAITING FOR OTHER PLAYERS"); }
+                lbxfont_print_str_center(160, 1, tbuf, UI_SCREEN_W, ui_scale);
             } else {
                 lib_sprintf(tbuf, sizeof(tbuf), "TURN ENDS IN: %d", rem);
                 lbxfont_print_str_center(160, 1, tbuf, UI_SCREEN_W, ui_scale);
             }
         }
     }
-    /* 1oom-mp: non-interrupting notification that another human requests an audience -- press A when ready. */
+    /* 1oom-mp: session-state notices -- a disconnected player (empire on autopilot), or our own
+       elimination (spectating). Stacked under the ready banner. */
     if (ui_mp_turn_active && ui_mp_turn_active()) {
-        int dfrom = ui_mp_diplo_invite_pending();
-        if ((dfrom >= 0) && (dfrom < d->g->players)) {
+        const char *drace = ui_mp_turn_disconnected_race ? ui_mp_turn_disconnected_race() : NULL;
+        if (!IS_ALIVE(d->g, d->api)) {
+            ui_draw_filled_rect(20, 20, 299, 28, 0 /*black*/, ui_scale);
+            lbxfont_select(2, 0xe, 0, 0);
+            lbxfont_print_str_center(160, 21, "YOU HAVE BEEN ELIMINATED - SPECTATING UNTIL THE GAME ENDS", UI_SCREEN_W, ui_scale);
+        } else if (drace) {
             char dnb[80];
-            lib_sprintf(dnb, sizeof(dnb), "%s REQUEST AN AUDIENCE - PRESS A", game_str_tbl_race[d->g->eto[dfrom].race]);
-            ui_draw_filled_rect(20, 10, 299, 18, 0 /*black*/, ui_scale);
-            lbxfont_select(2, 0xd /*bright*/, 0, 0);
-            lbxfont_print_str_center(160, 11, dnb, UI_SCREEN_W, ui_scale);
+            lib_sprintf(dnb, sizeof(dnb), "%s DISCONNECTED - EMPIRE ON AUTOPILOT (CAN REJOIN)", drace);
+            ui_draw_filled_rect(20, 20, 299, 28, 0 /*black*/, ui_scale);
+            lbxfont_select(2, 0xd, 0, 0);
+            lbxfont_print_str_center(160, 21, dnb, UI_SCREEN_W, ui_scale);
         }
     }
     /* 1oom-mp: non-interrupting notification that another human requests an audience -- press A when ready. */
@@ -140,13 +154,13 @@ static void ui_starmap_draw_cb1(void *vptr)
         int tvote = ui_mp_team_vote_pending();
         if ((dfrom >= 0) && (dfrom < d->g->players)) {
             char dnb[80];
-            lib_sprintf(dnb, sizeof(dnb), "%s REQUEST AN AUDIENCE - PRESS A", game_str_tbl_race[d->g->eto[dfrom].race]);
+            lib_sprintf(dnb, sizeof(dnb), "%s REQUEST AN AUDIENCE - PRESS A", game_str_tbl_races[d->g->eto[dfrom].race]);
             ui_draw_filled_rect(20, 10, 299, 18, 0 /*black*/, ui_scale);
             lbxfont_select(2, 0xd /*bright*/, 0, 0);
             lbxfont_print_str_center(160, 11, dnb, UI_SCREEN_W, ui_scale);
         } else if ((tvote >= 0) && (tvote < d->g->players)) { /* 1oom-mp teams: an ally seeks your assent to a stance */
             char dnb[80];
-            lib_sprintf(dnb, sizeof(dnb), "%s SEEK YOUR ASSENT - PRESS A", game_str_tbl_race[d->g->eto[tvote].race]);
+            lib_sprintf(dnb, sizeof(dnb), "%s SEEK YOUR ASSENT - PRESS A", game_str_tbl_races[d->g->eto[tvote].race]);
             ui_draw_filled_rect(20, 10, 299, 18, 0 /*black*/, ui_scale);
             lbxfont_select(2, 0xd /*bright*/, 0, 0);
             lbxfont_print_str_center(160, 11, dnb, UI_SCREEN_W, ui_scale);
@@ -323,7 +337,7 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
     int16_t oi_b, oi_c, oi_starview1, oi_starview2, oi_shippic, oi_finished, oi_equals, oi_hash, oi_diplo, oi_ping,
             oi_chat, oi_chat_min,
             oi_f2, oi_f3, oi_f4, oi_f5, oi_f6, oi_f7, oi_f8, oi_f9, oi_f10,
-            oi_alt_galaxy, oi_alt_p, oi_alt_events,
+            oi_alt_galaxy, oi_alt_p, oi_alt_events, oi_enter, oi_idle,
             oi_wheelname, oi_wheelshippic, oi_search, oi_rename,
             oi_adj[PLANET_SLIDER_NUM];
     int16_t scrollmisc = 0;
@@ -370,6 +384,8 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
     oi_alt_galaxy = uiobj_add_alt_str("galaxy");
     oi_alt_p = uiobj_add_alt_str("p");
     oi_alt_events = uiobj_add_alt_str("events");
+    oi_enter = uiobj_add_inputkey(MOO_KEY_RETURN); /* 1oom-mp QoL: Enter = Next Turn / ready toggle */
+    oi_idle = uiobj_add_inputkey(MOO_KEY_i);       /* 1oom-mp QoL: cycle planets with an idle industry */
 
     uiobj_set_callback_and_delay(ui_starmap_draw_cb1, &d, STARMAP_DELAY);
 
@@ -422,6 +438,30 @@ void ui_starmap_do(struct game_s *g, player_id_t active_player)
         oi2 = uiobj_at_cursor();
         ui_delay_prepare();
         ui_starmap_handle_scrollkeys(&d, oi1);
+        if (oi1 == oi_enter) { /* 1oom-mp QoL: Enter ends the turn (MP: toggles ready), same as the button */
+            if (ui_mp_turn_active && ui_mp_turn_active()) {
+                ui_mp_turn_set_ready((ui_mp_turn_is_ready && ui_mp_turn_is_ready()) ? 0 : 1);
+            } else {
+                ui_data.ui_main_loop_action = UI_MAIN_LOOP_NEXT_TURN;
+                flag_done = true;
+            }
+            ui_sound_play_sfx_24();
+            oi1 = 0;
+        } else if (oi1 == oi_idle) { /* 1oom-mp QoL: jump to the next colony producing no ships/defense/industry */
+            int start = g->planet_focus_i[active_player];
+            for (int step = 1; step <= g->galaxy_stars; ++step) {
+                int pli = (start + step) % g->galaxy_stars;
+                const planet_t *pp = &g->planet[pli];
+                if ((pp->owner == active_player)
+                  && (pp->slider[PLANET_SLIDER_SHIP] == 0) && (pp->slider[PLANET_SLIDER_DEF] == 0) && (pp->slider[PLANET_SLIDER_IND] == 0)) {
+                    g->planet_focus_i[active_player] = pli;
+                    ui_starmap_set_pos_focus(g, active_player);
+                    ui_sound_play_sfx_24();
+                    break;
+                }
+            }
+            oi1 = 0;
+        }
         if (ui_starmap_handle_oi_bottom_buttons(&d, oi1)) {
             if (ui_mp_turn_active && ui_mp_turn_active() && (ui_data.ui_main_loop_action == UI_MAIN_LOOP_NEXT_TURN)) {
                 /* soft-ready: "Next Turn" locks in / unlocks my orders; stay on the map and

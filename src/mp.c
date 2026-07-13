@@ -54,6 +54,8 @@ static int mp_recv(net_conn_t *c, uint16_t *id, uint8_t *buf, uint32_t bufsize, 
     return 1;
 }
 
+static void cl_handle_save_sync(uint16_t id, const uint8_t *buf, uint32_t dl); /* fwd: save-sync routing (defined below) */
+
 /* block until a specific message id arrives (or error/close). timeout_secs > 0 gives up after that long
    (returns -1) so a frozen client can't hang the server forever; 0 = wait indefinitely. */
 static int mp_recv_wait(net_conn_t *c, uint16_t want_id, uint8_t *buf, uint32_t bufsize, uint32_t *datalen, const mp_game_iface_t *gi, int reason, int timeout_secs) {
@@ -64,6 +66,7 @@ static int mp_recv_wait(net_conn_t *c, uint16_t want_id, uint8_t *buf, uint32_t 
         if (r < 0) { return -1; }
         if (r == 1) {
             if (id == want_id) { return 0; }
+            cl_handle_save_sync(id, buf, *datalen); /* 1oom-mp save sync: these interleave with anything */
             /* ignore other messages for now (Phase A) */
         } else {
             if ((timeout_secs > 0) && ((long)(time(NULL) - start) >= (long)timeout_secs)) { return -1; } /* 1oom-mp: timed out -> caller falls back to a default */
@@ -138,6 +141,23 @@ static int cl_diplo_recv_impl(uint16_t *id_out, uint8_t *buf, int buflen) {
     s_cl_diplo_in_tail = (s_cl_diplo_in_tail + 1) % MP_DIPLO_INBOX_CAP;
     return n;
 }
+/* 1oom-mp: has the open h2h session ended (the other player left)? Scans the diplo inbox for a
+   SESSION_END/CANCEL and consumes ONLY that entry, so the proposer's menu can notice a departure
+   between actions instead of discovering it on the next proposal. */
+int mp_cl_diplo_take_session_end(void) {
+    int i = s_cl_diplo_in_tail;
+    while (i != s_cl_diplo_in_head) {
+        if ((s_cl_diplo_inbox[i].id == MP_MSG_DIPLO_SESSION_END) || (s_cl_diplo_inbox[i].id == MP_MSG_DIPLO_CANCEL)) {
+            int j = i, k = (i + 1) % MP_DIPLO_INBOX_CAP;
+            while (k != s_cl_diplo_in_head) { s_cl_diplo_inbox[j] = s_cl_diplo_inbox[k]; j = k; k = (k + 1) % MP_DIPLO_INBOX_CAP; }
+            s_cl_diplo_in_head = j;
+            return 1;
+        }
+        i = (i + 1) % MP_DIPLO_INBOX_CAP;
+    }
+    return 0;
+}
+
 /* UI: send one diplo message (0x20-0x2A) to the server. */
 static void cl_diplo_send_impl(uint16_t id, const uint8_t *data, int len) {
     if (!s_cl_conn) { return; }
@@ -148,6 +168,44 @@ int (*g_mp_cl_diplo_recv)(uint16_t *, uint8_t *, int) = NULL;
 void (*g_mp_cl_diplo_send)(uint16_t, const uint8_t *, int) = NULL;
 void (*g_mp_cl_timer_notify)(int) = NULL;
 int g_mp_cl_req_race = -1; /* 1oom-mp: -mprace request for a resumed game (-1 = no preference / connection order) */
+uint8_t g_mp_cl_ready_mask = 0;     /* 1oom-mp: latest READY_STATUS bitmask (bit i = player i ready/dropped) */
+uint8_t g_mp_cl_ready_nplayers = 0; /* 0 = no status yet */
+uint8_t g_mp_cl_conn_mask = 0xff;   /* 1oom-mp: bit i = player i's client is connected (drop notice) */
+uint8_t g_mp_cl_wait_joined = 0;    /* 1oom-mp: pre-WELCOME connect progress for the waiting screen */
+uint8_t g_mp_cl_wait_total = 0;
+
+/* 1oom-mp save sync: client-side hooks (game layer stores synced state locally through these) */
+void (*g_mp_cl_game_meta)(const char *, int) = NULL;
+void (*g_mp_cl_save_named)(const char *, const uint8_t *, int) = NULL;
+
+/* 1oom-mp save sync: route one GAME_META / SAVE_NAMED payload to the game layer. Called from every
+   client receive loop (they can arrive interleaved with whatever the loop is waiting for). */
+static void cl_handle_save_sync(uint16_t id, const uint8_t *buf, uint32_t dl) {
+    if ((id == MP_MSG_GAME_META) && g_mp_cl_game_meta && (dl >= 25)) {
+        char gid[25];
+        memcpy(gid, buf, 24); gid[24] = '\0';
+        g_mp_cl_game_meta(gid, (int)buf[24]);
+    } else if ((id == MP_MSG_SAVE_NAMED) && g_mp_cl_save_named && (dl >= 2)) {
+        char name[64];
+        uint32_t nlen = buf[0];
+        if ((nlen + 1) > dl) { return; } /* malformed */
+        if (nlen > sizeof(name) - 1) { nlen = sizeof(name) - 1; }
+        memcpy(name, buf + 1, nlen); name[nlen] = '\0';
+        g_mp_cl_save_named(name, buf + 1 + buf[0], (int)(dl - 1 - buf[0]));
+    } else if ((id == MP_MSG_WAIT_COUNT) && (dl >= 2)) {
+        g_mp_cl_wait_joined = buf[0]; /* pre-WELCOME connect progress for the waiting screen */
+        g_mp_cl_wait_total = buf[1];
+    }
+}
+
+/* 1oom-mp save sync: server -> one client: the save-header identity, sent just before GAME_DATA. */
+static void mp_send_game_meta(net_conn_t *c, const mp_game_iface_t *gi) {
+    uint8_t m[25];
+    int n;
+    if (!gi->get_game_meta) { return; }
+    n = gi->get_game_meta(gi->ctx, m, (int)sizeof(m));
+    if (n > 0) { mp_send(c, MP_MSG_GAME_META, m, (uint32_t)n); }
+}
 
 /* client: stream this player's live plan snapshot to teammates (best-effort -- only the latest
    snapshot matters, so a dropped one self-heals on the next frame). */
@@ -187,6 +245,8 @@ static int cl_poll_impl(void) {
         if (id == MP_MSG_TEAM_STANCE) { cl_diplo_stash(id, s_cl_blob, dl); return 0; } /* 1oom-mp teams: drains through the same diplo inbox/pump */
         if ((id == MP_MSG_TEAM_PLAN) && g_mp_team_plan_recv) { g_mp_team_plan_recv(s_cl_blob, dl); return 0; }
         if ((id == MP_MSG_CHAT) && g_mp_chat_recv) { g_mp_chat_recv(s_cl_blob, dl); return 0; }
+        if ((id == MP_MSG_GAME_META) || (id == MP_MSG_SAVE_NAMED)) { cl_handle_save_sync(id, s_cl_blob, dl); return 0; } /* save sync */
+        if ((id == MP_MSG_READY_STATUS) && (dl >= 2)) { g_mp_cl_ready_mask = s_cl_blob[0]; g_mp_cl_ready_nplayers = s_cl_blob[1]; g_mp_cl_conn_mask = (dl >= 3) ? s_cl_blob[2] : 0xff; return 0; } /* who's ready/connected (banners) */
         /* nothing else is expected before resolution; ignore */
     }
     return 0;
@@ -227,6 +287,8 @@ static int cl_lobby_poll_impl(struct mp_lobby_s *out) {
             return 1;
         } else if (id == MP_MSG_GAME_OVER) {
             s_cl_game_over = true; return -1;
+        } else if ((id == MP_MSG_GAME_META) || (id == MP_MSG_SAVE_NAMED)) {
+            cl_handle_save_sync(id, s_cl_blob, dl); /* save sync: META precedes the initial GAME_DATA */
         }
     }
     if (out) { *out = s_cl_lobby; }
@@ -602,6 +664,7 @@ static int mp_server_try_reconnect(net_listener_t *l, net_conn_t **conns, int nu
         uint8_t w[5] = { (uint8_t)(slot >> 8), (uint8_t)slot, (uint8_t)(num_clients >> 8), (uint8_t)num_clients, 1 };
         if (mp_send(c, MP_MSG_WELCOME, w, 5) != 0) { net_conn_close(c); return -1; }
     }
+    mp_send_game_meta(c, gi); /* save sync: identity first, so the reconnector stores state under the right game */
     len = gi->serialize(gi->ctx, blob, blobcap);
     if ((len <= 0) || (mp_send(c, MP_MSG_GAME_DATA, blob, (uint32_t)len) != 0)) { net_conn_close(c); return -1; }
     conns[slot] = c; /* live again -- the barrier waits for its READY from now on; s_mp_conns aliases this */
@@ -650,6 +713,11 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 conns[slot] = c;
                 ++filled;
                 MP_MSG("server: client connected -> empire %d (%d/%d) (%s)%s\n", slot, filled, num_clients, net_conn_addr(c), (req_race != 0xff) ? " [by race]" : "");
+                {   /* tell everyone already connected how many seats are filled, so their waiting
+                       screen shows "2 of 3 connected" instead of a blank stare */
+                    uint8_t m[2] = { (uint8_t)filled, (uint8_t)num_clients };
+                    for (int j = 0; j < num_clients; ++j) { mp_send_besteffort(conns[j], MP_MSG_WAIT_COUNT, m, 2); }
+                }
             } else {
                 usleep(2000);
             }
@@ -670,7 +738,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         if (mp_send(conns[i], MP_MSG_WELCOME, w, 4) != 0) { rc = -1; goto done; }
     }
     /* per-game turn timer (host-set in lobby; settable via MP_TIMER env for no-lobby mode too) */
-    uint8_t turn_timer_secs = 60;
+    uint8_t turn_timer_secs = 120; /* family-friendly default; host can change it in the lobby */
     { const char *e; if ((e = getenv("MP_TIMER"))) { int v = atoi(e); if ((v >= 0) && (v <= 255)) { turn_timer_secs = (uint8_t)v; } } }
 
     /* --- lobby: maintain a shared state every client edits live (race/color/ready, plus the
@@ -684,6 +752,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         lob.galaxy_size = 1;                                 /* default medium */
         lob.difficulty = 2;                                  /* default average (DIFFICULTY_AVERAGE) */
         lob.open_lobby = open_lobby ? 1 : 0;
+        lob.cap = (uint8_t)(open_lobby ? cap : num_clients); /* seat cap, so the lobby can show "2/4 players" */
         lob.turn_timer_secs = turn_timer_secs;               /* default from env/hardcoded; host can adjust in lobby UI */
         { const char *e; /* host-launch overrides for the lobby defaults (still editable in the lobby UI) */
           if ((e = getenv("MP_GSIZE"))) { int v = atoi(e); if ((v >= 0) && (v <= 3)) { lob.galaxy_size = (uint8_t)v; } }
@@ -704,28 +773,50 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 }
                 dirty = false;
             }
-            /* open mode: admit additional humans up to the cap (non-blocking), welcome each into the
-               next contiguous slot, and clamp the AI count so humans+AI never exceeds MP_MAX_PLAYERS. */
-            if (open_lobby && (num_clients < cap)) {
-                net_conn_t *c = net_accept(l);
-                if (c && !mp_server_hello_ok(c, gi, NULL)) { net_conn_close(c); c = NULL; } /* refuse a mismatched-build joiner */
-                if (c) {
-                    int s = num_clients;
-                    conns[s] = c;
-                    lob.slot[s].connected = 1; lob.slot[s].race = 0xff; lob.slot[s].banner = 0xff; lob.slot[s].ready = 0; lob.slot[s].team = 0;
-                    num_clients = s + 1;
-                    lob.num_humans = (uint8_t)num_clients;
-                    if (((int)lob.num_humans + (int)lob.num_ai) > MP_MAX_PLAYERS) { lob.num_ai = (uint8_t)(MP_MAX_PLAYERS - lob.num_humans); }
-                    { uint8_t w[4] = { (uint8_t)(s >> 8), (uint8_t)s, (uint8_t)(num_clients >> 8), (uint8_t)num_clients };
-                      if (mp_send(c, MP_MSG_WELCOME, w, 4) != 0) { rc = -1; goto done; } }
-                    MP_MSG("server: client joined open lobby -> slot %d (%d/%d humans, %s)\n", s, num_clients, cap, net_conn_addr(c));
-                    dirty = true;
+            /* admit joiners: into a vacated seat (someone left the lobby -- ANY mode), or, in open
+               mode, into the next contiguous slot up to the cap. Slot ids stay stable so already-
+               welcomed clients keep their identity. */
+            {
+                int freeslot = -1;
+                for (int i = 0; i < num_clients; ++i) { if (!conns[i]) { freeslot = i; break; } }
+                if ((freeslot >= 0) || (open_lobby && (num_clients < cap))) {
+                    net_conn_t *c = net_accept(l);
+                    if (c && !mp_server_hello_ok(c, gi, NULL)) { net_conn_close(c); c = NULL; } /* refuse a mismatched-build joiner */
+                    if (c) {
+                        int s = (freeslot >= 0) ? freeslot : num_clients;
+                        conns[s] = c;
+                        lob.slot[s].connected = 1; lob.slot[s].race = 0xff; lob.slot[s].banner = 0xff; lob.slot[s].ready = 0; lob.slot[s].team = 0;
+                        if (s == num_clients) {
+                            num_clients = s + 1;
+                            lob.num_humans = (uint8_t)num_clients;
+                            if (((int)lob.num_humans + (int)lob.num_ai) > MP_MAX_PLAYERS) { lob.num_ai = (uint8_t)(MP_MAX_PLAYERS - lob.num_humans); }
+                        }
+                        { uint8_t w[4] = { (uint8_t)(s >> 8), (uint8_t)s, (uint8_t)(num_clients >> 8), (uint8_t)num_clients };
+                          if (mp_send(c, MP_MSG_WELCOME, w, 4) != 0) { rc = -1; goto done; } }
+                        MP_MSG("server: client joined lobby -> slot %d (%d/%d humans, %s)\n", s, num_clients, open_lobby ? cap : num_clients, net_conn_addr(c));
+                        dirty = true;
+                    }
                 }
             }
             for (int i = 0; i < num_clients; ++i) {
                 uint16_t id; uint32_t dl;
-                int r = mp_recv(conns[i], &id, blob, blobcap, &dl);
-                if (r < 0) { MP_ERR("server: client %d dropped in lobby\n", i); rc = -1; goto done; }
+                int r;
+                if (!conns[i]) { continue; } /* vacated seat, waiting for a replacement */
+                r = mp_recv(conns[i], &id, blob, blobcap, &dl);
+                if (r < 0) {
+                    /* 1oom-mp: one player backing out must NOT nuke the lobby for everyone -- vacate
+                       the seat (a replacement can take it) and keep the lobby alive. */
+                    MP_ERR("server: client %d left the lobby -- seat open for a replacement\n", i);
+                    net_conn_close(conns[i]);
+                    conns[i] = NULL;
+                    lob.slot[i].connected = 0; lob.slot[i].ready = 0; lob.slot[i].race = 0xff; lob.slot[i].banner = 0xff; lob.slot[i].team = 0;
+                    if (open_lobby) { /* shrink trailing empty seats so Start isn't blocked on a ghost */
+                        while ((num_clients > 1) && !conns[num_clients - 1]) { --num_clients; }
+                        lob.num_humans = (uint8_t)num_clients;
+                    }
+                    dirty = true;
+                    continue;
+                }
                 if (r != 1) { continue; }
                 if (id == MP_MSG_LOBBY_PICK && dl >= 2) {
                     if (open_lobby && (blob[0] == MP_LOBBY_F_START)) {
@@ -736,15 +827,16 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 }
             }
             if (open_lobby) {
-                /* the host pressed Start: go once every other connected human is ready */
+                /* the host pressed Start: go once every seat is FILLED and every other human is ready */
                 if (start_req) {
                     started = true;
-                    for (int i = 1; i < num_clients; ++i) { if (!lob.slot[i].ready) { started = false; break; } }
-                    if (!started) { start_req = false; } /* someone un-readied -- wait for a fresh Start */
+                    for (int i = 0; i < num_clients; ++i) { if (!conns[i]) { started = false; break; } }
+                    for (int i = 1; started && (i < num_clients); ++i) { if (!lob.slot[i].ready) { started = false; } }
+                    if (!started) { start_req = false; } /* someone un-readied/left -- wait for a fresh Start */
                 }
             } else {
                 started = true;
-                for (int i = 0; i < num_clients; ++i) { if (!lob.slot[i].ready) { started = false; break; } }
+                for (int i = 0; i < num_clients; ++i) { if (!conns[i] || !lob.slot[i].ready) { started = false; break; } }
             }
             if (!started) { usleep(2000); }
         }
@@ -758,6 +850,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         int len = gi->serialize(gi->ctx, blob, blobcap);
         if (len <= 0) { MP_ERR("server: serialize failed\n"); rc = -1; goto done; }
         for (int i = 0; i < num_clients; ++i) {
+            mp_send_game_meta(conns[i], gi); /* save sync: identity precedes state */
             if (mp_send(conns[i], MP_MSG_GAME_DATA, blob, len) != 0) { rc = -1; goto done; }
         }
         MP_MSG("server: sent initial state (%d bytes), turn %d\n", len, gi->turn_number(gi->ctx));
@@ -827,8 +920,27 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 } else if (id == MP_MSG_TEAM_PLAN) {     /* live teammate-plan snapshot -> relay to teammates */
                     mp_team_plan_server_handle(conns, num_clients, i, blob, dl, gi);
                 } else if (id == MP_MSG_SAVE_REQUEST) {  /* a player chose Esc -> Save -> write a named snapshot */
-                    MP_MSG("server: save requested by player %d\n", i);
-                    if (gi->save_request) { gi->save_request(gi->ctx, i); }
+                    char svname[64];
+                    uint32_t nl = (dl > sizeof(svname) - 1) ? (uint32_t)(sizeof(svname) - 1) : dl;
+                    memcpy(svname, blob, nl); svname[nl] = '\0';
+                    MP_MSG("server: save '%s' requested by player %d\n", svname, i);
+                    if (gi->save_request) { gi->save_request(gi->ctx, i, svname); }
+                    /* save sync: broadcast the named snapshot so EVERY machine stores its own copy
+                       ([u8 nlen][name][authoritative state blob]) */
+                    if (gi->get_game_meta) {
+                        int len = gi->serialize(gi->ctx, blob, blobcap);
+                        if (len > 0) {
+                            uint8_t nlen = (uint8_t)strlen(svname);
+                            uint8_t *m = (uint8_t *)malloc(1 + (size_t)nlen + (size_t)len);
+                            if (m) {
+                                m[0] = nlen;
+                                memcpy(m + 1, svname, nlen);
+                                memmove(m + 1 + nlen, blob, (size_t)len);
+                                for (int k = 0; k < num_clients; ++k) { mp_send(conns[k], MP_MSG_SAVE_NAMED, m, 1 + (uint32_t)nlen + (uint32_t)len); }
+                                free(m);
+                            }
+                        }
+                    }
                 } else if (id == MP_MSG_CHAT) {          /* a chat line -> stamp sender + broadcast to all */
                     mp_chat_server_handle(conns, num_clients, i, blob, dl);
                 } else {                                 /* live-diplomacy messages (0x20-0x2A) */
@@ -846,6 +958,21 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 if (!conns[i]) { continue; }
                 ++nlive;
                 if (ready[i] && !s_diplo_busy[i]) { ++nready; } else { all_ready = false; if (block_i < 0) { block_i = i; } }
+            }
+            {   /* 1oom-mp: broadcast who's ready when it changes, so clients can show WHO they're
+                   waiting on instead of a generic "waiting for other players". Dropped slots count
+                   as ready (they can't block). Best-effort: the next change re-sends. */
+                static uint16_t last_state = 0xffff;
+                uint8_t mask = 0, connmask = 0;
+                for (int i = 0; (i < num_clients) && (i < 8); ++i) {
+                    if (!conns[i] || (ready[i] && !s_diplo_busy[i])) { mask |= (uint8_t)(1u << i); }
+                    if (conns[i]) { connmask |= (uint8_t)(1u << i); } /* who's actually connected (drop notice) */
+                }
+                if (((uint16_t)mask | ((uint16_t)connmask << 8)) != last_state) {
+                    uint8_t m[3] = { mask, (uint8_t)num_clients, connmask };
+                    for (int i = 0; i < num_clients; ++i) { mp_send_besteffort(conns[i], MP_MSG_READY_STATUS, m, 3); }
+                    last_state = (uint16_t)mask | ((uint16_t)connmask << 8);
+                }
             }
             if (!all_ready) {
                 if ((wait_log++ % 1000) == 0) { MP_MSG("server DIAG: turn %d WAITING -- player %d blocking (ready=%d diplo_busy=%d)\n", turn, block_i, ready[block_i] ? 1 : 0, s_diplo_busy[block_i] ? 1 : 0); }
@@ -896,6 +1023,7 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         int len = gi->serialize(gi->ctx, blob, blobcap);
         if (len <= 0) { rc = -1; goto done; }
         for (int i = 0; i < num_clients; ++i) {
+            mp_send_game_meta(conns[i], gi); /* save sync: cheap (25B) and self-healing to resend each turn */
             if (mp_send(conns[i], MP_MSG_GAME_DATA, blob, len) != 0) { rc = -1; goto done; }
         }
         MP_MSG("server: resolved turn -> now turn %d, rebroadcast %d bytes\n", gi->turn_number(gi->ctx), len);

@@ -470,11 +470,14 @@ void ui_audience_newtech(struct audience_s *au, int pi)
 
 void ui_audience_end(struct audience_s *au)
 {
+    /* body below fades out + swaps to the game palette; erase first so no audience pixels can
+       flash under it (same treatment as ui_audience_newtech) */
     struct audience_data_s *d = au->uictx;
     uiobj_unset_callback();
     uiobj_table_clear();
     ui_sound_stop_music();
     ui_palette_fadeout_a_f_1();
+    ui_draw_erase_buf(); /* 1oom-mp polish: no audience pixels flash under the game palette */
     ui_draw_finish_mode = 2;
     lbxpal_select(0, -1, 0);
     lbxpal_set_update_range(0, 255);

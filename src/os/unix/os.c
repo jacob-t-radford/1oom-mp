@@ -207,3 +207,54 @@ const char *os_get_fname_log(char *buf, size_t bufsize)
     }
     return "1oom_log.txt";
 }
+
+/* -------------------------------------------------------------------------- */
+/* 1oom-mp: background process spawn (the Multiplayer menu starts the local server with this). */
+
+#include <signal.h>
+#include <sys/wait.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
+int os_spawn_bg(const char **argv)
+{
+    pid_t pid = fork();
+    if (pid < 0) { return -1; }
+    if (pid == 0) {
+        execv(argv[0], (char *const *)argv);
+        _exit(127); /* exec failed */
+    }
+    return (int)pid;
+}
+
+void os_spawn_kill(int handle)
+{
+    if (handle <= 0) { return; }
+    kill((pid_t)handle, SIGTERM);
+    waitpid((pid_t)handle, NULL, 0); /* reap; the server exits promptly on SIGTERM (no handler) */
+}
+
+const char *os_get_path_exe_dir(char *buf, size_t bufsize)
+{
+    buf[0] = '\0';
+#ifdef __APPLE__
+    {
+        char tmp[2048];
+        uint32_t sz = sizeof(tmp);
+        if (_NSGetExecutablePath(tmp, &sz) == 0) {
+            lib_strcpy(buf, tmp, bufsize);
+        }
+    }
+#else
+    {
+        ssize_t n = readlink("/proc/self/exe", buf, bufsize - 1);
+        if (n > 0) { buf[n] = '\0'; } else { buf[0] = '\0'; }
+    }
+#endif
+    {   /* strip the executable name, keep the directory */
+        char *sl = strrchr(buf, '/');
+        if (sl) { *sl = '\0'; } else { buf[0] = '\0'; }
+    }
+    return buf;
+}

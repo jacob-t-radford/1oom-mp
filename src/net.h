@@ -46,4 +46,12 @@ void net_conn_close(net_conn_t *c);
 bool net_conn_is_open(const net_conn_t *c);
 const char *net_conn_addr(const net_conn_t *c); /* peer "ip:port" string */
 
+/* 1oom-mp: list this machine's IPv4 addresses (skipping loopback/link-local), one per slot, VPN/mesh
+   100.x.x.x addresses first (best for playing over the internet). Returns the count (<= max). */
+int net_get_local_ipv4(char addrs[][16], int max);
+
+/* 1oom-mp: is something already listening on 127.0.0.1:port? (crash recovery: a surviving server
+   from a previous session -> rejoin it instead of failing to bind a new one) */
+bool net_probe_local_port(uint16_t port);
+
 #endif /* INC_1OOM_NET_H */

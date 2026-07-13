@@ -326,6 +326,9 @@ void game_event_new(struct game_s *g)
                       && (i != player) && IS_AI(g, i)
                       && (e->treaty[i] >= TREATY_NONAGGRESSION)
                       && (e->treaty[i] <= TREATY_ALLIANCE)
+                      /* 1oom-mp teams: a LOCKED AI teammate can't be the assassin -- the war it
+                         triggers would no-op, leaving a phantom "your ally declared war" audience */
+                      && !((g->mp_team[player] != 0) && (g->mp_team[player] == g->mp_team[i]))
                     ) {
                         player2 = i;
                     }
@@ -589,11 +592,14 @@ bool game_event_run(struct game_s *g, struct game_end_s *ge)
         ns.type = GAME_NEWS_ASSASSIN;
         ns.race = e->race;
         ns.num1 = player2;
-        game_diplo_start_war(g, player2, player);
+        /* 1oom-mp teams: set the victim's war-audience mailbox BEFORE the war sync runs, so
+           game_diplo_team_notify_dragged_war sees it and fabricates the same notice for dragged
+           teammates -- otherwise the teammate lands in this war silently. */
         if (IS_HUMAN(g, player)) {
             e->diplo_type[player2] = 13;
             e->diplo_val[player2] = 100;
         }
+        game_diplo_start_war(g, player2, player);
         g->evn.have_assassin = false;
         ns.subtype = 0;
         ui_news(g, &ns);

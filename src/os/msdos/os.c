@@ -143,3 +143,8 @@ const char *os_get_fname_log(char *buf, size_t bufsize)
     }
     return "1oom_log.txt";
 }
+
+/* 1oom-mp: no background processes on MSDOS -- the Multiplayer menu needs these stubs. */
+int os_spawn_bg(const char **argv) { (void)argv; return -1; }
+void os_spawn_kill(int handle) { (void)handle; }
+const char *os_get_path_exe_dir(char *buf, size_t bufsize) { if (bufsize) { buf[0] = '\0'; } return buf; }

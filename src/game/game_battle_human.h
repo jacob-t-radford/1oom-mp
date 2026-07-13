@@ -13,6 +13,9 @@ struct battle_item_s;
 struct shiptech_weap_s;
 
 extern void game_battle_area_setup(struct battle_s *bt);
+/* 1oom-mp teams: mark one owner's ships as AI-piloted for the current battle (the pre-battle "Auto"
+   choice in a combined fleet -- same path as the mid-battle Auto button). Call AFTER battle init. */
+extern void game_battle_owner_auto_set(int owner);
 extern int game_battle_area_check_line_ok(struct battle_s *bt, int *tblx, int *tbly, int len);
 extern void game_battle_item_move(struct battle_s *bt, int itemi, int sx, int sy);
 /* 1oom-mp: set on the headless server only — fired at the start of a ship move so the server can

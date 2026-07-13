@@ -20,6 +20,8 @@
 #include "game_turn.h"
 #include "log.h"
 #include "rnd.h"
+#include "ui.h" /* 1oom-mp: ui_mp_active gates the econ-action recording to live MP clients */
+#include "comp.h" /* SETRANGE for econ clamps */
 
 #define PUT(src, n) do { if (pos + (int)(n) > buflen) { return -1; } memcpy(buf + pos, (src), (n)); pos += (int)(n); } while (0)
 #define GET(dst, n) do { if (pos + (int)(n) > len) { return -1; } memcpy((dst), buf + pos, (n)); pos += (int)(n); } while (0)
@@ -67,6 +69,94 @@ void game_mp_colonize_record(player_id_t pi, planet_id_t pli)
     for (int i = 0; i < s_colonize_act_num; ++i) { if (s_colonize_act[i] == pli) { return; } }
     if (s_colonize_act_num < MP_COLONIZE_MAX) { s_colonize_act[s_colonize_act_num++] = pli; }
     else { log_warning("MP: colonize queue full (%d) -- dropping colonize of planet %d (raise MP_COLONIZE_MAX)\n", MP_COLONIZE_MAX, (int)pli); }
+}
+
+/* ---- 1oom-mp: planning-phase economy actions (see game_mp_orders.h). Each record is one client-side
+   action whose effect the serialized planning fields don't carry; the server re-applies it
+   authoritatively at order-apply time. Where possible the server RECOMPUTES amounts from its own
+   state (base-scrap refund); client-supplied BC values are clamped. ---- */
+#define MP_ECON_MAX 48
+enum { MP_ECON_BC = 1, MP_ECON_SCRAP_BASES, MP_ECON_TRADE, MP_ECON_TECH_FROM, MP_ECON_TECH_TO, MP_ECON_TRIBUTE, MP_ECON_RELATION };
+struct mp_econ_act_s { uint8_t kind; uint8_t actor; uint8_t pa; uint8_t f; uint8_t t; int32_t v; uint16_t pli; };
+static struct mp_econ_act_s s_econ_act[MP_ECON_MAX];
+static int s_econ_act_num = 0;
+
+static void econ_record(uint8_t kind, player_id_t actor, player_id_t pa, uint8_t f, uint8_t t, int v, uint16_t pli)
+{
+    struct mp_econ_act_s *r;
+    if (!ui_mp_active || game_mp_is_server) { return; } /* only a live MP client queues; SP/server apply directly */
+    if (s_econ_act_num >= MP_ECON_MAX) { log_warning("MP: econ queue full -- dropping action kind %d\n", kind); return; }
+    r = &s_econ_act[s_econ_act_num++];
+    r->kind = kind; r->actor = (uint8_t)actor; r->pa = (uint8_t)pa; r->f = f; r->t = t; r->v = (int32_t)v; r->pli = pli;
+}
+
+void game_mp_econ_record_bc(player_id_t actor, int bc) { econ_record(MP_ECON_BC, actor, PLAYER_NONE, 0, 0, bc, 0); }
+void game_mp_econ_record_scrap_bases(player_id_t actor, planet_id_t pli, int n) { econ_record(MP_ECON_SCRAP_BASES, actor, PLAYER_NONE, 0, 0, n, (uint16_t)pli); }
+void game_mp_econ_record_trade(player_id_t actor, player_id_t pa, int bc) { econ_record(MP_ECON_TRADE, actor, pa, 0, 0, bc, 0); }
+void game_mp_econ_record_tech_from(player_id_t actor, player_id_t pa, uint8_t field, uint8_t tech) { econ_record(MP_ECON_TECH_FROM, actor, pa, field, tech, 0, 0); }
+void game_mp_econ_record_tech_to(player_id_t actor, player_id_t pa, uint8_t field, uint8_t tech) { econ_record(MP_ECON_TECH_TO, actor, pa, field, tech, 0, 0); }
+void game_mp_econ_record_tribute(player_id_t actor, player_id_t pa, int bc) { econ_record(MP_ECON_TRIBUTE, actor, pa, 0, 0, bc, 0); }
+void game_mp_econ_record_relation(player_id_t actor, player_id_t pa, int rel) { econ_record(MP_ECON_RELATION, actor, pa, 0, 0, rel, 0); }
+
+/* server: apply one economy record for player pi (validated/clamped; amounts recomputed where possible). */
+static void econ_apply(struct game_s *g, player_id_t pi, const struct mp_econ_act_s *r)
+{
+    empiretechorbit_t *e = &g->eto[pi];
+    player_id_t pa = (player_id_t)r->pa;
+    int v = (int)r->v;
+    switch (r->kind) {
+        case MP_ECON_BC:
+            SETRANGE(v, -100000, 100000); /* scrap refunds / audience gifts are well under this */
+            if ((v < 0) && (e->reserve_bc < (uint32_t)(-v))) { e->reserve_bc = 0; }
+            else { e->reserve_bc += v; }
+            break;
+        case MP_ECON_SCRAP_BASES:
+            if (r->pli < g->galaxy_stars) {
+                planet_t *p = &g->planet[r->pli];
+                if (p->owner == pi) {
+                    int n = v;
+                    SETRANGE(n, 0, (int)p->missile_bases);
+                    p->missile_bases -= n;
+                    e->reserve_bc += (n * game_get_base_cost(g, pi)) / 4; /* refund recomputed from OUR state */
+                }
+            }
+            break;
+        case MP_ECON_TRADE:
+            if ((pa < g->players) && (pa != pi) && IS_AI(g, pa)) {
+                SETRANGE(v, 0, 32000);
+                game_diplo_set_trade(g, pi, pa, v);
+            }
+            break;
+        case MP_ECON_TECH_FROM:
+            if ((pa < g->players) && (pa != pi)) {
+                game_tech_get_new(g, pi, (tech_field_t)r->f, r->t, TECHSOURCE_TRADE, pa, PLAYER_NONE, false);
+            }
+            break;
+        case MP_ECON_TECH_TO:
+            if ((pa < g->players) && (pa != pi) && IS_AI(g, pa)) {
+                game_tech_get_new(g, pa, (tech_field_t)r->f, r->t, TECHSOURCE_TRADE, pi, PLAYER_NONE, false);
+            }
+            break;
+        case MP_ECON_TRIBUTE:
+            if ((pa < g->players) && (pa != pi) && IS_AI(g, pa)) {
+                SETRANGE(v, 0, 32000);
+                if (e->reserve_bc < (uint32_t)v) { v = (int)e->reserve_bc; }
+                e->reserve_bc -= v;
+                g->eto[pa].reserve_bc += v;
+            }
+            break;
+        case MP_ECON_RELATION:
+            /* the audience's net relation outcome (tribute goodwill, threats, annoyance) -- the
+               client computed it with the same code; adopt it for both directions, clamped */
+            if ((pa < g->players) && (pa != pi) && IS_AI(g, pa)) {
+                SETRANGE(v, -100, 100);
+                e->relation1[pa] = (int16_t)v;
+                g->eto[pa].relation1[pi] = (int16_t)v;
+            }
+            break;
+        default:
+            break;
+    }
 }
 
 /* 1oom-mp live teammate visibility: serialize this player's IN-PROGRESS plan for teammates --
@@ -220,6 +310,24 @@ int game_mp_write_orders(const struct game_s *g, player_id_t pi, uint8_t *buf, i
         }
         memcpy(buf + cntpos, &cnt, 2);
     }
+    /* economy actions queued by this player this turn (scrap refunds, audience economics) */
+    {
+        int cntpos = pos;
+        uint16_t cnt = 0;
+        PUT(&cnt, 2);
+        for (int i = 0; i < s_econ_act_num; ++i) {
+            const struct mp_econ_act_s *r = &s_econ_act[i];
+            if (r->actor != (uint8_t)pi) { continue; }
+            PUT(&r->kind, 1);
+            PUT(&r->pa, 1);
+            PUT(&r->f, 1);
+            PUT(&r->t, 1);
+            PUT(&r->v, 4);
+            PUT(&r->pli, 2);
+            ++cnt;
+        }
+        memcpy(buf + cntpos, &cnt, 2);
+    }
     /* NB: do NOT clear the queued records here. Serialization must be side-effect-free so the
        soft-ready client can re-serialize every frame to detect changes (and re-submit the same
        orders) without losing colonize/diplo actions. They're cleared at turn start instead, via
@@ -233,6 +341,7 @@ void game_mp_orders_reset(void)
 {
     s_diplo_act_num = 0;
     s_colonize_act_num = 0;
+    s_econ_act_num = 0;
 }
 
 int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, int len)
@@ -414,6 +523,22 @@ int game_mp_apply_orders(struct game_s *g, player_id_t pi, const uint8_t *buf, i
                     ++s_colonize_pending_num;
                 } else { log_warning("MP: server colonize-pending queue full (%d) -- dropping colonize from player %d\n", MP_COLONIZE_MAX, (int)pi); }
             }
+        }
+    }
+    /* economy actions: parse + apply immediately (pre-resolution), so refunds/gifts are in the
+       treasury for this turn's production, matching what the player saw locally. */
+    {
+        uint16_t ecnt = 0;
+        GET(&ecnt, 2);
+        for (int i = 0; i < ecnt; ++i) {
+            struct mp_econ_act_s r;
+            GET(&r.kind, 1);
+            GET(&r.pa, 1);
+            GET(&r.f, 1);
+            GET(&r.t, 1);
+            GET(&r.v, 4);
+            GET(&r.pli, 2);
+            econ_apply(g, pi, &r);
         }
     }
     return applied;

@@ -19,8 +19,12 @@
 #include "lib.h"
 #include "log.h"
 #include "menu.h"
+#include "net.h"
+#include "os.h"
 #include "rnd.h"
 #include "types.h"
+#include <dirent.h>
+#include <sys/stat.h>
 #include "uicursor.h"
 #include "uidelay.h"
 #include "uidefs.h"
@@ -154,6 +158,7 @@ typedef enum {
     MAIN_MENU_PAGE_OPTIONS_RULES_SLIDER_BEHAVIOR,
     MAIN_MENU_PAGE_OPTIONS_RULES_OTHER,
     MAIN_MENU_PAGE_PRESET,
+    MAIN_MENU_PAGE_MULTIPLAYER, /* 1oom-mp: Host / Resume / Join without the command line */
     MAIN_MENU_PAGE_NUM,
 } main_menu_page_id_t;
 
@@ -336,9 +341,31 @@ static void main_menu_make_main_page(struct main_menu_data_s *d)
 {
     d->set_item_dimensions = main_menu_set_item_dimensions;
     menu_make_page_conditional(menu_allocate_item(), "Game", MAIN_MENU_PAGE_GAME, main_menu_game_active, MOO_KEY_g);
+    menu_make_page(menu_allocate_item(), "Multiplayer", MAIN_MENU_PAGE_MULTIPLAYER, MOO_KEY_m); /* 1oom-mp */
     menu_make_page(menu_allocate_item(), "Rules", MAIN_MENU_PAGE_OPTIONS_RULES, MOO_KEY_r);
     menu_make_page(menu_allocate_item(), "UI Options", MAIN_MENU_PAGE_OPTIONS, MOO_KEY_o);
     menu_make_action(menu_allocate_item(), "Quit to OS", MAIN_MENU_ACT_QUIT_GAME, MOO_KEY_q);
+}
+
+/* ----- 1oom-mp: Multiplayer page (Host / Resume / Join without the command line) ----- */
+
+static uint32_t mm_mp_humans = 2;  /* HOST: how many human players the new game waits for */
+static uint32_t mm_mp_race = 0;    /* RESUME/JOIN: 0 = auto, 1..RACE_NUM = claim race id-1 */
+
+static const char *mm_get_mp_race_value(uint32_t i)
+{
+    return (i == 0) ? "Auto" : game_str_tbl_race[i - 1];
+}
+
+static void main_menu_make_multiplayer_page(struct main_menu_data_s *d)
+{
+    d->set_item_dimensions = mm_game_set_item_dimensions;
+    menu_make_action(menu_allocate_item(), "Host New Game", MAIN_MENU_ACT_MP_HOST, MOO_KEY_h);
+    menu_make_action(menu_allocate_item(), "Resume Game", MAIN_MENU_ACT_MP_RESUME, MOO_KEY_r);
+    menu_make_action(menu_allocate_item(), "Join Game", MAIN_MENU_ACT_MP_JOIN, MOO_KEY_j);
+    menu_make_int(menu_allocate_item(), "Max Players", &mm_mp_humans, 2, 6, MOO_KEY_p);
+    menu_make_enum(menu_allocate_item(), "Claim Race (resume)", mm_get_mp_race_value, &mm_mp_race, 0, RACE_NUM, MOO_KEY_c);
+    menu_make_back(menu_allocate_item());
 }
 
 static void main_menu_make_game_page(struct main_menu_data_s *d)
@@ -658,6 +685,9 @@ static struct main_menu_page_s mm_pages[MAIN_MENU_PAGE_NUM] = {
     {
         main_menu_make_preset_page,
     },
+    {
+        main_menu_make_multiplayer_page, /* 1oom-mp */
+    },
 };
 
 static bool main_menu_load_page(struct main_menu_data_s *d, main_menu_page_id_t page_i)
@@ -891,6 +921,294 @@ static main_menu_action_t main_menu_do(struct main_menu_data_s *d)
 }
 
 /* -------------------------------------------------------------------------- */
+/* ----- 1oom-mp: Multiplayer menu screens (Host / Resume / Join) ----- */
+
+/* a plain full-screen list chooser: click an entry to pick it, Esc/Back to cancel. Returns the
+   picked index or -1. */
+static int mm_mp_choose(const char *title, char items[][96], int n)
+{
+    bool flag_done = false;
+    int picked = -1;
+    int16_t oi_esc = UIOBJI_INVALID, oi_back = UIOBJI_INVALID, oi_item[12];
+    if (n > 12) { n = 12; }
+    for (int i = 0; i < 12; ++i) { oi_item[i] = UIOBJI_INVALID; }
+    uiobj_table_clear();
+    while (!flag_done) {
+        int16_t oi;
+        oi = uiobj_handle_input_cond();
+        ui_delay_prepare();
+        if ((oi == oi_esc) || (oi == oi_back) || (oi == UIOBJI_ESC)) {
+            ui_sound_play_sfx_06();
+            flag_done = true;
+        }
+        for (int i = 0; i < n; ++i) {
+            if ((oi != UIOBJI_INVALID) && (oi == oi_item[i])) {
+                ui_sound_play_sfx_24();
+                picked = i;
+                flag_done = true;
+            }
+        }
+        uiobj_table_clear();
+        ui_draw_erase_buf();
+        lbxfont_select(2, 0xd, 0, 0);
+        lbxfont_print_str_center(160, 14, title, UI_SCREEN_W, ui_scale);
+        if (n == 0) {
+            lbxfont_select(0, 6, 0, 0);
+            lbxfont_print_str_center(160, 90, "No multiplayer saves found on this machine.", UI_SCREEN_W, ui_scale);
+        }
+        for (int i = 0; i < n; ++i) {
+            int y = 34 + i * 12;
+            lbxfont_select(0, 1, 0, 0);
+            lbxfont_print_str_center(160, y, items[i], UI_SCREEN_W, ui_scale);
+            oi_item[i] = uiobj_add_mousearea(20, y - 2, 300, y + 8, (i < 9) ? (MOO_KEY_1 + i) : MOO_KEY_UNKNOWN);
+        }
+        lbxfont_select(2, 6, 0, 0);
+        lbxfont_print_str_center(160, 184, "[ Back ]", UI_SCREEN_W, ui_scale);
+        oi_back = uiobj_add_mousearea(130, 180, 190, 192, MOO_KEY_UNKNOWN);
+        oi_esc = uiobj_add_inputkey(MOO_KEY_ESCAPE);
+        if (!flag_done) {
+            uiobj_finish_frame();
+            ui_delay_ticks_or_click(1);
+        }
+    }
+    uiobj_table_clear();
+    return picked;
+}
+
+struct mm_mp_save_s {
+    char label[96];
+    char path[1024];
+    long mtime;
+};
+
+/* insert path/label into tbl sorted by mtime (newest first), keeping at most max entries */
+static void mm_mp_scan_add(struct mm_mp_save_s *tbl, int *n, int max, const char *path, const char *label)
+{
+    struct stat st;
+    long mt = 0;
+    int at;
+    if (stat(path, &st) == 0) { mt = (long)st.st_mtime; }
+    at = *n;
+    for (int i = 0; i < *n; ++i) { if (mt > tbl[i].mtime) { at = i; break; } }
+    if (at >= max) { return; }
+    if (*n < max) { ++*n; }
+    for (int i = *n - 1; i > at; --i) { tbl[i] = tbl[i - 1]; }
+    lib_strcpy(tbl[at].label, label, sizeof(tbl[at].label));
+    lib_strcpy(tbl[at].path, path, sizeof(tbl[at].path));
+    tbl[at].mtime = mt;
+}
+
+/* collect this machine's MP saves, newest first: player-named saves (saves/*.blob), per-game
+   autosave folders (games/<id>/ -> resumes its latest turn), and legacy loose mp_*.blob files. */
+static int mm_mp_scan_saves(struct mm_mp_save_s *tbl, int max)
+{
+    char dir[1024], path[1200], label[96];
+    int n = 0;
+    DIR *d;
+    struct dirent *de;
+    lib_sprintf(dir, sizeof(dir), "%s/saves", os_get_path_user());
+    if ((d = opendir(dir)) != NULL) {
+        while ((de = readdir(d)) != NULL) {
+            size_t len = strlen(de->d_name);
+            if ((len > 5) && (strcmp(de->d_name + len - 5, ".blob") == 0)) {
+                lib_sprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+                lib_strcpy(label, de->d_name, sizeof(label));
+                if (len - 5 < sizeof(label)) { label[len - 5] = '\0'; } /* drop .blob */
+                mm_mp_scan_add(tbl, &n, max, path, label);
+            }
+        }
+        closedir(d);
+    }
+    lib_sprintf(dir, sizeof(dir), "%s/games", os_get_path_user());
+    if ((d = opendir(dir)) != NULL) {
+        while ((de = readdir(d)) != NULL) {
+            if (de->d_name[0] == '.') { continue; }
+            lib_sprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+            {
+                struct stat st;
+                if ((stat(path, &st) != 0) || !S_ISDIR(st.st_mode)) { continue; }
+            }
+            lib_sprintf(label, sizeof(label), "Autosave %s", de->d_name);
+            mm_mp_scan_add(tbl, &n, max, path, label);
+        }
+        closedir(d);
+    }
+    if ((d = opendir(os_get_path_user())) != NULL) { /* legacy loose saves (pre save-folder builds) */
+        while ((de = readdir(d)) != NULL) {
+            size_t len = strlen(de->d_name);
+            if ((strncmp(de->d_name, "mp_", 3) == 0) && (len > 5) && (strcmp(de->d_name + len - 5, ".blob") == 0)) {
+                lib_sprintf(path, sizeof(path), "%s/%s", os_get_path_user(), de->d_name);
+                lib_strcpy(label, de->d_name, sizeof(label));
+                if (len - 5 < sizeof(label)) { label[len - 5] = '\0'; }
+                mm_mp_scan_add(tbl, &n, max, path, label);
+            }
+        }
+        closedir(d);
+    }
+    /* describe each save (who's in it, what year) so the list is easy to pick from */
+    for (int i = 0; i < n; ++i) {
+        int humans = 0, year = 0;
+        uint8_t races[PLAYER_NUM];
+        if (game_mp_peek_save(tbl[i].path, &humans, races, &year) == 0) {
+            char info[64];
+            if ((humans >= 2) && (races[0] < RACE_NUM) && (races[1] < RACE_NUM)) {
+                if (humans == 2) {
+                    lib_sprintf(info, sizeof(info), "  (%s vs %s, y%d)", game_str_tbl_race[races[0]], game_str_tbl_race[races[1]], year);
+                } else {
+                    lib_sprintf(info, sizeof(info), "  (%d players, y%d)", humans, year);
+                }
+                if (strlen(tbl[i].label) + strlen(info) < sizeof(tbl[i].label)) {
+                    strcat(tbl[i].label, info);
+                }
+            }
+        }
+    }
+    return n;
+}
+
+/* HOST: show the port + this machine's addresses (what the other players type in), then start. */
+static bool mm_mp_screen_host(void)
+{
+    bool flag_done = false, confirmed = false;
+    char addrs[6][16];
+    int naddr = net_get_local_ipv4(addrs, 6);
+    int16_t oi_esc = UIOBJI_INVALID, oi_cancel = UIOBJI_INVALID, oi_start = UIOBJI_INVALID;
+    uiobj_table_clear();
+    while (!flag_done) {
+        int16_t oi;
+        char buf[96];
+        int y;
+        oi = uiobj_handle_input_cond();
+        ui_delay_prepare();
+        if ((oi == oi_esc) || (oi == oi_cancel) || (oi == UIOBJI_ESC)) {
+            ui_sound_play_sfx_06();
+            flag_done = true;
+        } else if (oi == oi_start) {
+            ui_sound_play_sfx_24();
+            confirmed = true;
+            flag_done = true;
+        }
+        uiobj_table_clear();
+        ui_draw_erase_buf();
+        lbxfont_select(2, 0xd, 0, 0);
+        lbxfont_print_str_center(160, 14, "HOST GAME", UI_SCREEN_W, ui_scale);
+        lbxfont_select(0, 0xd, 0, 0);
+        lib_sprintf(buf, sizeof(buf), "The server runs on this machine, seating up to %d players.", (int)mm_mp_humans);
+        lbxfont_print_str_center(160, 34, buf, UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(160, 50, "The other players connect to one of these addresses:", UI_SCREEN_W, ui_scale);
+        y = 64;
+        lbxfont_select(0, 2, 0, 0);
+        if (naddr == 0) {
+            lbxfont_print_str_center(160, y, "(no network addresses found)", UI_SCREEN_W, ui_scale);
+            y += 12;
+        }
+        for (int i = 0; (i < naddr) && (i < 5); ++i) {
+            lib_sprintf(buf, sizeof(buf), "%s   port 24695", addrs[i]);
+            lbxfont_print_str_center(160, y, buf, UI_SCREEN_W, ui_scale);
+            y += 12;
+        }
+        lbxfont_select(0, 6, 0, 0);
+        lbxfont_print_str_center(160, y + 6, "A 100.x (Tailscale/VPN) address is best over the internet.", UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(160, y + 18, "You pick races and options together in the lobby.", UI_SCREEN_W, ui_scale);
+        lbxfont_select(2, 6, 0, 0);
+        lbxfont_print_str_center(120, 176, "[ Start Hosting ]", UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(215, 176, "[ Back ]", UI_SCREEN_W, ui_scale);
+        oi_start = uiobj_add_mousearea(75, 172, 165, 184, MOO_KEY_SPACE);
+        oi_cancel = uiobj_add_mousearea(190, 172, 240, 184, MOO_KEY_UNKNOWN);
+        oi_esc = uiobj_add_inputkey(MOO_KEY_ESCAPE);
+        if (!flag_done) {
+            uiobj_finish_frame();
+            ui_delay_ticks_or_click(1);
+        }
+    }
+    uiobj_table_clear();
+    if (confirmed) {
+        ui_mp_setup.humans = (int)mm_mp_humans;
+        ui_mp_setup.req_race = -1; /* the lobby picks races for a new game */
+        ui_mp_setup.load_path[0] = '\0';
+        ui_mp_setup.join_addr[0] = '\0';
+    }
+    return confirmed;
+}
+
+/* RESUME: pick a save (newest first, with names + who's in it), host it locally. */
+static bool mm_mp_screen_resume(void)
+{
+    static struct mm_mp_save_s tbl[12];
+    char items[12][96];
+    int n, pick;
+    n = mm_mp_scan_saves(tbl, 12);
+    for (int i = 0; i < n; ++i) { lib_strcpy(items[i], tbl[i].label, sizeof(items[i])); }
+    pick = mm_mp_choose("RESUME GAME", items, n);
+    if (pick < 0) { return false; }
+    lib_strcpy(ui_mp_setup.load_path, tbl[pick].path, sizeof(ui_mp_setup.load_path));
+    ui_mp_setup.humans = 2; /* ignored on resume (the save carries it) */
+    ui_mp_setup.req_race = (mm_mp_race > 0) ? (int)(mm_mp_race - 1) : -1; /* the page's Claim Race pick */
+    ui_mp_setup.join_addr[0] = '\0';
+    return true;
+}
+
+/* JOIN: type (or reuse) the host's address; Claim Race applies when joining a resumed game. */
+static bool mm_mp_screen_join(void)
+{
+    static char addr[128];
+    bool flag_done = false, confirmed = false;
+    int16_t oi_esc = UIOBJI_INVALID, oi_cancel = UIOBJI_INVALID, oi_ok = UIOBJI_INVALID, oi_input = UIOBJI_INVALID;
+    const uint8_t ctbl[] = { 5, 6, 7, 8, 9, 10, 0, 0, 0, 0 };
+    if (!addr[0] && ui_mp_last_addr && ui_mp_last_addr[0]) {
+        lib_strcpy(addr, ui_mp_last_addr, sizeof(addr)); /* prefill with the last address used */
+    }
+    uiobj_table_clear();
+    while (!flag_done) {
+        int16_t oi;
+        oi = uiobj_handle_input_cond();
+        ui_delay_prepare();
+        if ((oi == oi_esc) || (oi == oi_cancel) || (oi == UIOBJI_ESC)) {
+            ui_sound_play_sfx_06();
+            flag_done = true;
+        } else if ((oi == oi_input) || (oi == oi_ok)) {
+            if (addr[0]) {
+                ui_sound_play_sfx_24();
+                confirmed = true;
+                flag_done = true;
+            }
+        }
+        uiobj_table_clear();
+        ui_draw_erase_buf();
+        lbxfont_select(2, 0xd, 0, 0);
+        lbxfont_print_str_center(160, 14, "JOIN GAME", UI_SCREEN_W, ui_scale);
+        lbxfont_select(0, 0xd, 0, 0);
+        lbxfont_print_str_center(160, 48, "Host address:", UI_SCREEN_W, ui_scale);
+        ui_draw_filled_rect(78, 62, 242, 74, 0x00, ui_scale);
+        ui_draw_line1(78, 75, 242, 75, 0x2f, ui_scale);
+        lbxfont_select(0, 1, 0, 0);
+        oi_input = uiobj_add_textinput(82, 64, 156, addr, sizeof(addr) - 1, 1, false, true, ctbl, MOO_KEY_UNKNOWN);
+        lbxfont_select(0, 6, 0, 0);
+        lbxfont_print_str_center(160, 90, "e.g. 100.89.54.91  (port 24695 is assumed)", UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(160, 104, "Resuming or rejoining a dropped empire? Set Claim Race", UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(160, 114, "on the Multiplayer page to take it.", UI_SCREEN_W, ui_scale);
+        lbxfont_select(2, 6, 0, 0);
+        lbxfont_print_str_center(120, 150, "[ Connect ]", UI_SCREEN_W, ui_scale);
+        lbxfont_print_str_center(205, 150, "[ Back ]", UI_SCREEN_W, ui_scale);
+        oi_ok = uiobj_add_mousearea(90, 146, 150, 158, MOO_KEY_UNKNOWN);
+        oi_cancel = uiobj_add_mousearea(180, 146, 230, 158, MOO_KEY_UNKNOWN);
+        oi_esc = uiobj_add_inputkey(MOO_KEY_ESCAPE);
+        if (!flag_done) {
+            uiobj_finish_frame();
+            ui_delay_ticks_or_click(1);
+        }
+    }
+    uiobj_table_clear();
+    if (confirmed) {
+        lib_strcpy(ui_mp_setup.join_addr, addr, sizeof(ui_mp_setup.join_addr));
+        ui_mp_setup.req_race = (mm_mp_race > 0) ? (int)(mm_mp_race - 1) : -1;
+        ui_mp_setup.load_path[0] = '\0';
+        ui_mp_setup.humans = 2;
+    }
+    return confirmed;
+}
+
+/* -------------------------------------------------------------------------- */
 
 main_menu_action_t ui_main_menu(struct game_new_options_s *newopts, struct game_new_options_s *customopts, struct game_new_options_s *challengeopts, int *load_game_i_ptr)
 {
@@ -939,6 +1257,18 @@ main_menu_action_t ui_main_menu(struct game_new_options_s *newopts, struct game_
                     }
                     ui_draw_finish_mode = 1;
                 }
+                break;
+            case MAIN_MENU_ACT_MP_HOST: /* 1oom-mp: run the setup screen; canceling returns to the menu */
+                flag_done = mm_mp_screen_host();
+                ui_draw_finish_mode = 1;
+                break;
+            case MAIN_MENU_ACT_MP_RESUME:
+                flag_done = mm_mp_screen_resume();
+                ui_draw_finish_mode = 1;
+                break;
+            case MAIN_MENU_ACT_MP_JOIN:
+                flag_done = mm_mp_screen_join();
+                ui_draw_finish_mode = 1;
                 break;
             case MAIN_MENU_ACT_QUIT_GAME:
                 flag_done = true;

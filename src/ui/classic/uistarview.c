@@ -324,6 +324,7 @@ void ui_starview(struct game_s *g, player_id_t pi)
     uiobj_unset_callback();
     uiobj_table_clear();
     ui_palette_fadeout_a_f_1();
+    ui_draw_erase_buf(); /* 1oom-mp polish: no starview pixels flash under the game palette */
     ui_draw_finish_mode = 2;
     lbxpal_select(0, -1, 0);
     uiobj_set_help_id(-1);

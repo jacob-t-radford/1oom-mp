@@ -470,9 +470,12 @@ bool ui_gmap(struct game_s *g, player_id_t active_player)
     return flag_do_focus;
 }
 
+static bool s_gmap_skip = false; /* 1oom-mp polish: a click fast-forwards the rest of the movement replay */
+
 void *ui_gmap_basic_init(struct game_s *g, bool show_player_switch)
 {
     static struct gmap_basic_data_s ctx; /* HACK */
+    s_gmap_skip = false;
     ctx.g = g;
     ctx.b.g = g;
     ctx.b.countdown = -1;
@@ -625,7 +628,11 @@ void ui_gmap_basic_finish_frame(void *ctx, int pi)
 {
     /*struct gmap_basic_data_s *d = ctx;*/
     ui_draw_finish();
-    ui_delay_ticks_or_click(2);
+    /* 1oom-mp polish: one click fast-forwards the whole replay (previously each click only cut the
+       CURRENT frame's delay, so skipping meant mashing) -- frames still compute, just full speed */
+    if (!s_gmap_skip) {
+        if (ui_delay_ticks_or_click(2)) { s_gmap_skip = true; }
+    }
 }
 
 void ui_gmap_draw_planet_border(const struct game_s *g, planet_id_t planet_i)

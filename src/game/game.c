@@ -44,6 +44,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <unistd.h>
 
 /* -------------------------------------------------------------------------- */
 
@@ -80,6 +81,8 @@ static int opt_mp_humans = 1; /* host: number of human clients to wait for (empi
 static int opt_mp_open = 0;   /* host: >0 = open lobby -- players join freely up to this many and the host clicks Start */
 static char *opt_mp_load = NULL; /* host: path to an MP autosave to resume instead of starting a new game */
 static char *opt_mp_race = NULL; /* client: race name/id to claim when joining a RESUMED game (-mprace) */
+struct ui_mp_setup_s ui_mp_setup; /* 1oom-mp: what the Multiplayer menu collected (see ui.h) */
+char *ui_mp_last_addr = NULL;     /* 1oom-mp: last join address, persisted in the config for the Join screen */
 static int s_mp_humans = 1;      /* host: human-client count, recorded in the autosave header for -mpload */
 static char s_mp_game_id[24] = {0}; /* 1oom-mp: per-game id (timestamp at game start), kept in the save header so each game has its own autosave file (no clobber) and the id is stable across -mpload resumes */
 #define MP_DEFAULT_PORT 24444
@@ -635,6 +638,7 @@ const struct cfg_items_s game_cfg_items[] = {
     CFG_ITEM_BOOL("news_orion_colonized", &game_num_news_orion),
     CFG_ITEM_COMMENT("PLAYERS*100+GALAXYSIZE*10+DIFFICULTY"),
     CFG_ITEM_COMMENT(" 2..6, 0..3 = small..huge, 0..4 = simple..impossible"),
+    CFG_ITEM_STR("mp_join_addr", &ui_mp_last_addr, NULL), /* 1oom-mp: Join screen remembers the last host address */
     CFG_ITEM_INT("new_game_opts", &game_opt_new_value, game_cfg_check_new_game_opts),
     CFG_ITEM_INT("custom_game_ai_id", &game_opt_custom.ai_id, game_cfg_check_custom_game_ai_id),
     CFG_ITEM_INT("custom_game_difficulty", &game_opt_custom.difficulty, game_cfg_check_difficulty_value),
@@ -771,33 +775,41 @@ int main_handle_option(const char *argv)
 /* The game is accessed by mp.c through these engine-adapter callbacks. GAME_DATA
    over the wire is a save blob; advancing a turn is game_turn_process. */
 static int mp_if_serialize(void *ctx, uint8_t *buf, int buflen) { return game_save_blob_save((struct game_s *)ctx, buf, buflen); }
-static int mp_if_deserialize(void *ctx, const uint8_t *buf, int len) { return game_save_blob_load((struct game_s *)ctx, buf, len); }
+static void game_mp_client_store_state(struct game_s *g, const uint8_t *blob, int len); /* fwd: save sync (below) */
+static int mp_if_deserialize(void *ctx, const uint8_t *buf, int len) {
+    int r = game_save_blob_load((struct game_s *)ctx, buf, len);
+    /* 1oom-mp save sync: a client stores each authoritative state it receives (the raw bytes, so the
+       local files are byte-identical to the host's). The server never deserializes here. */
+    if ((r == 0) && !game_mp_is_server && ui_mp_active) {
+        game_mp_client_store_state((struct game_s *)ctx, buf, len);
+    }
+    return r;
+}
 /* 1oom-mp save-file header magic. Distinguishes the [u32 magic][int humans][char game_id[24]] header
    from the OLD [int humans] one -- humans is 1..6, never equal to this, so the loader can tell them
    apart and still read pre-this-change autosaves. */
 #define MP_SAVE_MAGIC 0x31535000u
 
-/* write the full MP save (header + state blob) to fname, atomically: write a temp then rename, so a
-   crash mid-write can't corrupt it. Shared by the per-turn autosave and the on-command named save. */
-static bool mp_write_save_blob(struct game_s *g, const char *fname) {
-    static uint8_t *buf = NULL;
-    static int cap = 0;
-    int need = game_save_blob_maxlen(g), n;
+/* write an MP save (header + the given state bytes) to fname, atomically: write a temp then rename,
+   so a crash mid-write can't corrupt it. Used by the server (freshly serialized state) AND by clients
+   storing the RAW authoritative blob they received (save sync) -- writing the received bytes verbatim
+   guarantees every machine's copy is byte-identical to the host's. */
+static bool mp_write_save_bytes(const uint8_t *bytes, int n, const char *fname) {
     char tmp[1040];
     FILE *f;
     uint32_t magic = MP_SAVE_MAGIC;
     int humans = s_mp_humans;
     bool ok;
-    if (need > cap) { uint8_t *nb = (uint8_t *)realloc(buf, (size_t)need); if (!nb) { return false; } buf = nb; cap = need; }
-    n = game_save_blob_save(g, buf, cap);
     if (n <= 0) { return false; }
-    lib_sprintf(tmp, sizeof(tmp), "%s.tmp", fname);
+    /* per-process temp name: on the HOST machine the server AND the host's client (save sync) write
+       the same files each turn -- a shared "<fname>.tmp" would race and could corrupt a rename. */
+    lib_sprintf(tmp, sizeof(tmp), "%s.%d.tmp", fname, (int)getpid());
     f = fopen(tmp, "wb");
     if (!f) { return false; }
     ok = (fwrite(&magic, sizeof(magic), 1, f) == 1)
       && (fwrite(&humans, sizeof(humans), 1, f) == 1)            /* human-client count, so -mpload waits for the right number */
       && (fwrite(s_mp_game_id, sizeof(s_mp_game_id), 1, f) == 1) /* per-game id (the filename stem), carried across resumes */
-      && (fwrite(buf, 1, (size_t)n, f) == (size_t)n);
+      && (fwrite(bytes, 1, (size_t)n, f) == (size_t)n);
     if (fclose(f) != 0) { ok = false; }
     if (ok) {
 #ifdef _WIN32
@@ -808,6 +820,16 @@ static bool mp_write_save_blob(struct game_s *g, const char *fname) {
         remove(tmp);
     }
     return ok;
+}
+
+/* serialize the current state and write it as an MP save (header + blob). */
+static bool mp_write_save_blob(struct game_s *g, const char *fname) {
+    static uint8_t *buf = NULL;
+    static int cap = 0;
+    int need = game_save_blob_maxlen(g), n;
+    if (need > cap) { uint8_t *nb = (uint8_t *)realloc(buf, (size_t)need); if (!nb) { return false; } buf = nb; cap = need; }
+    n = game_save_blob_save(g, buf, cap);
+    return mp_write_save_bytes(buf, n, fname);
 }
 
 /* 1oom-mp: per-turn autosave so a crash/restart never loses the game. Each game has its OWN file
@@ -847,15 +869,46 @@ static void game_mp_turnsave(struct game_s *g) {
     mp_write_save_blob(g, fname);
 }
 
-/* 1oom-mp: an on-command save (a player chose Esc -> Save). A permanent NAMED snapshot, separate from the
-   rolling autosave, so you can keep several and resume any: mp_save_<game_id>_y<year>.blob (one per
-   in-game year). Lives on the server's machine, where -mpload reads. */
-static void game_mp_save_named(struct game_s *g) {
-    char fname[1024];
-    int year = (int)g->year + YEAR_BASE;
+/* 1oom-mp: the named-saves folder, <userdir>/saves/. Player-chosen names live here so they're easy to
+   find in the Resume list. Creates the directory. */
+static const char *game_mp_saves_dir(char *buf, size_t bufsize) {
     os_make_path_user();
-    if (s_mp_game_id[0]) { lib_sprintf(fname, sizeof(fname), "%s/mp_save_%s_y%d.blob", os_get_path_user(), s_mp_game_id, year); }
-    else { lib_sprintf(fname, sizeof(fname), "%s/mp_save_y%d.blob", os_get_path_user(), year); }
+    lib_sprintf(buf, bufsize, "%s/saves", os_get_path_user());
+    os_make_path(buf);
+    return buf;
+}
+
+/* 1oom-mp: make a player-typed save name safe as a filename: keep alnum/space/dash/underscore/dot,
+   replace everything else with '_', trim to fit. Same function runs on server and clients so every
+   machine writes the identical filename (save sync). */
+static void game_mp_sanitize_name(const char *in, char *out, size_t outsize) {
+    size_t o = 0;
+    for (size_t i = 0; in[i] && (o + 1 < outsize); ++i) {
+        char c = in[i];
+        bool ok = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || ((c >= '0') && (c <= '9'))
+               || (c == ' ') || (c == '-') || (c == '_') || (c == '.');
+        out[o++] = ok ? c : '_';
+    }
+    while ((o > 0) && (out[o - 1] == ' ')) { --o; } /* no trailing spaces (awkward on Windows) */
+    out[o] = '\0';
+}
+
+/* 1oom-mp: an on-command save (a player chose Esc -> Save). A permanent NAMED snapshot, separate from
+   the rolling autosave: saves/<player-chosen name>.blob (empty name -> the legacy y<year> naming). */
+static void game_mp_save_named(struct game_s *g, const char *name) {
+    char fname[1152];
+    char clean[64];
+    game_mp_sanitize_name(name ? name : "", clean, sizeof(clean));
+    if (clean[0]) {
+        char dir[1024];
+        game_mp_saves_dir(dir, sizeof(dir));
+        lib_sprintf(fname, sizeof(fname), "%s/%s.blob", dir, clean);
+    } else {
+        int year = (int)g->year + YEAR_BASE;
+        os_make_path_user();
+        if (s_mp_game_id[0]) { lib_sprintf(fname, sizeof(fname), "%s/mp_save_%s_y%d.blob", os_get_path_user(), s_mp_game_id, year); }
+        else { lib_sprintf(fname, sizeof(fname), "%s/mp_save_y%d.blob", os_get_path_user(), year); }
+    }
     if (mp_write_save_blob(g, fname)) { log_message("MP: saved game to %s\n", fname); }
     else { log_error("MP: save to %s FAILED\n", fname); }
 }
@@ -950,11 +1003,79 @@ static void game_mp_aidump(struct game_s *g) {
     fclose(f);
 }
 
-/* server: a client requested a save (Esc -> Save) -> write a named snapshot of the authoritative state. */
-static int mp_if_save_request(void *ctx, int player_id) {
+/* 1oom-mp: multiplayer runs with the upstream quality-of-life RULES FIXES ON (vanilla MOO1 economy
+   quirks like ECO spending silently wasted on clean planets, waste/soil rounding errors, etc). Forced
+   identically on the server AND every client (same build both ends), so views always agree; the game
+   rules are the server's anyway. Single-player keeps the menu-configurable defaults. */
+static void game_mp_force_rules(void) {
+    game_num_slider_respects_locks = true;   /* a pinned slider stays pinned (pre-existing MP force) */
+    game_num_waste_calc_fix = true;
+    game_num_waste_adjust_fix = true;
+    game_num_slider_eco_done_fix = true;     /* no ECO BC silently wasted on already-clean planets */
+    game_num_soil_rounding_fix = true;
+    game_num_pop_tenths_fix = true;
+    game_num_factory_cost_fix = true;
+    game_num_colonized_factories_fix = true;
+    game_num_leaving_trans_fix = true;
+    game_num_hidden_child_labor_fix = true;
+    game_num_newtech_adjust_fix = true;
+    game_num_cond_switch_to_ind_fix = true;
+    game_num_orbital_bio_fix = true;         /* bio damage only applies when the attacker actually bombs */
+    game_num_orbital_comp_fix = true;        /* no targeting bonus from ships that don't exist */
+    game_num_stargate_redir_fix = true;
+    game_num_trans_redir_fix = true;
+    game_num_retreat_redir_fix = true;
+    game_num_ship_scanner_fix = true;
+}
+
+/* server: a client requested a save (Esc -> Save) -> write a named snapshot of the authoritative state.
+   (mp.c then broadcasts the same snapshot to every client so each machine stores its own copy.) */
+static int mp_if_save_request(void *ctx, int player_id, const char *name) {
     (void)player_id;
-    game_mp_save_named((struct game_s *)ctx);
+    game_mp_save_named((struct game_s *)ctx, name);
     return 0;
+}
+
+/* server: the save-header identity clients prepend when storing synced state ([game_id 24][u8 humans]). */
+static int mp_if_get_game_meta(void *ctx, uint8_t *buf, int buflen) {
+    (void)ctx;
+    if (buflen < 25) { return 0; }
+    memcpy(buf, s_mp_game_id, 24);
+    buf[24] = (uint8_t)s_mp_humans;
+    return 25;
+}
+
+/* ----- 1oom-mp save sync, client side: every machine stores the authoritative state locally ----- */
+
+/* client: GAME_META arrived -- adopt the game's save identity so the local writes use the same
+   filenames (and header) as the host's. */
+static void mp_cl_game_meta_impl(const char *game_id24, int humans) {
+    lib_strcpy(s_mp_game_id, game_id24, sizeof(s_mp_game_id));
+    if ((humans >= 1) && (humans <= PLAYER_NUM)) { s_mp_humans = humans; }
+}
+
+/* client: a player-named snapshot arrived -- write our own local copy (saves/<name>.blob), raw bytes
+   verbatim so it's identical to the host's file. */
+static void mp_cl_save_named_impl(const char *name, const uint8_t *blob, int len) {
+    char dir[1024], fname[1152], clean[64];
+    game_mp_sanitize_name(name, clean, sizeof(clean));
+    if (!clean[0]) { lib_strcpy(clean, "unnamed", sizeof(clean)); }
+    game_mp_saves_dir(dir, sizeof(dir));
+    lib_sprintf(fname, sizeof(fname), "%s/%s.blob", dir, clean);
+    if (mp_write_save_bytes(blob, len, fname)) { log_message("MP: stored synced save '%s'\n", clean); }
+}
+
+/* client: each authoritative GAME_DATA just loaded -- store it locally (rolling autosave + this turn's
+   games/<id>/y<year>.blob), so ANY participant can host a resume without copying files around. */
+static void game_mp_client_store_state(struct game_s *g, const uint8_t *blob, int len) {
+    char fname[1152], dir[1024];
+    if (!s_mp_game_id[0]) { return; } /* no GAME_META yet (pre-v4 server) -> nothing to file it under */
+    os_make_path_user();
+    lib_sprintf(fname, sizeof(fname), "%s/mp_auto_%s.blob", os_get_path_user(), s_mp_game_id);
+    mp_write_save_bytes(blob, len, fname);
+    game_mp_game_dir(dir, sizeof(dir));
+    lib_sprintf(fname, sizeof(fname), "%s/y%d.blob", dir, (int)g->year + YEAR_BASE);
+    mp_write_save_bytes(blob, len, fname);
 }
 
 /* 1oom-mp: the natural end-of-game result, stashed when advance_turn reports game-over so it can be
@@ -1047,7 +1168,10 @@ static int mp_if_get_game_over(void *ctx, int player_id, uint8_t *buf, int bufle
             ge.type = GAME_END_LOST_EXILE;                  /* the council elected someone else -> exile (name = the new emperor) */
         } else {
             ge.type = GAME_END_LOST_FUNERAL;
-            ge.race = (win_emp >= 0) ? g->eto[win_emp].banner : 0; /* funeral: banner_live = the victor's banner */
+            /* funeral: banner_live = the victor's banner. When no winner empire resolved here (e.g. an
+               AI conquered all humans -> the base ge already carries the killer's banner from
+               game_turn_check_end), KEEP it instead of overwriting with banner 0. */
+            if (win_emp >= 0) { ge.race = g->eto[win_emp].banner; }
             ge.banner_dead = g->eto[player_id].banner;             /* banner_dead = this viewer's own banner */
         }
     }
@@ -1102,6 +1226,10 @@ static int s_mp_premove_len = 0;
 
 /* server: called mid-resolution (from the null UI) when fleet movement begins */
 static void mp_premove_capture(struct game_s *g) {
+    /* 1oom-mp polish: nothing in flight -> nothing to animate; skip the stream so clients don't sit
+       through an empty movement replay every quiet turn. (Monsters mid-flight ride in enroute-like
+       state rarely enough that a missed monster-only frame is acceptable.) */
+    if ((g->enroute_num == 0) && (g->transport_num == 0)) { return; }
     if (s_mp_premove_buf) {
         int n = game_save_blob_save(g, s_mp_premove_buf, s_mp_premove_cap);
         s_mp_premove_len = (n > 0) ? n : 0;
@@ -1174,6 +1302,12 @@ struct mp_bomb_item_s { int32_t attacker, owner, planet, popdmg, factdmg; uint8_
    next state load -- so the bomb phase never blocks one player on another's bombardment screens. */
 static struct mp_bomb_item_s s_mp_bomb[32]; /* 1oom-mp: raised from 16 (busy bombardment turn) */
 static int s_mp_bomb_n = 0;
+/* 1oom-mp: combat reports + turn messages are BUFFERED (instant ack) and replayed at state load --
+   a blocking modal here would freeze every other player until this one clicked it away. */
+static struct ui_combat_report_s s_mp_reports[12];
+static int s_mp_reports_n = 0;
+static char s_mp_turnmsgs[6][160];
+static int s_mp_turnmsgs_n = 0;
 
 /* 1oom-mp: espionage result streams, buffered as they stream in during resolution and replayed
    concurrently at the next state load -- so neither the tech-theft victim notice nor the saboteur's
@@ -1189,8 +1323,9 @@ static int s_mp_sabres_n = 0;
 
 /* 1oom-mp: hysteresis for the "waiting for other players" banner. Counts consecutive on_wait ticks
    since the last relayed event; the banner only appears once this exceeds a threshold, so the brief
-   gaps between events don't flash it on and off. Reset to 0 on every relayed decision. */
-static int s_mp_wait_quiet = 0;
+   gaps between events don't flash it on and off. Reset on every relayed decision. Wall-clock
+   deadlines (each idle wait iteration is ~11ms, so iteration counts ran ~10x too long). */
+static int64_t s_mp_wait_quiet_since_us = 0;
 
 /* 1oom-mp: shared synchronous council view. The server streams the council chamber (election_s) to
    ALL humans (UI_MP_SPEC_COUNCIL), so everyone watches the votes instead of a black/banner screen.
@@ -1220,7 +1355,7 @@ static void mp_council_ctx_free(void) {
 /* keep the "another player is in combat" notice up for a short while even after the battle ends, so
    a quick / auto-resolved fight isn't an imperceptible on/off flash. Counted in on_wait iterations
    (~1ms each), so ~1500 ≈ 1.5s. */
-static int s_mp_combat_hold = 0;
+static int64_t s_mp_combat_hold_until_us = 0;
 static void mp_if_on_wait(void *ctx, int reason) {
     (void)ctx;
     if (s_mp_battle_uictx && !s_mp_battle_auto) {
@@ -1251,16 +1386,16 @@ static void mp_if_on_wait(void *ctx, int reason) {
         }
         return;
     }
-    if (reason == MP_WAIT_COUNCIL) { s_mp_combat_hold = 0; } /* the council banner (fallback if no chamber stream) takes priority over a stale combat notice */
-    if (reason == MP_WAIT_COMBAT) { s_mp_combat_hold = 1500; } /* another player just started/continued a battle */
-    if (s_mp_combat_hold > 0) {
-        --s_mp_combat_hold;
+    if (reason == MP_WAIT_COUNCIL) { s_mp_combat_hold_until_us = 0; } /* the council banner (fallback if no chamber stream) takes priority over a stale combat notice */
+    if (reason == MP_WAIT_COMBAT) { s_mp_combat_hold_until_us = hw_get_time_us() + 1500000; } /* another player just started/continued a battle: notice lingers ~1.5s */
+    if (hw_get_time_us() < s_mp_combat_hold_until_us) {
         ui_mp_wait(MP_WAIT_COMBAT); /* show the combat notice (sticky; also takes priority over a stale audience screen) */
         return;
     }
     if (s_mp_audience_uictx) { ui_mp_wait(MP_WAIT_BATTLE); return; } /* mid AI-audience: keep its screen, just pump */
-    if (++s_mp_wait_quiet < 700) {
-        ui_mp_wait(MP_WAIT_BATTLE); /* brief gap between relayed events: just pump, keep the screen up (no banner flash) */
+    if (s_mp_wait_quiet_since_us == 0) { s_mp_wait_quiet_since_us = hw_get_time_us(); }
+    if ((hw_get_time_us() - s_mp_wait_quiet_since_us) < 700000) {
+        ui_mp_wait(MP_WAIT_BATTLE); /* brief (~0.7s) gap between relayed events: just pump, no banner flash */
     } else {
         ui_mp_wait(reason); /* sustained wait -> show the banner */
     }
@@ -1290,7 +1425,7 @@ static void mp_battle_fixup(struct game_s *g, struct battle_s *bt) {
    Dispatches by type to the matching real UI; returns the response byte length. */
 static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int req_len, uint8_t *resp, int resp_buflen) {
     struct game_s *g = (struct game_s *)ctx;
-    s_mp_wait_quiet = 0; /* a relayed event just arrived -> hold off the "waiting" banner briefly (hysteresis) */
+    s_mp_wait_quiet_since_us = 0; /* a relayed event just arrived -> hold off the "waiting" banner briefly (hysteresis) */
     switch (dtype) {
         case MP_DEC_PING: /* synthetic round-trip self-test: return req[0]+1 */
             if (resp_buflen >= 1) { resp[0] = (req_len > 0) ? (uint8_t)(req[0] + 1) : 0x42; return 1; }
@@ -1324,9 +1459,11 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (req_len < (int)(4 + n * (int)sizeof(struct ui_bomb_target_s))) { return 0; }
             {
                 const struct ui_bomb_target_s *tgt = (const struct ui_bomb_target_s *)(req + 4);
+                bool bomb_all = false; /* 1oom-mp QoL: "A" in the prompt = yes for the rest of my targets */
                 for (int k = 0; k < n; ++k) {
                     if ((int)tgt[k].attacker == me) {
-                        if (ui_bomb_ask(g, me, (planet_id_t)tgt[k].planet_i, tgt[k].pop_inbound)) { mask |= ((uint64_t)1 << k); }
+                        if (bomb_all || ui_bomb_ask(g, me, (planet_id_t)tgt[k].planet_i, tgt[k].pop_inbound)) { mask |= ((uint64_t)1 << k); }
+                        if (!bomb_all && ui_bomb_ask_took_all()) { bomb_all = true; }
                     }
                 }
             }
@@ -1446,13 +1583,27 @@ static int mp_if_handle_decision(void *ctx, int dtype, const uint8_t *req, int r
             if (resp_buflen >= 1) { resp[0] = 1; } /* instant ack -- the screen plays later */
             return 1;
         }
+        case MP_DEC_TURN_MSG: { /* a resolution-time message ("your transports were destroyed") --
+                                   BUFFER it (instant ack, replayed at state load) so it never blocks
+                                   the server / the other players on this one's click */
+            if ((req_len > 0) && (s_mp_turnmsgs_n < (int)(sizeof(s_mp_turnmsgs) / sizeof(s_mp_turnmsgs[0])))) {
+                int n = (req_len < (int)sizeof(s_mp_turnmsgs[0])) ? req_len : (int)(sizeof(s_mp_turnmsgs[0]) - 1);
+                memcpy(s_mp_turnmsgs[s_mp_turnmsgs_n], req, n);
+                s_mp_turnmsgs[s_mp_turnmsgs_n][n] = '\0';
+                ++s_mp_turnmsgs_n;
+            }
+            if (resp_buflen >= 1) { resp[0] = 1; }
+            return 1;
+        }
         case MP_DEC_COMBAT_REPORT: { /* show this auto-resolved battle's result inline, right after the
                                         battle, instead of holding it to end-of-turn (so you don't wait
                                         on the other player to see your own outcome) */
-            struct ui_combat_report_s rep;
-            if (req_len < (int)sizeof(rep)) { return 0; }
-            memcpy(&rep, req, sizeof(rep));
-            ui_combat_report(g, mp_cl_player_id(), &rep, 1);
+            if (req_len < (int)sizeof(struct ui_combat_report_s)) { return 0; }
+            /* BUFFER + instant ack (a blocking modal would hold the whole resolution on this player's
+               click); all reports replay as one paged screen at state load */
+            if (s_mp_reports_n < (int)(sizeof(s_mp_reports) / sizeof(s_mp_reports[0]))) {
+                memcpy(&s_mp_reports[s_mp_reports_n++], req, sizeof(struct ui_combat_report_s));
+            }
             if (resp_buflen >= 1) { resp[0] = 1; }
             return 1;
         }
@@ -1767,7 +1918,14 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
         game_update_within_range(g);
         game_update_visibility(g);
         game_update_have_reserve_fuel(g);
-        /* auto-resolved combat results are now shown inline (MP_DEC_COMBAT_REPORT), not consolidated here */
+        if (s_mp_reports_n > 0) { /* this turn's combat reports, one paged screen (buffered, never blocked others) */
+            ui_combat_report(g, mp_cl_player_id(), s_mp_reports, s_mp_reports_n);
+            s_mp_reports_n = 0;
+        }
+        if (s_mp_turnmsgs_n > 0) { /* transport-loss and similar one-line results */
+            for (int i = 0; i < s_mp_turnmsgs_n; ++i) { ui_turn_msg(g, mp_cl_player_id(), s_mp_turnmsgs[i]); }
+            s_mp_turnmsgs_n = 0;
+        }
         if (s_mp_stolen_n > 0) { /* replay tech-theft victim notices (espionage resolves before bombing) */
             for (int i = 0; i < s_mp_stolen_n; ++i) {
                 ui_spy_stolen(g, mp_cl_player_id(), s_mp_stolen[i].spy, s_mp_stolen[i].field, (uint8_t)s_mp_stolen[i].tech);
@@ -1836,6 +1994,7 @@ static void mp_if_on_state_loaded(void *ctx, int first) {
    change, I un-ready myself by hitting Next Turn again (toggle). ---- */
 static int s_mp_my_pid = -1;            /* my empire id this turn (for serializing orders) */
 static bool s_mp_ready = false;         /* am I locked in this turn? */
+static bool s_mp_dead = false;          /* eliminated -> spectator: auto-ready every turn */
 static uint8_t *s_mp_orders_buf = NULL; /* the orders I last submitted (baseline for change detect) */
 static uint8_t *s_mp_orders_tmp = NULL; /* scratch: current orders, to compare against the baseline */
 static int s_mp_orders_cap = 0;
@@ -2080,12 +2239,52 @@ static int mp_turn_timer_remaining_s_impl(void) {
 static void mp_turn_set_ready_impl(int ready) { mp_submit_orders(ready != 0); }
 /* pump the socket once; if the countdown expired, auto-submit our orders; returns true once
    the server signalled resolution (planning is over). */
+/* 1oom-mp: transient one-line banner note ("ORDERS UPDATED", "TIME'S UP"), so silent automatic
+   actions give visible feedback on the starmap for a couple of seconds. */
+static char s_mp_note[48];
+static int64_t s_mp_note_until_us = 0;
+static void mp_set_note(const char *txt, int tenths) {
+    lib_strcpy(s_mp_note, txt, sizeof(s_mp_note));
+    s_mp_note_until_us = hw_get_time_us() + (int64_t)tenths * 100000;
+}
+static const char *mp_turn_note_impl(void) {
+    return (s_mp_note[0] && (hw_get_time_us() < s_mp_note_until_us)) ? s_mp_note : NULL;
+}
+
 static bool mp_turn_poll_impl(void) {
-    if (s_mp_ready && mp_orders_changed()) { mp_submit_orders(true); }
+    if (s_mp_dead && !s_mp_ready) { mp_submit_orders(true); } /* eliminated spectator never blocks the turn */
+    if (s_mp_ready && mp_orders_changed()) {
+        mp_submit_orders(true);
+        mp_set_note("ORDERS UPDATED", 15); /* feedback: the post-Ready edit was re-sent */
+    }
     if (s_mp_timer_active && !s_mp_ready && hw_get_time_us() >= s_mp_timer_deadline_us) {
         mp_submit_orders(true); /* timer expired: submit whatever we have */
+        mp_set_note("TIME'S UP - TURN SUBMITTED", 25);
     }
     return g_mp_cl_poll ? (g_mp_cl_poll() != 0) : false;
+}
+
+/* 1oom-mp: name of a (human) player everyone is still waiting on, for the READY banner -- from the
+   server's READY_STATUS broadcast. NULL when unknown or nobody is blocking. */
+static const char *mp_turn_waiting_race_impl(void) {
+    if (g_mp_cl_ready_nplayers == 0) { return NULL; }
+    for (int i = 0; (i < g_mp_cl_ready_nplayers) && (i < (int)game.players) && (i < 8); ++i) {
+        if ((i != s_mp_my_pid) && !(g_mp_cl_ready_mask & (1u << i)) && IS_HUMAN(&game, i)) {
+            return game_str_tbl_races[game.eto[i].race];
+        }
+    }
+    return NULL;
+}
+
+/* 1oom-mp: race name of a DISCONNECTED human (empire on autopilot until they rejoin), or NULL. */
+static const char *mp_turn_disconnected_race_impl(void) {
+    if (g_mp_cl_ready_nplayers == 0) { return NULL; }
+    for (int i = 0; (i < g_mp_cl_ready_nplayers) && (i < (int)game.players) && (i < 8); ++i) {
+        if ((i != s_mp_my_pid) && !(g_mp_cl_conn_mask & (1u << i)) && IS_HUMAN(&game, i)) {
+            return game_str_tbl_races[game.eto[i].race];
+        }
+    }
+    return NULL;
 }
 
 /* 1oom-mp: true once the planning timer has run out but we haven't submitted yet. Nested UI screens
@@ -2102,6 +2301,9 @@ void (*ui_mp_turn_set_ready)(int ready) = mp_turn_set_ready_impl;
 bool (*ui_mp_turn_is_ready)(void) = mp_turn_is_ready_impl;
 bool (*ui_mp_turn_poll)(void) = mp_turn_poll_impl;
 int (*ui_mp_turn_timer_remaining_s)(void) = mp_turn_timer_remaining_s_impl;
+const char *(*ui_mp_turn_waiting_race)(void) = mp_turn_waiting_race_impl;
+const char *(*ui_mp_turn_note)(void) = mp_turn_note_impl;
+const char *(*ui_mp_turn_disconnected_race)(void) = mp_turn_disconnected_race_impl;
 bool (*ui_mp_turn_force_unwind)(void) = mp_turn_force_unwind_impl;
 bool ui_mp_active = false; /* true while this process is a networked client (set in game_mp_join) */
 bool game_mp_is_server = false; /* true while this process is the headless MP server (set in game_mp_host) */
@@ -2113,7 +2315,9 @@ static int mp_if_write_orders(void *ctx, int player_id, uint8_t *buf, int buflen
     s_mp_my_pid = player_id;   /* soft-ready: who I am, for the Ready-submit hook */
     s_mp_ready = false;        /* a fresh turn starts un-readied */
     s_mp_timer_active = false; /* any pending countdown from the previous turn is gone */
+    g_mp_cl_ready_nplayers = 0; /* last turn's ready-status is stale */
     game_mp_orders_reset();    /* clear last turn's queued diplo/colonize actions before this turn re-queues */
+    s_mp_dead = !IS_ALIVE(g, player_id); /* eliminated -> spectate: the poll auto-readies so we never block the turn */
     if (getenv("MP_AUTOTECH")) {
         /* MP-DBG: pour everything into TECH (unlocked) to reproduce the slider issue */
         for (int i = 0; i < g->galaxy_stars; ++i) {
@@ -2193,6 +2397,7 @@ static mp_game_iface_t mp_make_iface(void) {
     gi.get_game_over = mp_if_get_game_over;
     gi.on_game_over = mp_if_on_game_over;
     gi.save_request = mp_if_save_request;
+    gi.get_game_meta = mp_if_get_game_meta; /* save sync: identity header for client-side stores */
     gi.serialize = mp_if_serialize;
     gi.deserialize = mp_if_deserialize;
     gi.advance_turn = mp_if_advance;
@@ -2362,9 +2567,7 @@ static int game_mp_host(void) {
     mp_game_iface_t gi;
     game_mp_is_server = true; /* keep human newtech lists in the synced state (see game_turn.c) */
     if (game_aux_init(&game_aux, &game)) { return 1; }
-    /* 1oom-mp: make slider locks actually hold (default-off in vanilla), so a player
-       can pin a slider and the per-turn ECO/waste auto-balance won't override it. */
-    game_num_slider_respects_locks = true;
+    game_mp_force_rules(); /* 1oom-mp: MP always runs with the QoL rules fixes on (same on all ends) */
     if (resume) {
         /* resume a crashed/saved game: the save blob takes the place of game_new (it also restores the
            per-game id, so we keep autosaving to the same mp_auto_<id>.blob). */
@@ -2442,40 +2645,168 @@ static int mp_race_id_from_arg(const char *s) {
     return -1;
 }
 
-static int game_mp_join(void) {
+/* join addr ("host[:port]") as a client. The core of -mpjoin, also reached from the Multiplayer menu. */
+static int game_mp_join_addr(const char *addr) {
     char host[128];
     uint16_t port = MP_DEFAULT_PORT;
     ui_mp_active = true; /* enable client-side turn-start prompts (e.g. planet discovery) */
+    const char *colon = strrchr(addr, ':');
+    if (colon) {
+        size_t n = (size_t)(colon - addr);
+        if (n >= sizeof(host)) { n = sizeof(host) - 1; }
+        memcpy(host, addr, n);
+        host[n] = '\0';
+        port = (uint16_t)atoi(colon + 1);
+    } else {
+        size_t n = strlen(addr);
+        if (n >= sizeof(host)) { n = sizeof(host) - 1; }
+        memcpy(host, addr, n);
+        host[n] = '\0';
+    }
+    if (game_aux_init(&game_aux, &game)) { return 1; }
+    game_mp_force_rules(); /* 1oom-mp: MP always runs with the QoL rules fixes on (same on all ends) */
+    log_message("MP: joining %s:%u\n", host, (unsigned)port);
+    mp_game_iface_t gi = mp_make_iface();
+    gi.advance_turn = NULL; /* the client does not resolve turns */
+    g_mp_cl_timer_notify = mp_timer_notify_impl;
+    g_mp_cl_game_meta = mp_cl_game_meta_impl;   /* save sync: adopt the game's save identity */
+    g_mp_cl_save_named = mp_cl_save_named_impl; /* save sync: store player-named snapshots locally */
+    int rc = mp_client_run(host, port, 0 /*until game over*/, &gi);
+    g_mp_cl_timer_notify = NULL;
+    g_mp_cl_game_meta = NULL;
+    g_mp_cl_save_named = NULL;
+    game_aux_shutdown(&game_aux);
+    return rc ? 1 : 0;
+}
+
+static int game_mp_join(void) {
     if (opt_mp_race) { /* -mprace: ask the server (resumed game) for this race's empire instead of next free slot */
         g_mp_cl_req_race = mp_race_id_from_arg(opt_mp_race);
         if (g_mp_cl_req_race < 0) { log_warning("MP: -mprace '%s' not recognized -- joining by connection order\n", opt_mp_race); }
         else { log_message("MP: will request race '%s' (id %d) on join\n", opt_mp_race, g_mp_cl_req_race); }
     }
-    const char *colon = strrchr(opt_mp_join, ':');
-    if (colon) {
-        size_t n = (size_t)(colon - opt_mp_join);
-        if (n >= sizeof(host)) { n = sizeof(host) - 1; }
-        memcpy(host, opt_mp_join, n);
-        host[n] = '\0';
-        port = (uint16_t)atoi(colon + 1);
-    } else {
-        size_t n = strlen(opt_mp_join);
-        if (n >= sizeof(host)) { n = sizeof(host) - 1; }
-        memcpy(host, opt_mp_join, n);
-        host[n] = '\0';
+    return game_mp_join_addr(opt_mp_join);
+}
+
+/* 1oom-mp: describe an MP save for the Multiplayer menu's Resume list (see ui.h). Loads the state
+   into the (pre-game) game struct just to read who's in it -- harmless before a session starts. */
+int game_mp_peek_save(const char *path, int *humans_out, uint8_t *races_out, int *year_out) {
+    char *resolved = game_mp_resolve_load_path(path);
+    int humans = 0, r;
+    r = game_mp_load_autosave(resolved, &humans);
+    lib_free(resolved);
+    if (r) { return -1; }
+    if (humans_out) { *humans_out = humans; }
+    if (races_out) {
+        for (int i = 0; i < PLAYER_NUM; ++i) { races_out[i] = (i < (int)game.players) ? (uint8_t)game.eto[i].race : 0xff; }
     }
-    if (game_aux_init(&game_aux, &game)) { return 1; }
-    /* 1oom-mp: make slider locks actually hold (default-off in vanilla), so a player
-       can pin a slider and the per-turn ECO/waste auto-balance won't override it. */
-    game_num_slider_respects_locks = true;
-    log_message("MP: joining %s:%u\n", host, (unsigned)port);
-    mp_game_iface_t gi = mp_make_iface();
-    gi.advance_turn = NULL; /* the client does not resolve turns */
-    g_mp_cl_timer_notify = mp_timer_notify_impl;
-    int rc = mp_client_run(host, port, 0 /*until game over*/, &gi);
-    g_mp_cl_timer_notify = NULL;
-    game_aux_shutdown(&game_aux);
-    return rc ? 1 : 0;
+    if (year_out) { *year_out = (int)game.year + YEAR_BASE; }
+    return 0;
+}
+
+/* 1oom-mp: find the server binary that ships next to this client (mac/linux build: 1oom_server;
+   the Windows bundle renames it Server.exe). */
+static bool game_mp_find_server_bin(char *buf, size_t bufsize) {
+    static const char *cand[] = { "1oom_server", "Server.exe", "1oom_server.exe", NULL };
+    char dir[1024];
+    os_get_path_exe_dir(dir, sizeof(dir));
+    for (int i = 0; cand[i]; ++i) {
+        FILE *f;
+        if (dir[0]) { lib_sprintf(buf, bufsize, "%s/%s", dir, cand[i]); }
+        else { lib_sprintf(buf, bufsize, "%s", cand[i]); }
+        f = fopen(buf, "rb");
+        if (f) { fclose(f); return true; }
+    }
+    return false;
+}
+
+/* 1oom-mp: launch a session from the Multiplayer menu (ui_mp_setup filled by the menu screens).
+   HOST/RESUME spawn the sibling server binary locally, then join it as a normal client; JOIN just
+   connects. Returns the exit code, or -1 to go back to the menu (setup failed). */
+static int game_mp_menu_launch(int action) {
+    char addr[144];
+    int spawned = -1, rc;
+    game_aux_shutdown(&game_aux); /* the menu path inited it; game_mp_join_addr re-inits */
+    g_mp_cl_req_race = ui_mp_setup.req_race;
+    if (((action == MAIN_MENU_ACT_MP_HOST) || (action == MAIN_MENU_ACT_MP_RESUME)) && net_probe_local_port(24695)) {
+        /* a server from a previous session (e.g. a crashed client) is still running on this machine --
+           rejoin it instead of spawning a second one that couldn't bind the port anyway */
+        log_message("MP: a game server is already running on this machine -- rejoining it\n");
+        lib_strcpy(addr, "127.0.0.1:24695", sizeof(addr));
+        rc = game_mp_join_addr(addr);
+        if (rc != 0) { ui_mp_active = false; }
+        game_aux_init(&game_aux, &game);
+        ui_mp_active = false;
+        g_mp_cl_req_race = -1;
+        return -1; /* back to the menu after the session (or failed rejoin) */
+    }
+    if ((action == MAIN_MENU_ACT_MP_HOST) || (action == MAIN_MENU_ACT_MP_RESUME)) {
+        char bin[1152], humans[8], logf[1088];
+        const char *argv[12];
+        int n = 0;
+        if (!game_mp_find_server_bin(bin, sizeof(bin))) {
+            log_error("MP: server binary not found next to this program -- cannot host\n");
+            game_aux_init(&game_aux, &game);
+            return -1;
+        }
+        lib_sprintf(humans, sizeof(humans), "%d", ui_mp_setup.humans);
+        lib_sprintf(logf, sizeof(logf), "%s/mp_server_log.txt", os_get_path_user());
+        argv[n++] = bin;
+        argv[n++] = "-mphost"; argv[n++] = "24695";
+        /* OPEN lobby for a new game: the lobby appears immediately, players join as they arrive (up
+           to the cap) or leave freely, and the host clicks Start -- no all-or-nothing blocking. A
+           RESUME keeps the fixed count (it's baked into the save). */
+        if (action == MAIN_MENU_ACT_MP_HOST) { argv[n++] = "-mpopen"; argv[n++] = humans; }
+        else { argv[n++] = "-mpload"; argv[n++] = ui_mp_setup.load_path; }
+        if (os_get_path_data() && os_get_path_data()[0]) { argv[n++] = "-data"; argv[n++] = os_get_path_data(); }
+        argv[n++] = "-log"; argv[n++] = logf;
+        argv[n] = NULL;
+        spawned = os_spawn_bg(argv);
+        if (spawned < 0) {
+            log_error("MP: could not start the server (%s)\n", bin);
+            game_aux_init(&game_aux, &game);
+            return -1;
+        }
+        log_message("MP: local server started (%s)\n", bin);
+        lib_strcpy(addr, "127.0.0.1:24695", sizeof(addr));
+        usleep(500000); /* brief head start; the join below retries while the server finishes booting */
+    } else {
+        lib_strcpy(addr, ui_mp_setup.join_addr, sizeof(addr));
+        /* remember the address for next time (persisted via the config file) */
+        lib_free(ui_mp_last_addr);
+        ui_mp_last_addr = lib_stralloc(addr);
+    }
+    if (spawned >= 0) {
+        /* our own just-spawned server may still be loading -- retry FAST failures (connection refused)
+           for up to ~10 attempts instead of racing a fixed sleep. A long-lived session that later ends
+           with an error isn't retried (elapsed >= 10s). */
+        for (int tries = 0; ; ++tries) {
+            time_t t0 = time(NULL);
+            rc = game_mp_join_addr(addr);
+            if ((rc == 0) || (tries >= 10) || ((time(NULL) - t0) >= 10)) { break; }
+            usleep(900000);
+        }
+    } else {
+        rc = game_mp_join_addr(addr);
+        if (rc != 0) {
+            /* JOIN failed (bad address / host down / version mismatch) -> back to the menu, not exit */
+            log_warning("MP: join '%s' failed -- returning to the menu\n", addr);
+            ui_mp_active = false;
+            game_aux_init(&game_aux, &game);
+            return -1;
+        }
+    }
+    /* do NOT kill the spawned server on a clean exit: if the host steps away, the other players keep
+       playing (their empires vs the coasting host empire) and the server self-exits once EVERYONE has
+       left. Only reap it when we never got a session at all (it would otherwise squat on the port). */
+    if ((spawned >= 0) && (rc != 0)) { os_spawn_kill(spawned); }
+    /* session over (game finished, quit to menu, or link lost) -> back to the MAIN MENU, not the
+       desktop, so a rematch doesn't mean relaunching the app. A window-close still exits via the
+       hw layer's quit path before we get here. */
+    ui_mp_active = false;
+    g_mp_cl_req_race = -1;
+    game_aux_init(&game_aux, &game);
+    return -1;
 }
 
 int main_do(void)
@@ -2562,6 +2893,14 @@ int main_do(void)
             case MAIN_MENU_ACT_TUTOR:
                 game_new_tutor(&game, &game_aux);
                 break;
+            case MAIN_MENU_ACT_MP_HOST:
+            case MAIN_MENU_ACT_MP_RESUME:
+            case MAIN_MENU_ACT_MP_JOIN:
+                {   /* 1oom-mp: launch the session the Multiplayer menu set up; -1 = back to the menu */
+                    int r = game_mp_menu_launch(main_menu_action);
+                    if (r >= 0) { return r; }
+                }
+                continue;
             case MAIN_MENU_ACT_LOAD_GAME:
                 main_menu_load_game:
                 if (0

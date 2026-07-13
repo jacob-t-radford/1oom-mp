@@ -8,6 +8,7 @@
 #include "game.h"
 #include "game_fleet.h"
 #include "game_misc.h"
+#include "game_mp_orders.h" /* 1oom-mp: econ-action record (scrap refund must reach the server) */
 #include "game_shipdesign.h"
 #include "game_shiptech.h"
 #include "game_str.h"
@@ -770,6 +771,9 @@ void game_design_scrap(struct game_s *g, player_id_t player, int shipi, bool fla
         }
     }
     e->reserve_bc += (srd->shipcount[shipi] * srd->design[shipi].cost) / 4;
+    /* 1oom-mp: the scrap itself syncs via the design table, but the refund is a treasury change the
+       order stream doesn't carry -- record it so the server credits it too (no-op outside MP clients) */
+    game_mp_econ_record_bc(player, (srd->shipcount[shipi] * srd->design[shipi].cost) / 4);
     for (int i = 0; i < g->galaxy_stars; ++i) {
         planet_t *p = &(g->planet[i]);
         int bs;

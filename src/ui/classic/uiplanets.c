@@ -242,6 +242,13 @@ static void planets_draw_cb(void *vptr)
             if (p->slider[PLANET_SLIDER_SHIP] > 0) {
                 str = planets_get_dock_str(g, p);
                 lbxfont_print_str_normal(221, y0, str, UI_SCREEN_W, ui_scale);
+            } else {
+                /* 1oom-mp QoL: show the (inactive) dock design dimmed -- the cell is clickable
+                   (clicking cycles the build design without leaving the list) */
+                str = planets_get_dock_str(g, p);
+                lbxfont_select(2, 1, 0, 0);
+                lbxfont_print_str_normal(221, y0, str, UI_SCREEN_W, ui_scale);
+                lbxfont_select(2, 6, 0, 0);
             }
         }
     }
@@ -624,6 +631,7 @@ void ui_planets(struct game_s *g, player_id_t active_player)
     struct planets_data_s d;
     bool flag_done = false, flag_trans;
     int16_t oi_alt_moola, oi_up, oi_down, oi_wheel, oi_ok, oi_trans, oi_minus, oi_plus, oi_tbl_planets[PLANETS_ON_SCREEN];
+    int16_t oi_tbl_dock[PLANETS_ON_SCREEN]; /* 1oom-mp QoL: dock-column cells cycle the build design in place */
     int16_t oi_sort[UI_SORT_NUM];
     uint8_t tbl_onscreen_planets[PLANETS_ON_SCREEN];
     int16_t scroll = 0;
@@ -668,6 +676,7 @@ again:
     for (int i = 0; i < PLANETS_ON_SCREEN; ++i) {
         tbl_onscreen_planets[i] = 0;
         oi_tbl_planets[i] = UIOBJI_INVALID;
+        oi_tbl_dock[i] = UIOBJI_INVALID;
     }
     UIOBJI_SET_TBL_INVALID(oi_sort);
 
@@ -694,6 +703,15 @@ again:
             scroll = 0;
         }
         for (int i = 0; i < PLANETS_ON_SCREEN; ++i) {
+            /* 1oom-mp QoL: clicking the dock cell cycles that planet's build design, staying in the list */
+            if ((oi_tbl_dock[i] != UIOBJI_INVALID) && (oi == oi_tbl_dock[i]) && !flag_trans) {
+                planet_t *pp = &g->planet[tbl_onscreen_planets[i]];
+                int nd = g->eto[active_player].shipdesigns_num;
+                if ((pp->owner == active_player) && (nd > 0)) {
+                    ui_sound_play_sfx_24();
+                    pp->buildship = (pp->buildship == BUILDSHIP_STARGATE) ? 0 : (uint8_t)((pp->buildship + 1) % nd);
+                }
+            }
             if (oi == oi_tbl_planets[i]) {
                 ui_sound_play_sfx_24();
                 if (!flag_trans) {
@@ -748,11 +766,15 @@ again:
             for (int i = 0; i < PLANETS_ON_SCREEN; ++i) {
                 int pi, y0, y1;
                 pi = i + d.pos;
+                oi_tbl_dock[i] = UIOBJI_INVALID;
                 if (pi < d.num) {
                     tbl_onscreen_planets[i] = ui_data.sorted.value[ui_data.sorted.index[pi]];
                     y0 = 21 + i * 11;
                     y1 = y0 + 8;
-                    oi_tbl_planets[i] = uiobj_add_mousearea(7, y0, 248, y1, MOO_KEY_UNKNOWN);
+                    /* 1oom-mp QoL: the row jumps to the planet, but the DOCK cell (rightmost) cycles
+                       the build design in place -- so retuning builds doesn't need N round-trips */
+                    oi_tbl_planets[i] = uiobj_add_mousearea(7, y0, 218, y1, MOO_KEY_UNKNOWN);
+                    oi_tbl_dock[i] = uiobj_add_mousearea(220, y0, 262, y1, MOO_KEY_UNKNOWN);
                 }
             }
             if (ui_extra_enabled) {

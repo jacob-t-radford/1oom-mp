@@ -58,6 +58,19 @@ extern bool game_mp_diplo_record_p(player_id_t actor, player_id_t target, uint8_
    turn processing would otherwise read and clear. */
 extern void game_mp_diplo_apply_pending(struct game_s *g);
 
+/* ---- 1oom-mp: planning-phase ECONOMY actions, carried in the order stream. These fix the
+   "did it locally, reverted at end of turn" class for actions whose effects live outside the
+   serialized planning fields: treasury refunds/gifts, missile-base scrap, and the economic side
+   of a client-side audience with an AI (trade agreement, tech exchange, tribute, relations).
+   The record functions no-op outside a live MP client, so SP and the server are unaffected. ---- */
+extern void game_mp_econ_record_bc(player_id_t actor, int bc);                 /* treasury delta (scrap refund +, payment -) */
+extern void game_mp_econ_record_scrap_bases(player_id_t actor, planet_id_t pli, int n); /* server recomputes the refund */
+extern void game_mp_econ_record_trade(player_id_t actor, player_id_t pa, int bc);       /* trade agreement set with AI pa */
+extern void game_mp_econ_record_tech_from(player_id_t actor, player_id_t pa, uint8_t field, uint8_t tech); /* AI gave us a tech */
+extern void game_mp_econ_record_tech_to(player_id_t actor, player_id_t pa, uint8_t field, uint8_t tech);   /* we gave AI a tech */
+extern void game_mp_econ_record_tribute(player_id_t actor, player_id_t pa, int bc);      /* BC from us to AI pa */
+extern void game_mp_econ_record_relation(player_id_t actor, player_id_t pa, int rel);    /* audience net relation result */
+
 /* client: queue a request to colonize planet pli (drained by write_orders). */
 extern void game_mp_colonize_record(player_id_t pi, planet_id_t pli);
 

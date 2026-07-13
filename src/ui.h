@@ -38,12 +38,29 @@ typedef enum {
     MAIN_MENU_ACT_LOAD_GAME_MOO13,
     MAIN_MENU_ACT_CONTINUE_GAME,
     MAIN_MENU_ACT_QUIT_GAME,
-    MAIN_MENU_ACT_TUTOR
+    MAIN_MENU_ACT_TUTOR,
+    MAIN_MENU_ACT_MP_HOST,   /* 1oom-mp: Multiplayer menu -> host a new game (spawns the local server) */
+    MAIN_MENU_ACT_MP_RESUME, /* 1oom-mp: Multiplayer menu -> host a resumed save */
+    MAIN_MENU_ACT_MP_JOIN    /* 1oom-mp: Multiplayer menu -> join a remote host */
 } main_menu_action_t;
 
 struct game_new_options_s;
 
 extern main_menu_action_t ui_main_menu(struct game_new_options_s *newopts, struct game_new_options_s *customopts, struct game_new_options_s *challengeopts, int *load_game_i_ptr);
+
+/* 1oom-mp: what the Multiplayer menu screens collected; game.c launches from this (no command line). */
+struct ui_mp_setup_s {
+    char join_addr[128];  /* JOIN: host[:port] to connect to */
+    char load_path[1024]; /* RESUME: save file or game folder to -mpload ("" for a new game) */
+    int humans;           /* HOST: number of human players to wait for */
+    int req_race;         /* preferred race to claim on a resumed game, or -1 (auto) */
+};
+extern struct ui_mp_setup_s ui_mp_setup;
+extern char *ui_mp_last_addr; /* last join address (persisted in the config; prefills the Join screen) */
+/* 1oom-mp: read an MP save's header + state enough to describe it (for the Resume list). Fills the
+   human count, each human's race id, and the in-game year. Accepts a save file or a game folder.
+   Returns 0 ok. Defined in game.c. */
+extern int game_mp_peek_save(const char *path, int *humans_out, uint8_t *races_out /*PLAYER_NUM*/, int *year_out);
 
 struct game_s;
 struct game_end_s;
@@ -97,6 +114,9 @@ extern void (*ui_mp_turn_set_ready)(int ready);  /* submit current orders + set/
 extern bool (*ui_mp_turn_is_ready)(void);        /* am I currently locked in (for the banner)? */
 extern bool (*ui_mp_turn_poll)(void);            /* pump the net once; true once the turn resolved */
 extern int (*ui_mp_turn_timer_remaining_s)(void); /* remaining countdown seconds, or -1 if inactive */
+extern const char *(*ui_mp_turn_waiting_race)(void); /* race name of a player everyone waits on, or NULL */
+extern const char *(*ui_mp_turn_note)(void); /* transient note ("ORDERS UPDATED", "TIME'S UP"), or NULL */
+extern const char *(*ui_mp_turn_disconnected_race)(void); /* race name of a disconnected player, or NULL */
 extern bool (*ui_mp_turn_force_unwind)(void);     /* planning timer ran out, not yet submitted -> nested screens should bail to the map */
 
 /* 1oom-mp interactive pre-game lobby: pick race/color, ready up, and (host = slot 0) set the AI
@@ -260,6 +280,13 @@ extern bool ui_explore(struct game_s *g, int pi, planet_id_t planet_i, bool by_s
 extern void ui_landing(struct game_s *g, int pi, planet_id_t planet_i);
 
 extern bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound);
+/* 1oom-mp QoL: did the last ui_bomb_ask answer come from the "A = yes to all" key? (The MP bomb-batch
+   loop then stops prompting and bombs the rest of this turn's targets.) */
+extern bool ui_bomb_ask_took_all(void);
+
+/* 1oom-mp: a tech just granted client-side WITH its own screen (audience deal, h2h trade) -- mark it
+   announced so the turn-start research diff doesn't re-announce it as a normal completion. */
+extern void ui_mp_tech_note_seen(uint8_t field, uint8_t tech);
 extern void ui_bomb_show(struct game_s *g, int pi, int attacker_i, int owner_i, planet_id_t planet_i, int popdmg, int factdmg, bool play_music, bool hide_other);
 /* 1oom-mp: one human attacker's bombable target, for the parallel batched bomb prompt */
 struct ui_bomb_target_s { uint16_t planet_i; uint8_t attacker; uint16_t pop_inbound; uint16_t popdmg; uint16_t factdmg; };

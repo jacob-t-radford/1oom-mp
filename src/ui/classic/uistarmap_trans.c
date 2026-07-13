@@ -119,6 +119,9 @@ static void ui_starmap_trans_draw_cb(void *vptr)
             lbxfont_select(0, 0, 0, 0);
             lbxfont_print_str_center(268, 149, buf, UI_SCREEN_W, ui_scale);
             lbxgfx_draw_frame(230, 123, ui_data.gfx.starmap.tran_bar, UI_SCREEN_W, ui_scale);
+            /* 1oom-mp QoL: the power modifiers exist but nothing advertised them */
+            lbxfont_select(2, 6, 0, 0);
+            lbxfont_print_str_center(268, 133, "ALT=max  CTRL=10", UI_SCREEN_W, ui_scale);
             lbxfont_select(0, 6, 0, 0);
             if (pt->owner != PLAYER_NONE) {/* WASBUG MOO1 tests for == PLAYER_NONE, reading from eto offs 0xcc */
                 treaty = g->eto[d->api].treaty[pt->owner];

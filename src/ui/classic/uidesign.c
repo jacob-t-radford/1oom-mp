@@ -42,6 +42,7 @@ struct ui_design_data_s {
     int16_t oi_cancel;
     int16_t oi_build;
     int16_t oi_clear;
+    int16_t oi_tbl_copy[NUM_SHIPDESIGNS]; /* 1oom-mp QoL: keys 1..6 = copy existing design as template */
     int16_t oi_name;
     int16_t oi_idn;
     int16_t oi_iup;
@@ -265,6 +266,7 @@ static void design_clear_ois(struct ui_design_data_s *u)
     u->oi_cancel = UIOBJI_INVALID;
     u->oi_build = UIOBJI_INVALID;
     u->oi_clear = UIOBJI_INVALID;
+    UIOBJI_SET_TBL_INVALID(u->oi_tbl_copy);
     u->oi_name = UIOBJI_INVALID;
     u->oi_idn = UIOBJI_INVALID;
     u->oi_iup = UIOBJI_INVALID;
@@ -297,6 +299,7 @@ static void design_init_ois(struct ui_design_data_s *u)
     u->oi_cancel = uiobj_add_t0(282, 150, game_str_sd_cancel, ui_data.gfx.design.blank, MOO_KEY_ESCAPE);
     u->oi_build = uiobj_add_t0(282, 182, game_str_sd_build, ui_data.gfx.design.blank, MOO_KEY_b);
     u->oi_clear = uiobj_add_t0(282, 166, game_str_sd_clear, ui_data.gfx.design.blank, MOO_KEY_c);
+    for (int i = 0; i < NUM_SHIPDESIGNS; ++i) { u->oi_tbl_copy[i] = uiobj_add_inputkey(MOO_KEY_1 + i); } /* 1oom-mp QoL */
     lbxfont_select(0, 0, 5, 3);
     u->oi_name = uiobj_add_textinput(214, 151, 56, d->gd->sd.name, SHIP_NAME_LEN - 1, 1, true, false, colortbl_sd_textinput, MOO_KEY_UNKNOWN);
     uiobj_dec_y1(u->oi_name);
@@ -1193,6 +1196,15 @@ bool ui_design(struct game_s *g, struct game_design_s *gd, player_id_t active_pl
             ui_sound_play_sfx_24();
             game_design_clear(gd);
             game_design_update_haveflags(&d);
+        }
+        /* 1oom-mp QoL: keys 1..6 seed the editor from an EXISTING design (iterate a hull without
+           re-picking every component). The name stays whatever the template had -- edit as usual. */
+        for (int si = 0; si < NUM_SHIPDESIGNS; ++si) {
+            if ((u.oi_tbl_copy[si] != UIOBJI_INVALID) && (oi == u.oi_tbl_copy[si]) && (si < g->eto[active_player].shipdesigns_num)) {
+                ui_sound_play_sfx_24();
+                gd->sd = g->srd[active_player].design[si];
+                game_design_update_haveflags(&d);
+            }
         }
         for (ship_hull_t i = SHIP_HULL_SMALL; i < SHIP_HULL_NUM; ++i) {
             if ((oi == u.oi_tbl_hull[i]) && !d.flag_tbl_hull[i]) {

@@ -14,8 +14,11 @@
    version too -- an out-of-date client is then cleanly refused ("update the client") instead of silently
    desyncing on the wider order stream.
    v3 (2026-06-28): bombing outcome (colony_destroyed + pop/factory damage) added to the auto-resolve
-   combat-report wire payload (ui_combat_report_s). Another wire-size change -> bump again. */
-#define MP_PROTO_VERSION 3
+   combat-report wire payload (ui_combat_report_s). Another wire-size change -> bump again.
+   v4 (2026-07-03): save sync -- GAME_META + SAVE_NAMED messages, SAVE_REQUEST now carries a
+   player-chosen save name. Every client stores each turn's state locally, so any machine can host
+   a resume. */
+#define MP_PROTO_VERSION 4
 #define MP_MAX_PLAYERS   6
 
 /* message ids. S->C and C->S noted. Mirrors the 2018 protocol's intent. */
@@ -27,7 +30,11 @@ enum mp_msg_e {
     MP_MSG_LOBBY_PICK= 0x13, /* C->S: [u8 field][u8 value] = set one of my lobby fields (see mp_lobby_field_e) */
     MP_MSG_TIMER_START  = 0x14, /* S->C: [u8 seconds] = arm countdown (only one un-ready human left) */
     MP_MSG_TIMER_CANCEL = 0x15, /* S->C: (empty) = disarm countdown (condition reverted) */
-    MP_MSG_SAVE_REQUEST = 0x16, /* C->S: (empty) request a server-side named save (Esc -> Save); relocated off 0x14 (taken by TIMER_START) at the add_timer reconcile */
+    MP_MSG_SAVE_REQUEST = 0x16, /* C->S: [name text, may be empty] request a server-side named save (Esc -> Save); relocated off 0x14 (taken by TIMER_START) at the add_timer reconcile */
+    MP_MSG_GAME_META  = 0x17, /* S->C: [char game_id[24]][u8 humans] = save-header identity, sent before each GAME_DATA so clients can store the state locally (save sync) */
+    MP_MSG_SAVE_NAMED = 0x18, /* S->C: [u8 nlen][name][state blob] = a player made a named save; every client writes its own local copy (save sync) */
+    MP_MSG_READY_STATUS = 0x19, /* S->C (best-effort): [u8 ready_bitmask][u8 num_players][u8 conn_bitmask] = who has readied up / is connected, for the planning banners */
+    MP_MSG_WAIT_COUNT = 0x1a, /* S->C (best-effort, pre-WELCOME): [u8 joined][u8 total] = fixed-mode connect progress, so the waiting screen can show "2 of 3 connected" */
     MP_MSG_GAME_DATA = 0x08, /* S->C: [state blob] (save-format, authoritative) */
     MP_MSG_TURN_MOVE = 0x09, /* S->C: [pre-movement state blob] = animate this turn's fleet movement, sent just before GAME_DATA */
     MP_MSG_SPECTATE  = 0x0a, /* S->C: [battle_s] = a battle update to re-render (no reply); for watching the other side's turn */
@@ -79,6 +86,7 @@ enum mp_decision_e {
     MP_DEC_SPY_SABOTAGE_BATCH = 18, /* parallel batched sabotage: req = int32 n + ui_spy_sab_target_s[n]; fanned out to all human spymasters at once. Each client prompts ui_spy_sabotage_ask for ITS targets and returns ui_spy_sab_dec_s[n] (act+planet per opportunity, only its own filled). */
     MP_DEC_SPY_STEAL_BATCH = 19, /* parallel batched tech-steal: req = int32 n + ui_spy_steal_target_s[n] (spy/target/flags_field per opportunity); fanned out to all human spies at once. Each client prompts ui_spy_steal for ITS opportunities and returns int16_t field[n] (-1 = none, only its own filled). */
     MP_DEC_SPY_RESULT_SHOW = 20, /* non-blocking sabotage result (no framing choice): req = {spy,target,act,other1,other2,snum,planet, planet_t psnap}; resp = 1 byte ack. Client buffers + replays at state load with the snapshot swapped in, so the saboteur's result screen never blocks the other player. */
+    MP_DEC_TURN_MSG = 21, /* a resolution-time inline message for one player (req: NUL-terminated text; resp: 1 byte ack) -- e.g. "your transports were destroyed". Client shows it via ui_turn_msg. */
 };
 
 /* AUDIENCE relay subtypes: which ui_audience_* call the server is running on the human's behalf.
@@ -100,7 +108,8 @@ struct mp_lobby_s {
     uint8_t galaxy_size;  /* host-set: galaxy size (0..5) */
     uint8_t difficulty;   /* host-set: AI difficulty (0..4) — global, all AIs share it */
     uint8_t open_lobby;   /* 1 = open lobby: humans join freely up to the cap and the host clicks Start to begin */
-    uint8_t turn_timer_secs; /* host-set: per-turn countdown before auto-submit (0 = off, default 60) */
+    uint8_t turn_timer_secs; /* host-set: per-turn countdown before auto-submit (0 = off, default 120) */
+    uint8_t cap;          /* max human seats (open lobby: the -mpopen cap; fixed: = num_humans) */
     struct {
         uint8_t race;     /* 0xff = not yet chosen */
         uint8_t banner;   /* 0xff = not yet chosen */
@@ -192,8 +201,12 @@ typedef struct mp_game_iface_s {
        (e.g. the link dropped rather than a real finish). NULL => just exit. */
     void (*on_game_over)(void *ctx, const uint8_t *buf, int len);
     /* server: a client (player_id) requested a save -> write a named snapshot of the authoritative
-       state. Return 0 ok. NULL => no on-command save. */
-    int (*save_request)(void *ctx, int player_id);
+       state. name is the player-chosen save name ("" = default naming). Return 0 ok. NULL => no
+       on-command save. */
+    int (*save_request)(void *ctx, int player_id, const char *name);
+    /* server: fill buf with the save-header identity ([char game_id[24]][u8 humans], 25 bytes) that
+       clients prepend when storing synced state locally. Return byte length. NULL => no save sync. */
+    int (*get_game_meta)(void *ctx, uint8_t *buf, int buflen);
 } mp_game_iface_t;
 
 /* server-side hook: when non-NULL (set while mp_server_run is active), the null UI
@@ -259,6 +272,26 @@ extern void (*g_mp_chat_recv)(const void *data, int len);
 /* client: race id requested via -mprace when joining a RESUMED game (the server then hands us the empire
    with that race instead of the next free slot). -1 = no preference (connection order). */
 extern int g_mp_cl_req_race;
+
+/* client save-sync hooks (set by the game layer): GAME_META delivers the save-header identity;
+   SAVE_NAMED delivers a player-named snapshot for this machine to store locally. */
+extern void (*g_mp_cl_game_meta)(const char *game_id24, int humans);
+extern void (*g_mp_cl_save_named)(const char *name, const uint8_t *blob, int len);
+
+/* client: latest READY_STATUS from the server -- bit i set = player i is ready (or dropped).
+   nplayers 0 = no status received yet this turn. conn_mask bit i = player i's client is connected
+   (a cleared bit -> show a "disconnected, empire on autopilot" notice). */
+extern uint8_t g_mp_cl_ready_mask;
+extern uint8_t g_mp_cl_ready_nplayers;
+extern uint8_t g_mp_cl_conn_mask;
+
+/* client: fixed-mode connect progress ([joined][total]) for the pre-lobby waiting screen (0 = unknown) */
+extern uint8_t g_mp_cl_wait_joined;
+extern uint8_t g_mp_cl_wait_total;
+
+/* client: consume a pending h2h SESSION_END/CANCEL from the diplo inbox (1 if one was there) --
+   lets the proposer's audience menu notice the other player leaving between actions. */
+extern int mp_cl_diplo_take_session_end(void);
 
 /* on_wait reason codes */
 #define MP_WAIT_LOBBY  0 /* waiting for the game to start / other players to join */

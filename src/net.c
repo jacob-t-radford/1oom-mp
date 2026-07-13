@@ -354,3 +354,99 @@ void net_conn_close(net_conn_t *c) {
 
 bool net_conn_is_open(const net_conn_t *c) { return c && c->open; }
 const char *net_conn_addr(const net_conn_t *c) { return c ? c->addr : "?"; }
+
+/* -------------------------------------------------------------------------- */
+/* 1oom-mp: enumerate this machine's IPv4 addresses for the "Host Game" screen, 100.x (Tailscale/
+   mesh-VPN) first since that's the one to give a remote player. */
+
+#ifndef _WIN32
+#include <ifaddrs.h>
+#endif
+
+static bool net_addr_skip(const char *s) {
+    return (strncmp(s, "127.", 4) == 0) || (strncmp(s, "169.254.", 8) == 0) || (s[0] == '\0');
+}
+
+int net_get_local_ipv4(char addrs[][16], int max)
+{
+    int n = 0;
+    net_wsa_ensure();
+#ifdef _WIN32
+    {
+        SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
+        if (s != INVALID_SOCKET) {
+            INTERFACE_INFO tbl[16];
+            DWORD bytes = 0;
+            if (WSAIoctl(s, SIO_GET_INTERFACE_LIST, NULL, 0, tbl, sizeof(tbl), &bytes, NULL, NULL) == 0) {
+                int cnt = (int)(bytes / sizeof(INTERFACE_INFO));
+                for (int i = 0; (i < cnt) && (n < max); ++i) {
+                    struct sockaddr_in *sa = (struct sockaddr_in *)&tbl[i].iiAddress;
+                    const char *ip = inet_ntoa(sa->sin_addr);
+                    if (ip && !net_addr_skip(ip)) {
+                        strncpy(addrs[n], ip, 15); addrs[n][15] = '\0'; ++n;
+                    }
+                }
+            }
+            closesocket(s);
+        }
+    }
+#else
+    {
+        struct ifaddrs *ifa0 = NULL;
+        if (getifaddrs(&ifa0) == 0) {
+            for (struct ifaddrs *ifa = ifa0; ifa && (n < max); ifa = ifa->ifa_next) {
+                if (ifa->ifa_addr && (ifa->ifa_addr->sa_family == AF_INET)) {
+                    char ip[16];
+                    struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
+                    if (inet_ntop(AF_INET, &sa->sin_addr, ip, sizeof(ip)) && !net_addr_skip(ip)) {
+                        strncpy(addrs[n], ip, 15); addrs[n][15] = '\0'; ++n;
+                    }
+                }
+            }
+            freeifaddrs(ifa0);
+        }
+    }
+#endif
+    /* 100.x first: that's the mesh-VPN address remote players connect to */
+    for (int i = 0, front = 0; i < n; ++i) {
+        if (strncmp(addrs[i], "100.", 4) == 0) {
+            char tmp[16];
+            memcpy(tmp, addrs[i], 16);
+            memmove(addrs[front + 1], addrs[front], (size_t)(i - front) * 16);
+            memcpy(addrs[front], tmp, 16);
+            ++front;
+        }
+    }
+    return n;
+}
+
+/* 1oom-mp: quick local-port probe -- a successful connect means a server (probably a survivor from a
+   crashed session) is already there. Localhost connects resolve immediately either way. */
+bool net_probe_local_port(uint16_t port)
+{
+    struct sockaddr_in sa;
+    bool ok = false;
+#ifdef _WIN32
+    SOCKET s;
+#else
+    int s;
+#endif
+    net_wsa_ensure();
+    s = socket(AF_INET, SOCK_STREAM, 0);
+#ifdef _WIN32
+    if (s == INVALID_SOCKET) { return false; }
+#else
+    if (s < 0) { return false; }
+#endif
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(port);
+    sa.sin_addr.s_addr = htonl(0x7f000001u); /* 127.0.0.1 */
+    ok = (connect(s, (struct sockaddr *)&sa, sizeof(sa)) == 0);
+#ifdef _WIN32
+    closesocket(s);
+#else
+    close(s);
+#endif
+    return ok;
+}

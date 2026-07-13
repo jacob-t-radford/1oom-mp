@@ -81,7 +81,9 @@ gameopts_act_t ui_gameopts(struct game_s *g, int *load_game_i_ptr)
     ui_draw_finish_mode = 2;
 
     uiobj_table_clear();
-    oi_load = uiobj_add_t0(115, 81, "", d.gfx_load, MOO_KEY_l);
+    /* 1oom-mp: no single-player Load mid-session -- it would load a local SP save over the live
+       networked state. Resuming an MP save goes through the main menu's Multiplayer -> Resume. */
+    oi_load = ui_mp_active ? UIOBJI_INVALID : uiobj_add_t0(115, 81, "", d.gfx_load, MOO_KEY_l);
     oi_save = uiobj_add_t0(115, 56, "", d.gfx_save, MOO_KEY_s);
     oi_quit = uiobj_add_t0(115, 106, "", d.gfx_quit, MOO_KEY_q);
     oi_silent = uiobj_add_t3(210, 56, "", d.gfx_silent, &fxmusic, 0, MOO_KEY_i);

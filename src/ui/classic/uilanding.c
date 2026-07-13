@@ -146,6 +146,7 @@ void ui_landing(struct game_s *g, int pi, planet_id_t planet_i)
     }
     ui_sound_stop_music();
     ui_palette_fadeout_a_f_1();
+    ui_draw_erase_buf(); /* 1oom-mp polish: no landing-scene pixels flash under the game palette */
     lbxpal_select(0, -1, 0);
     lbxpal_build_colortables();
     ui_draw_finish_mode = 2;

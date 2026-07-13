@@ -12,6 +12,7 @@
 #include "game_aux.h"
 #include "game_diplo.h"
 #include "game_misc.h"
+#include "game_mp_orders.h" /* 1oom-mp: econ-action records (audience economics must reach the server) */
 #include "game_num.h"
 #include "game_spy.h"
 #include "game_str.h"
@@ -283,8 +284,11 @@ static void game_audience_ai_pays_bounty(struct audience_s *au)
     ui_audience_show2(au);
     if (game_num_aud_bounty_give) {  /* WASBUG MOO1 never gives the bounty */
         eh->reserve_bc += eh->attack_gift_bc[pa];
+        game_mp_econ_record_bc(ph, eh->attack_gift_bc[pa]); /* 1oom-mp: reach the server */
         if (eh->attack_gift_tech[pa] != 0) {
             game_tech_get_new(g, ph, eh->attack_gift_field[pa], eh->attack_gift_tech[pa], TECHSOURCE_TRADE, pa, PLAYER_NONE, false);
+            game_mp_econ_record_tech_from(ph, pa, eh->attack_gift_field[pa], eh->attack_gift_tech[pa]); /* 1oom-mp */
+            if (ui_mp_active) { ui_mp_tech_note_seen(eh->attack_gift_field[pa], eh->attack_gift_tech[pa]); }
         }
     }
 }
@@ -311,6 +315,8 @@ static void game_audience_ai_offers_tech_trade(struct audience_s *au)
     selected = ui_audience_ask2a(au);
     selected = (selected != -1) ? selected : default_selected;
     game_tech_get_new(g, ph, eh->au_tech_trade_field[pa][selected], eh->au_tech_trade_tech[pa][selected], TECHSOURCE_TRADE, pa, PLAYER_NONE, false);
+    game_mp_econ_record_tech_from(ph, pa, eh->au_tech_trade_field[pa][selected], eh->au_tech_trade_tech[pa][selected]); /* 1oom-mp: reach the server */
+    if (ui_mp_active) { ui_mp_tech_note_seen(eh->au_tech_trade_field[pa][selected], eh->au_tech_trade_tech[pa][selected]); }
     /* WASBUG? 1oom v1.0 did not give a tech to the AI. Not sure if this bug
      * was present in MOO1 or introduced in 1oom. */
     game_tech_get_new(g, pa, eh->au_want_field[pa], eh->au_want_tech[pa], TECHSOURCE_TRADE, pa, PLAYER_NONE, false);
@@ -364,10 +370,15 @@ static bool game_audience_ai_offers_treaty(struct audience_s *au)
                 }
                 break;
             case 25:
-                game_diplo_set_treaty(g, ph, pa, TREATY_ALLIANCE);
+                /* 1oom-mp teams: an alliance binds the whole team (it can drag everyone into the
+                   ally's wars) -> team consensus first, like peace/NAP. Direct only with no team. */
+                if (!(g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_ALLIANCE))) {
+                    game_diplo_set_treaty(g, ph, pa, TREATY_ALLIANCE);
+                }
                 break;
             case 26:
                 game_diplo_set_trade(g, ph, pa, eh->au_want_trade[pa]);
+                game_mp_econ_record_trade(ph, pa, eh->au_want_trade[pa]); /* 1oom-mp: reach the server */
                 break;
             case 27:  /* Player breaks alliance with the AI's enemy. */
                 game_diplo_break_treaty(g, ph, eh->au_ask_break_treaty[pa]);
@@ -402,9 +413,12 @@ static bool game_audience_ai_offers_treaty(struct audience_s *au)
          * a sweetener and doesn't give it? */
         if (dtype != 76) {
             eh->reserve_bc += eh->offer_bc[pa];
+            game_mp_econ_record_bc(ph, eh->offer_bc[pa]); /* 1oom-mp: reach the server */
             /* BUG? AI doesn't lose money? */
             if (eh->offer_tech[pa] != 0) {
                 game_tech_get_new(g, ph, eh->offer_field[pa], eh->offer_tech[pa], TECHSOURCE_TRADE, pa, PLAYER_NONE, false);
+                game_mp_econ_record_tech_from(ph, pa, eh->offer_field[pa], eh->offer_tech[pa]); /* 1oom-mp */
+                if (ui_mp_active) { ui_mp_tech_note_seen(eh->offer_field[pa], eh->offer_tech[pa]); }
             }
         }
     }
@@ -514,9 +528,11 @@ static int game_audience_sweeten(struct audience_s *au, int a0)
     }
     if (!flag_bc) {
         game_tech_get_new(g, pa, field, tech, TECHSOURCE_TRADE, ph, PLAYER_NONE, false);
+        game_mp_econ_record_tech_to(ph, pa, field, tech); /* 1oom-mp: reach the server */
     } else {
         eh->reserve_bc -= bc;
         ea->reserve_bc += bc;
+        game_mp_econ_record_tribute(ph, pa, bc); /* 1oom-mp: reach the server */
     }
     return 3;
 }
@@ -570,6 +586,9 @@ static void audience_menu_treaty(struct audience_s *au)
     }
     war_num = 0;
     for (player_id_t i = PLAYER_0; i < g->players; ++i) {
+        /* 1oom-mp teams: never offer the player's own LOCKED teammate as a war target -- picking it
+           would sync the player's whole team into war with pa. Same for break-alliance below. */
+        if ((g->mp_team[ph] != 0) && (g->mp_team[ph] == g->mp_team[i])) { continue; }
         if ((i != ph) && (i != pa) && (ea->treaty[i] < TREATY_WAR)) {
             war_tbl[war_num++] = i;
         }
@@ -579,6 +598,7 @@ static void audience_menu_treaty(struct audience_s *au)
     }
     all_num = 0;
     for (player_id_t i = PLAYER_0; i < g->players; ++i) {
+        if ((g->mp_team[ph] != 0) && (g->mp_team[ph] == g->mp_team[i])) { continue; } /* 1oom-mp teams */
         if ((i != ph) && (i != pa) && BOOLVEC_IS1(ea->contact, i) && ((ea->treaty[i] == TREATY_ALLIANCE) || (game_num_aud_ask_break_nap && (ea->treaty[i] == TREATY_NONAGGRESSION)))) {
             all_tbl[all_num++] = i;
         }
@@ -610,7 +630,12 @@ static void audience_menu_treaty(struct audience_s *au)
                 si = game_audience_sweeten(au, si);
             }
             if (si == 3) {
-                game_diplo_set_treaty(g, ph, pa, TREATY_ALLIANCE);
+                /* 1oom-mp teams: an alliance binds the whole team -> consensus first (like peace/NAP) */
+                if (g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_ALLIANCE)) {
+                    si = 1; /* captured -> applies on consensus; suppress the AI's "agreed" reaction below */
+                } else {
+                    game_diplo_set_treaty(g, ph, pa, TREATY_ALLIANCE);
+                }
             }
             dtype = 63;
             break;
@@ -699,6 +724,7 @@ static void audience_menu_trade(struct audience_s *au)
             si = 0;
         } else {
             game_diplo_set_trade(g, ph, pa, au->new_trade_bc);
+            game_mp_econ_record_trade(ph, pa, au->new_trade_bc); /* 1oom-mp: reach the server */
         }
         game_audience_set_dtype(au, 64, si);
     }
@@ -741,6 +767,7 @@ static void audience_menu_threat(struct audience_s *au)
             break;
         case 2: /* Break Trade Agreement */
             game_diplo_break_trade(g, ph, pa);
+            game_mp_econ_record_trade(ph, pa, 0); /* 1oom-mp: trade_bc isn't serialized -- reach the server */
             dtype = 73;
             selected = 0;
             break;
@@ -800,6 +827,7 @@ static void audience_menu_tribute(struct audience_s *au)
     if (selected < bcnum) {
         eh->reserve_bc -= bctbl[selected];
         ea->reserve_bc += bctbl[selected];
+        game_mp_econ_record_tribute(ph, pa, bctbl[selected]); /* 1oom-mp: reach the server */
         game_ai->aud_tribute_bc(au, selected, bctbl[selected]);
         game_audience_set_dtype(au, 1, 3);
     } else {
@@ -890,6 +918,8 @@ static void audience_menu_tech(struct audience_s *au)
                         g->evn.newtech[ph].num = 0;
                         g->evn.newtech[pa].num = 0;
                         game_tech_get_new(g, ph, gotf, gott, TECHSOURCE_TRADE, pa, PLAYER_NONE, false);
+                        game_mp_econ_record_tech_from(ph, pa, gotf, gott); /* 1oom-mp: reach the server */
+                        if (ui_mp_active) { ui_mp_tech_note_seen(gotf, gott); }
                         game_tech_get_new(g, pa, thf[selected2][selected], tht[selected2][selected], TECHSOURCE_TRADE, ph, PLAYER_NONE, false); /* WASBUG last ph was pa */
                         if (g->evn.newtech[ph].num != 0) {
                             if (IS_HUMAN(g, pa) && (g->evn.newtech[pa].num != 0)) {
@@ -1091,6 +1121,10 @@ void game_audience(struct game_s *g, player_id_t ph, player_id_t pa)
     if (au->dtype == 32) {
         game_diplo_break_treaty(g, pa, ph);
     }
+    /* 1oom-mp: relations shifted during a client-side audience (tribute goodwill, threats, annoyance)
+       aren't serialized -- snapshot the net result so the server adopts it (no-op outside MP clients,
+       and the apply ignores non-AI targets). */
+    game_mp_econ_record_relation(ph, pa, (int)eh->relation1[pa]);
     if (game_num_aud_update_tech) {
         game_update_tech_util(g);
         game_update_within_range(g);

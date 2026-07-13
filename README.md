@@ -43,6 +43,20 @@ engine; this fork leaves single-player untouched and layers networked play on to
 The fastest path depends on your group. Everyone needs a working client, a copy of the
 [game data](#game-data), and to be running the **same build**.
 
+### The easy way: the in-game Multiplayer menu (no command line)
+
+Launch the game and pick **Multiplayer** from the main menu:
+
+- **Host New Game** — starts the server on your machine, shows the addresses to give the other
+  players, and opens the lobby immediately. Players join as they arrive (up to your Max Players
+  cap) and you click **Start** when everyone's in.
+- **Join Game** — type the host's address (it remembers the last one you used).
+- **Resume Game** — pick any save by name (saves are **synced to every player's machine** each
+  turn, so *anyone* can host the resume). Set **Claim Race** first to take your old empire.
+
+Saving in-game (**Esc → Save**) asks for a name and stores the save on every player's machine.
+The command-line flags below still work and do the same things.
+
 ### 1. Get a client
 
 - **Build from source** (macOS / Linux — see [Building](#building)), **or**

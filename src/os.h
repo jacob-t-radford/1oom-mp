@@ -31,4 +31,12 @@ extern const char *os_get_fname_save_year(char *buf, size_t bufsize, int year/*2
 extern const char *os_get_fname_cfg(char *buf, size_t bufsize, const char *gamestr, const char *uistr, const char *hwstr);
 extern const char *os_get_fname_log(char *buf, size_t bufsize);
 
+/* 1oom-mp: launch a background process (NULL-terminated argv, argv[0] = binary path). Returns a
+   handle (>= 0) for os_spawn_kill, or -1. Used by the Multiplayer menu to start the local server. */
+extern int os_spawn_bg(const char **argv);
+extern void os_spawn_kill(int handle);
+/* 1oom-mp: directory containing the running executable ("" if unknown), for finding sibling binaries
+   (the client launches the server that sits next to it). */
+extern const char *os_get_path_exe_dir(char *buf, size_t bufsize);
+
 #endif

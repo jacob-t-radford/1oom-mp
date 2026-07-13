@@ -336,6 +336,10 @@ void ui_election_end(struct election_s *el)
     ui_draw_finish_mode = 2;
     hw_video_copy_back_from_page3();
     hw_video_copy_back_to_page2();
+    /* 1oom-mp polish: present from a clean black back buffer -- the council chamber's pixels
+       otherwise flash for a frame under the map palette. page2 keeps the restored pre-council
+       screen for the post-vote redraw. */
+    ui_draw_erase_buf();
     lbxpal_select(0, -1, 0);
     lbxpal_set_update_range(0, 255);
     lbxpal_build_colortables();

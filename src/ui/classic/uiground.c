@@ -300,6 +300,10 @@ void ui_ground(struct game_s *g, struct ground_s *gr)
     }
     ui_sound_stop_music();
     ui_palette_fadeout_a_f_1();
+    /* 1oom-mp polish: leave a clean black frame behind -- the invasion screen's pixels otherwise
+       flash for a frame under the map palette when the starmap fades back in */
+    ui_draw_erase_buf();
+    hw_video_copy_back_to_page2();
     lbxpal_select(0, -1, 0);
     lbxpal_build_colortables();
     ui_draw_finish_mode = 2;

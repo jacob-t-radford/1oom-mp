@@ -29,7 +29,8 @@ typedef enum {
     MP_TEAM_STANCE_PEACE = 0, /* end a war (game_diplo_stop_war) */
     MP_TEAM_STANCE_NAP,       /* non-aggression pact */
     MP_TEAM_STANCE_BREAK,     /* break an existing treaty */
-    MP_TEAM_STANCE_WAR        /* declare war (human-enemy p2p only; AI war is via combat) */
+    MP_TEAM_STANCE_WAR,       /* declare war (human-enemy p2p only; AI war is via combat) */
+    MP_TEAM_STANCE_ALLIANCE   /* form an alliance -- it binds the whole team (can drag it into wars), so it votes */
 } mp_team_stance_t;
 extern bool (*g_mp_team_stance_propose_hook)(struct game_s *g, player_id_t proposer, player_id_t enemy, mp_team_stance_t stance);
 extern void game_diplo_limit_mood_treaty(struct game_s *g);

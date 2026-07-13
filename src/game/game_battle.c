@@ -271,6 +271,24 @@ static void game_battle_prepare_add_allies(struct battle_s *bt, battle_side_i_t 
     }
 }
 
+/* 1oom-mp teams: does this party's SIDE include a human once combined-fleet allies join? The
+   interactive-vs-AI routing must look past the side LEAD: an AI lead with a human teammate's ships
+   at the planet would otherwise be silently fed to the AI-vs-AI resolver -- the human's fleet fought
+   (and died) with no prompt, no battle screen, and no report. */
+static bool game_battle_side_has_human(const struct game_s *g, int party, planet_id_t planet_i)
+{
+    if ((party < 0) || (party >= PLAYER_NUM)) { return false; } /* monster */
+    if (IS_HUMAN(g, party)) { return true; }
+    if (g->mp_team[party] == 0) { return false; }
+    for (player_id_t a = PLAYER_0; a < g->players; ++a) {
+        if ((a == (player_id_t)party) || (g->mp_team[a] != g->mp_team[party]) || !IS_ALIVE(g, a) || !IS_HUMAN(g, a)) { continue; }
+        for (int i = 0; i < g->eto[a].shipdesigns_num; ++i) {
+            if (g->eto[a].orbit[planet_i].ships[i] > 0) { return true; }
+        }
+    }
+    return false;
+}
+
 /* -------------------------------------------------------------------------- */
 
 void game_battle_prepare(struct battle_s *bt, int party_r, int party_l, planet_id_t planet_i)
@@ -423,7 +441,10 @@ void game_battle_handle_all(struct game_s *g)
                    afterwards on the same turn could be fixed */
                 BOOLVEC_SET0(tbl_have_force, party_att);
             } else {
-                if (!IS_HUMAN(g, party_def) && !IS_HUMAN(g, party_att)) {
+                /* 1oom-mp teams: route by whether a human's ships are on EITHER side once allies
+                   join, not just by the two leads -- else a human teammate's fleet is silently
+                   resolved by the AI-vs-AI path (no prompt, no report). */
+                if (!game_battle_side_has_human(g, party_def, pli) && !game_battle_side_has_human(g, party_att, pli)) {
                     game_battle_prepare(bt, party_att, party_def, pli);
                     if (game_ai->battle_ai_ai_resolve(bt)) {
                         /* HACK _att won, swap variables */

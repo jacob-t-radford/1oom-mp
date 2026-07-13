@@ -188,11 +188,15 @@ bool ui_bomb_ask_batch(struct game_s *g, const struct ui_bomb_target_s *targets,
     return false; /* single-player: caller falls back to the per-planet ui_bomb_ask */
 }
 
+static bool s_bomb_ask_all = false;
+bool ui_bomb_ask_took_all(void) { return s_bomb_ask_all; }
+
 bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound)
 {
     struct bomb_data_s d;
-    int16_t oi_y, oi_n;
+    int16_t oi_y, oi_n, oi_all;
     bool flag_done = false, flag_do_bomb = false;
+    s_bomb_ask_all = false;
     ui_switch_1(g, pi);
     d.g = g;
     d.api = pi;
@@ -204,6 +208,7 @@ bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound
     uiobj_table_clear();
     oi_n = uiobj_add_t0(227, 164, "", d.gfx_bombbutc, MOO_KEY_ESCAPE);
     oi_y = uiobj_add_t0(271, 164, "", d.gfx_bombbutt, MOO_KEY_b);
+    oi_all = uiobj_add_inputkey(MOO_KEY_a); /* 1oom-mp QoL: A = bomb this AND the rest of my targets this turn */
     ui_sound_play_music(0xd);
     while (!flag_done) {
         int16_t oi;
@@ -218,7 +223,15 @@ bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound
             flag_done = true;
             flag_do_bomb = true;
         }
+        if (oi == oi_all) {
+            ui_sound_play_sfx_24();
+            flag_done = true;
+            flag_do_bomb = true;
+            s_bomb_ask_all = true;
+        }
         bomb_ask_draw_cb(&d);
+        lbxfont_select(2, 6, 0, 0);
+        lbxfont_print_str_center(160, 190, "(A = bomb ALL your targets this turn)", UI_SCREEN_W, ui_scale);
         ui_draw_finish();
         ui_delay_ticks_or_click(4);
     }

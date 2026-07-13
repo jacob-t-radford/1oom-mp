@@ -104,8 +104,35 @@ cat > "$BUNDLE/Play Solo.bat" <<'BAT'
 @echo off
 start "" "%~dp0Play.exe" -data "%~dp0data"
 BAT
+
+# 4b. self-updater: downloads the latest published no-data update zip from GitHub releases and
+#     unpacks it over this folder (exes/dlls/bats only -- the data/ folder is never touched).
+cat > "$BUNDLE/Update.bat" <<'BAT'
+@echo off
+title Master of Orion - Update
+echo Downloading the latest version...
+powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://github.com/jacob-t-radford/1oom-mp/releases/latest/download/1oom-mp-update.zip' -OutFile '%TEMP%\1oom-mp-update.zip'"
+if errorlevel 1 goto fail
+echo Installing...
+taskkill /f /im Play.exe >nul 2>&1
+taskkill /f /im Server.exe >nul 2>&1
+powershell -NoProfile -Command "Expand-Archive -Force '%TEMP%\1oom-mp-update.zip' '%~dp0'"
+if errorlevel 1 goto fail
+del "%TEMP%\1oom-mp-update.zip" >nul 2>&1
+echo.
+echo Updated! Double-click Play.exe to play.
+pause
+exit /b 0
+:fail
+echo.
+echo Update failed (no internet, or no release published yet).
+pause
+exit /b 1
+BAT
 perl -pi -e 's/(?<!\r)\n/\r\n/g' "$BUNDLE/"*.bat   # Windows (CRLF) line endings
 
-# 5. zip
+# 5. zip: the full unzip-and-play bundle (with data -- hand to people who own the game, don't post),
+#    and the NO-DATA update zip (safe to publish as a GitHub release; Update.bat downloads it).
 ( cd "$OUTDIR" && rm -f 1oom-mp.zip && zip -r -9 -q 1oom-mp.zip 1oom-mp )
-echo "Built: $OUTDIR/1oom-mp.zip"
+( cd "$BUNDLE" && rm -f "$OUTDIR/1oom-mp-update.zip" && zip -9 -q "$OUTDIR/1oom-mp-update.zip" Play.exe Server.exe SDL2.dll SDL2_mixer.dll "Play Together.bat" "Play Solo.bat" Update.bat )
+echo "Built: $OUTDIR/1oom-mp.zip (full bundle) + $OUTDIR/1oom-mp-update.zip (publishable update)"

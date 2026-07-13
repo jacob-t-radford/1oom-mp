@@ -196,7 +196,12 @@ static player_id_t game_spy_frame_random(struct game_s *g, player_id_t spy, play
     player_id_t tbl_scapegoat[PLAYER_NUM];
     int n = 0;
     for (player_id_t i = 0; i < PLAYER_NUM; ++i) {
-        if ((i != spy) && (i != target) && BOOLVEC_IS1(et->contact, i)) {
+        if ((i != spy) && (i != target) && BOOLVEC_IS1(et->contact, i)
+          /* 1oom-mp teams: never frame the victim's LOCKED teammate -- the team contact-floor keeps
+             teammates permanently in contact, so an ally would otherwise always be a candidate, and
+             the victim can't even retaliate against a locked ally. Pure misinformation. */
+          && !((g->mp_team[target] != 0) && (g->mp_team[target] == g->mp_team[i]))
+        ) {
             tbl_scapegoat[n++] = i;
         }
     }

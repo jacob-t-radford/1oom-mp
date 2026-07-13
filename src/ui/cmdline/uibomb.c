@@ -20,6 +20,9 @@ bool ui_bomb_ask_batch(struct game_s *g, const struct ui_bomb_target_s *targets,
     return false;
 }
 
+bool ui_bomb_ask_took_all(void) { return false; } /* 1oom-mp QoL: classic-UI only */
+void ui_mp_tech_note_seen(uint8_t field, uint8_t tech) { (void)field; (void)tech; } /* classic-UI only */
+
 bool ui_bomb_ask(struct game_s *g, int pi, planet_id_t planet_i, int pop_inbound)
 {
     const planet_t *p = &(g->planet[planet_i]);

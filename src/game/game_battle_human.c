@@ -520,6 +520,14 @@ static void game_battle_item_finish(struct battle_s *bt, bool flag_quick)
    NOT in the wire battle_s), reset per battle. On a single-owner side (every SP battle, plus a
    human+AI-ally side) Auto still sets the per-side flag_auto, preserving the original fast-resolve. */
 static bool s_battle_owner_auto[PLAYER_NUM];
+
+/* 1oom-mp teams: pre-battle "Auto" for one owner -- same effect as clicking Auto mid-battle.
+   (Previously the INIT-time Auto fell into the flee fallback: your ships RETREATED instead of
+   fighting under AI control whenever a teammate chose to fight the battle live.) */
+void game_battle_owner_auto_set(int owner)
+{
+    if ((owner >= 0) && (owner < PLAYER_NUM)) { s_battle_owner_auto[owner] = true; }
+}
 static int game_battle_side_human_owners(const struct battle_s *bt, battle_side_i_t side)
 {
     int n = 0;
