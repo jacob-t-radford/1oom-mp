@@ -2769,7 +2769,8 @@ static int game_mp_menu_launch(int action) {
         }
         log_message("MP: local server started (%s)\n", bin);
         lib_strcpy(addr, "127.0.0.1:24695", sizeof(addr));
-        usleep(500000); /* brief head start; the join below retries while the server finishes booting */
+        /* keep a frame on screen during the spawn+connect gap (the menu just faded to black) */
+        for (int i = 0; i < 5; ++i) { ui_mp_wait(0); usleep(100000); }
     } else {
         lib_strcpy(addr, ui_mp_setup.join_addr, sizeof(addr));
         /* remember the address for next time (persisted via the config file) */
@@ -2784,7 +2785,7 @@ static int game_mp_menu_launch(int action) {
             time_t t0 = time(NULL);
             rc = game_mp_join_addr(addr);
             if ((rc == 0) || (tries >= 10) || ((time(NULL) - t0) >= 10)) { break; }
-            usleep(900000);
+            for (int i = 0; i < 9; ++i) { ui_mp_wait(0); usleep(100000); } /* keep drawing between attempts */
         }
     } else {
         rc = game_mp_join_addr(addr);
@@ -2796,10 +2797,11 @@ static int game_mp_menu_launch(int action) {
             return -1;
         }
     }
-    /* do NOT kill the spawned server on a clean exit: if the host steps away, the other players keep
-       playing (their empires vs the coasting host empire) and the server self-exits once EVERYONE has
-       left. Only reap it when we never got a session at all (it would otherwise squat on the port). */
-    if ((spawned >= 0) && (rc != 0)) { os_spawn_kill(spawned); }
+    /* do NOT kill the spawned server after a REAL session: if the host steps away, the others keep
+       playing and the server self-exits once everyone has left. But a server whose game NEVER STARTED
+       (join failed, or the host backed out of the pre-game wait) must be reaped -- a leftover would
+       squat on the port and wedge the next hosting attempt with its dead half-connection. */
+    if ((spawned >= 0) && ((rc != 0) || !g_mp_cl_game_started)) { os_spawn_kill(spawned); }
     /* session over (game finished, quit to menu, or link lost) -> back to the MAIN MENU, not the
        desktop, so a rematch doesn't mean relaunching the app. A window-close still exits via the
        hw layer's quit path before we get here. */

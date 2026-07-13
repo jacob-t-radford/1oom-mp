@@ -168,6 +168,7 @@ int (*g_mp_cl_diplo_recv)(uint16_t *, uint8_t *, int) = NULL;
 void (*g_mp_cl_diplo_send)(uint16_t, const uint8_t *, int) = NULL;
 void (*g_mp_cl_timer_notify)(int) = NULL;
 int g_mp_cl_req_race = -1; /* 1oom-mp: -mprace request for a resumed game (-1 = no preference / connection order) */
+bool g_mp_cl_game_started = false; /* 1oom-mp: did this session load an initial game state? (a spawned server for a session that never started is reaped on exit) */
 uint8_t g_mp_cl_ready_mask = 0;     /* 1oom-mp: latest READY_STATUS bitmask (bit i = player i ready/dropped) */
 uint8_t g_mp_cl_ready_nplayers = 0; /* 0 = no status yet */
 uint8_t g_mp_cl_conn_mask = 0xff;   /* 1oom-mp: bit i = player i's client is connected (drop notice) */
@@ -700,6 +701,19 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
         open_lobby = 0; /* no lobby to drive (resume/legacy) -> fall back to the fixed accept */
         MP_MSG("server: waiting for %d client(s) on port %u\n", num_clients, (unsigned)port);
         for (int filled = 0; filled < num_clients; ) {
+            {   /* an accepted client backing out pre-start frees its seat instead of wedging the count */
+                for (int i = 0; i < num_clients; ++i) {
+                    uint16_t id; uint32_t dl;
+                    if (conns[i] && (mp_recv(conns[i], &id, blob, blobcap, &dl) < 0)) {
+                        MP_ERR("server: client %d left before start -- seat reopened\n", i);
+                        net_conn_close(conns[i]);
+                        conns[i] = NULL;
+                        --filled;
+                        {   uint8_t m[2] = { (uint8_t)filled, (uint8_t)num_clients };
+                            for (int j = 0; j < num_clients; ++j) { mp_send_besteffort(conns[j], MP_MSG_WAIT_COUNT, m, 2); } }
+                    }
+                }
+            }
             net_conn_t *c = net_accept(l);
             if (c) {
                 int req_race = 0xff, slot = -1;
@@ -734,8 +748,12 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
 
     /* --- assign empires + send initial state --- */
     for (int i = 0; i < num_clients; ++i) {
-        uint8_t w[4] = { (uint8_t)(i >> 8), (uint8_t)i, (uint8_t)(num_clients >> 8), (uint8_t)num_clients };
-        if (mp_send(conns[i], MP_MSG_WELCOME, w, 4) != 0) { rc = -1; goto done; }
+        /* 5th byte: 0 = lobby follows; 2 = RESUMED game (no setup_game) -- the client must skip the
+           lobby UI (there's no lobby state to show; it sat in a BLANK lobby) and wait for GAME_DATA
+           on the proper "waiting for players" screen. (1 = mid-game reconnect, sent elsewhere.) */
+        uint8_t skip_lobby = (gi->setup_game == NULL) ? 2 : 0;
+        uint8_t w[5] = { (uint8_t)(i >> 8), (uint8_t)i, (uint8_t)(num_clients >> 8), (uint8_t)num_clients, skip_lobby };
+        if (mp_send(conns[i], MP_MSG_WELCOME, w, skip_lobby ? 5 : 4) != 0) { rc = -1; goto done; }
     }
     /* per-game turn timer (host-set in lobby; settable via MP_TIMER env for no-lobby mode too) */
     uint8_t turn_timer_secs = 120; /* family-friendly default; host can change it in the lobby */
@@ -1070,6 +1088,7 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
     int rc = 0;
     uint32_t dl = 0;
 
+    g_mp_cl_game_started = false;
     /* handshake */
     {   /* HELLO: [u16 proto][u32 wire_id]. The server refuses us if either differs from its own build. */
         uint32_t wid = gi->wire_id ? (uint32_t)gi->wire_id(gi->ctx) : 0;
@@ -1097,6 +1116,7 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
         s_cl_conn = NULL; s_cl_blob = NULL; s_cl_gi = NULL;
         if (lr < 0 || !s_cl_lobby_started) { rc = (lr < 0 && !s_cl_game_over) ? 0 : -1; goto done; } /* quit / link drop */
         got_initial = true;
+        g_mp_cl_game_started = true;
         MP_MSG("client: game started from lobby, turn %d\n", gi->turn_number(gi->ctx));
     }
 
@@ -1105,6 +1125,7 @@ int mp_client_run(const char *host, uint16_t port, int max_turns, const mp_game_
         if (mp_recv_wait(c, MP_MSG_GAME_DATA, blob, blobcap, &dl, gi, MP_WAIT_LOBBY, 0) != 0) { rc = -1; goto done; }
         if (gi->deserialize(gi->ctx, blob, dl) != 0) { MP_ERR("client: load state failed\n"); rc = -1; goto done; }
         if (gi->on_state_loaded) { gi->on_state_loaded(gi->ctx, 1); }
+        g_mp_cl_game_started = true;
         MP_MSG("client: got initial state (%u bytes), turn %d\n", dl, gi->turn_number(gi->ctx));
     }
 

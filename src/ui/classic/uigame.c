@@ -1548,7 +1548,11 @@ void ui_mp_wait(int reason)
     if (!s_mp_ui_ready) {
         static bool pal_loaded = false;
         char cbuf[64];
-        if (!pal_loaded) { lbxpal_select(2, -1, 0); pal_loaded = true; }
+        if (!pal_loaded) { lbxpal_select(2, -1, 0); lbxpal_build_colortables(); pal_loaded = true; }
+        /* the menu's exit fade left the HARDWARE palette black; mark every entry dirty so the
+           ui_palette_set_n in ui_draw_finish actually re-uploads the colors (otherwise this whole
+           screen renders invisibly = "black screen after picking a save") */
+        lbxpal_set_update_range(0, 255);
         ui_draw_erase_buf();
         lbxfont_select(2, 0xd, 0, 0);
         lbxfont_print_str_center(160, 80, "MULTIPLAYER", UI_SCREEN_W, ui_scale);
