@@ -113,79 +113,93 @@ cat > "$BUNDLE/Play Solo.bat" <<'BAT'
 start "" "%~dp0Play.exe" -data "%~dp0data"
 BAT
 
-# 4b. self-updater. Two flavors, chosen by whether the family read-token exists:
-#     - PRIVATE (preferred): ~/.config/1oom/release_token_ro holds a fine-grained GitHub token
-#       (Contents: read-only, scoped to jacob-t-radford/1oom-mp-releases). It's baked into
-#       Update.bat, which then pulls the latest release from the private repo via the API.
-#     - PUBLIC fallback (no token file): the old public-releases URL on the code repo.
-#     Either way only exes/dlls/bats are replaced -- the data/ folder is never touched.
+# 4b. self-updater. Update.bat is a tiny STABLE wrapper (same bytes in every version, so the
+#     update overwriting it mid-run is harmless); the real logic is Update.ps1, which PowerShell
+#     loads fully into memory before executing (also safe to overwrite mid-run). Two flavors:
+#     - PRIVATE (preferred): ~/.config/1oom/release_token_ro baked in; pulls the latest release
+#       from the private distribution repo via the API.
+#     - PUBLIC fallback (no token file): the public-releases URL on the code repo.
+#     Only exes/dlls/bats/ps1 are replaced -- the data/ folder is never touched.
+cat > "$BUNDLE/Update.bat" <<'BAT'
+@echo off
+title Master of Orion - Update
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Update.ps1"
+pause
+BAT
 TOKEN_RO_FILE="$HOME/.config/1oom/release_token_ro"
 if [ -f "$TOKEN_RO_FILE" ]; then
-cat > "$BUNDLE/Update.bat" <<'BAT'
-@echo off
-title Master of Orion - Update
-rem re-launch from a temp copy: the update replaces Update.bat itself, and Windows
-rem misbehaves when a running .bat is overwritten under it
-if "%~1"=="" (
-    copy /y "%~f0" "%TEMP%\1oom-mp-updater.bat" >nul
-    "%TEMP%\1oom-mp-updater.bat" "%~dp0"
-)
-set "GAMEDIR=%~1"
-echo Downloading the latest version...
-powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://github.com/jacob-t-radford/1oom-mp/releases/latest/download/1oom-mp-update.zip' -OutFile ($env:TEMP+'\1oom-mp-update.zip')"
-if errorlevel 1 goto fail
-echo Installing...
-taskkill /f /im Play.exe >nul 2>&1
-taskkill /f /im Server.exe >nul 2>&1
-timeout /t 2 /nobreak >nul
-powershell -NoProfile -Command "Expand-Archive -Force ($env:TEMP+'\1oom-mp-update.zip') '%GAMEDIR%'"
-if errorlevel 1 (
-    echo A file was still in use -- retrying...
-    timeout /t 3 /nobreak >nul
-    powershell -NoProfile -Command "Expand-Archive -Force ($env:TEMP+'\1oom-mp-update.zip') '%GAMEDIR%'"
-)
-if errorlevel 1 goto fail
-del "%TEMP%\1oom-mp-update.zip" >nul 2>&1
-echo.
-echo Updated! Double-click Play.exe to play.
-pause
-exit /b 0
-:fail
-echo.
-echo Update failed. Is the game still running? Close it and run Update.bat again.
-pause
-exit /b 1
-BAT
-perl -pi -e "s/__RELEASE_TOKEN__/$(tr -d ' \t\r\n' < "$TOKEN_RO_FILE")/" "$BUNDLE/Update.bat"
+cat > "$BUNDLE/Update.ps1" <<'PS1'
+# 1oom-mp updater: fetch the latest release from the private repo and install it in place.
+$ErrorActionPreference = 'Stop'
+try {
+    $t = '__RELEASE_TOKEN__'
+    $dir = $PSScriptRoot
+    Write-Host 'Downloading the latest version...'
+    $h = @{ Authorization = ('Bearer ' + $t) }
+    $r = Invoke-RestMethod -Headers $h -Uri 'https://api.github.com/repos/jacob-t-radford/1oom-mp-releases/releases/latest'
+    $u = ($r.assets | Where-Object name -eq '1oom-mp-update.zip').url
+    $zip = Join-Path $env:TEMP '1oom-mp-update.zip'
+    & curl.exe -sL -H ('Authorization: Bearer ' + $t) -H 'Accept: application/octet-stream' -o $zip $u
+    if (-not (Test-Path $zip)) { throw 'download failed (no internet?)' }
+    Write-Host ('Installing ' + $r.tag_name + ' ...')
+    & taskkill /f /im Play.exe 2>$null | Out-Null
+    & taskkill /f /im Server.exe 2>$null | Out-Null
+    Start-Sleep -Seconds 2
+    try {
+        Expand-Archive -Force -Path $zip -DestinationPath $dir
+    } catch {
+        Write-Host 'A file was still in use -- retrying...'
+        Start-Sleep -Seconds 3
+        Expand-Archive -Force -Path $zip -DestinationPath $dir
+    }
+    Remove-Item $zip -ErrorAction SilentlyContinue
+    Write-Host ''
+    Write-Host ('Updated to ' + $r.tag_name + '!  Double-click Play.exe to play.')
+} catch {
+    Write-Host ''
+    Write-Host ('Update failed: ' + $_.Exception.Message)
+    Write-Host 'Is the game still running? Close it and run Update.bat again.'
+    exit 1
+}
+PS1
+perl -pi -e "s/__RELEASE_TOKEN__/$(tr -d ' \t\r\n' < "$TOKEN_RO_FILE")/" "$BUNDLE/Update.ps1"
 else
-echo "NOTE: no $TOKEN_RO_FILE -- Update.bat will use the PUBLIC releases URL (family updates need the private-repo token)"
-cat > "$BUNDLE/Update.bat" <<'BAT'
-@echo off
-title Master of Orion - Update
-echo Downloading the latest version...
-powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://github.com/jacob-t-radford/1oom-mp/releases/latest/download/1oom-mp-update.zip' -OutFile '%TEMP%\1oom-mp-update.zip'"
-if errorlevel 1 goto fail
-echo Installing...
-taskkill /f /im Play.exe >nul 2>&1
-taskkill /f /im Server.exe >nul 2>&1
-powershell -NoProfile -Command "Expand-Archive -Force '%TEMP%\1oom-mp-update.zip' '%~dp0'"
-if errorlevel 1 goto fail
-del "%TEMP%\1oom-mp-update.zip" >nul 2>&1
-echo.
-echo Updated! Double-click Play.exe to play.
-pause
-exit /b 0
-:fail
-echo.
-echo Update failed (no internet, or no release published yet).
-pause
-exit /b 1
-BAT
+echo "NOTE: no $TOKEN_RO_FILE -- Update.ps1 will use the PUBLIC releases URL (family updates need the private-repo token)"
+cat > "$BUNDLE/Update.ps1" <<'PS1'
+# 1oom-mp updater: fetch the latest public release and install it in place.
+$ErrorActionPreference = 'Stop'
+try {
+    $dir = $PSScriptRoot
+    Write-Host 'Downloading the latest version...'
+    $zip = Join-Path $env:TEMP '1oom-mp-update.zip'
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri 'https://github.com/jacob-t-radford/1oom-mp/releases/latest/download/1oom-mp-update.zip' -OutFile $zip
+    Write-Host 'Installing...'
+    & taskkill /f /im Play.exe 2>$null | Out-Null
+    & taskkill /f /im Server.exe 2>$null | Out-Null
+    Start-Sleep -Seconds 2
+    try {
+        Expand-Archive -Force -Path $zip -DestinationPath $dir
+    } catch {
+        Write-Host 'A file was still in use -- retrying...'
+        Start-Sleep -Seconds 3
+        Expand-Archive -Force -Path $zip -DestinationPath $dir
+    }
+    Remove-Item $zip -ErrorAction SilentlyContinue
+    Write-Host ''
+    Write-Host 'Updated!  Double-click Play.exe to play.'
+} catch {
+    Write-Host ''
+    Write-Host ('Update failed: ' + $_.Exception.Message)
+    Write-Host 'Is the game still running? Close it and run Update.bat again.'
+    exit 1
+}
+PS1
 fi
-perl -pi -e 's/(?<!\r)\n/\r\n/g' "$BUNDLE/"*.bat   # Windows (CRLF) line endings
+perl -pi -e 's/(?<!\r)\n/\r\n/g' "$BUNDLE/"*.bat "$BUNDLE/"*.ps1   # Windows (CRLF) line endings
 
 # 5. zip: the full unzip-and-play bundle (with data -- hand to people who own the game, don't post),
 #    and the NO-DATA update zip (safe to publish as a GitHub release; Update.bat downloads it).
 ( cd "$OUTDIR" && rm -f 1oom-mp.zip && zip -r -9 -q 1oom-mp.zip 1oom-mp )
-( cd "$BUNDLE" && rm -f "$OUTDIR/1oom-mp-update.zip" && zip -9 -q "$OUTDIR/1oom-mp-update.zip" Play.exe Server.exe SDL2.dll SDL2_mixer.dll "Play Together.bat" "Play Solo.bat" Update.bat )
+( cd "$BUNDLE" && rm -f "$OUTDIR/1oom-mp-update.zip" && zip -9 -q "$OUTDIR/1oom-mp-update.zip" Play.exe Server.exe SDL2.dll SDL2_mixer.dll "Play Together.bat" "Play Solo.bat" Update.bat Update.ps1 )
 echo "Built: $OUTDIR/1oom-mp.zip (full bundle) + $OUTDIR/1oom-mp-update.zip (publishable update)"
