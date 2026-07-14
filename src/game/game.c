@@ -85,7 +85,7 @@ struct ui_mp_setup_s ui_mp_setup; /* 1oom-mp: what the Multiplayer menu collecte
 char *ui_mp_last_addr = NULL;     /* 1oom-mp: last join address, persisted in the config for the Join screen */
 static int s_mp_humans = 1;      /* host: human-client count, recorded in the autosave header for -mpload */
 static char s_mp_game_id[24] = {0}; /* 1oom-mp: per-game id (timestamp at game start), kept in the save header so each game has its own autosave file (no clobber) and the id is stable across -mpload resumes */
-#define MP_DEFAULT_PORT 24444
+#define MP_DEFAULT_PORT 24695 /* must match the -mphost default everywhere (menu, bats, docs) */
 
 
 /* -------------------------------------------------------------------------- */
@@ -2793,6 +2793,7 @@ static int game_mp_menu_launch(int action) {
         if (rc != 0) {
             /* JOIN failed (bad address / host down / version mismatch) -> back to the menu, not exit */
             log_warning("MP: join '%s' failed -- returning to the menu\n", addr);
+            ui_mp_connect_failed(addr);
             ui_mp_active = false;
             game_aux_init(&game_aux, &game);
             return -1;

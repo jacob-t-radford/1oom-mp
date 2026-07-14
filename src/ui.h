@@ -72,6 +72,7 @@ extern void ui_game_end(struct game_s *g);
    pumping input so the window stays responsive. reason: 0 = lobby/waiting to start,
    nonzero = waiting for other players to finish their simultaneous turn. */
 extern void ui_mp_wait(int reason);
+extern void ui_mp_connect_failed(const char *addr); /* menu join failed: tell the player, wait for a click */
 
 /* 1oom-mp: render a battle for a non-acting (spectating) player, with a banner. */
 struct battle_s;

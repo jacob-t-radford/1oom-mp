@@ -1,5 +1,6 @@
 /* 1oom-mp: simultaneous-turn MP protocol + server/client loops over net.c. */
 #include "mp.h"
+#include "log.h"
 #include "net.h"
 
 #include <stdio.h>
@@ -8,8 +9,10 @@
 #include <unistd.h>
 #include <time.h>
 
-#define MP_ERR(...) do { fprintf(stderr, "mp: " __VA_ARGS__); fflush(stderr); } while (0)
-#define MP_MSG(...) do { fprintf(stdout, "mp: " __VA_ARGS__); fflush(stdout); } while (0)
+/* through the real logger, so a menu-spawned server's -log file captures joins and
+   rejection reasons (stdout/stderr of a background spawn go nowhere) */
+#define MP_ERR(...) log_error("mp: " __VA_ARGS__)
+#define MP_MSG(...) log_message("mp: " __VA_ARGS__)
 
 /* ---- message framing: an mp message is a net frame of [u16 id][payload] ---- */
 

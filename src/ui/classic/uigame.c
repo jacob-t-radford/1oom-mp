@@ -1471,6 +1471,22 @@ int ui_mp_lobby_run(int my_id)
             }
         }
 
+        if (!lob.resume && (lob.open_lobby != 0) && (lob.cap > lob.num_humans)) {
+            /* open seats: the lobby holds room for (cap - joined) more humans -- draw them,
+               so "Max Players: 4" visibly means 4 (they fill in as people join) */
+            int extra = lob.cap - lob.num_humans;
+            for (int k = 0; (k < extra) && ((total + k) < MP_MAX_PLAYERS); ++k) {
+                int i2 = total + k;
+                int x0 = 4 + (i2 / 3) * 160;
+                int y0 = 20 + (i2 % 3) * 50;
+                ui_draw_box1(x0, y0, x0 + 41, y0 + 35, 0x9b, 0x9b, ui_scale);
+                ui_draw_filled_rect(x0 + 1, y0 + 1, x0 + 40, y0 + 34, 0, ui_scale);
+                lbxfont_select(5, 0xf, 0, 0);
+                lbxfont_print_str_center(x0 + 21, y0 + 14, "OPEN", UI_SCREEN_W, ui_scale);
+                lbxfont_print_str_normal(x0 + 46, y0 + 13, "waiting for a player...", UI_SCREEN_W, ui_scale);
+            }
+        }
+
         /* settings strip: galaxy size, AI difficulty, AI count, turn timer.
            Galaxy and Diff keep their original widths (Diff needs 120px for "Diff: Impossible").
            The original AI box (x=232..318) is split into AI (x=232..271) and Timer (x=275..318).
@@ -1600,6 +1616,38 @@ int ui_mp_battle_watch_prompt(void)
     oi = uiobj_handle_input_cond();
     ui_delay_ticks_or_click(2);
     return (oi == oi_w) ? 1 : 0;
+}
+
+/* 1oom-mp: joining from the menu failed -- say so and wait for a click, instead of silently
+   dropping back to the menu. Runs in the menu context (palette possibly faded to black). */
+void ui_mp_connect_failed(const char *addr)
+{
+    lbxpal_select(2, -1, 0);
+    lbxpal_build_colortables();
+    lbxpal_set_update_range(0, 255); /* the menu's exit fade left the hardware palette black */
+    {   /* force ramp 0xf to the brightest palette entry (the lobby's readable-text trick) */
+        const uint8_t *pal = lbxpal_fontcolors - 0x300;
+        int best = 0xff, bestsum = -1;
+        for (int i = 0; i < 256; ++i) {
+            int v = (int)pal[i * 3] + pal[i * 3 + 1] + pal[i * 3 + 2];
+            if (v > bestsum) { bestsum = v; best = i; }
+        }
+        for (int k = 0; k < 16; ++k) { lbxpal_fontcolors[(0xf << 4) + k] = (uint8_t)best; }
+    }
+    uiobj_table_clear();
+    ui_draw_erase_buf();
+    lbxfont_select(2, 0xf, 0, 0);
+    lbxfont_print_str_center(160, 60, "COULD NOT CONNECT", UI_SCREEN_W, ui_scale);
+    lbxfont_select(0, 0xf, 0, 0);
+    lbxfont_print_str_center(160, 80, addr, UI_SCREEN_W, ui_scale);
+    lbxfont_print_str_center(160, 100, "Check the address, and that the host's lobby is open.", UI_SCREEN_W, ui_scale);
+    lbxfont_print_str_center(160, 110, "Version mismatch? Run the update on both machines and retry.", UI_SCREEN_W, ui_scale);
+    lbxfont_select(2, 0xf, 0, 0);
+    lbxfont_print_str_center(160, 150, "click to go back", UI_SCREEN_W, ui_scale);
+    uiobj_finish_frame();
+    ui_draw_copy_buf();
+    hw_video_copy_back_to_page2();
+    uiobj_input_wait();
 }
 
 void ui_mp_wait(int reason)

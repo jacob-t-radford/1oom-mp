@@ -131,6 +131,11 @@ void ui_game_end(struct game_s *g)
 {
 }
 
+void ui_mp_connect_failed(const char *addr)
+{
+    printf("MP: could not connect to %s\n", addr);
+}
+
 void ui_mp_wait(int reason)
 {
     (void)reason; /* headless: no waiting screen (mp.c paces the wait) */

@@ -1106,6 +1106,11 @@ void ui_copyprotection_lose(struct game_s *g, struct game_end_s *ge)
 {
 }
 
+void ui_mp_connect_failed(const char *addr)
+{
+    (void)addr;
+}
+
 void ui_mp_wait(int reason)
 {
     (void)reason; /* headless server: never called (server side doesn't wait on a UI) */
