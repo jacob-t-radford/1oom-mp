@@ -25,14 +25,22 @@ DATA="$ROOT/game"                          # game data (LBX etc.)
 OUTDIR="$ROOT/win-bundle"
 BUNDLE="$OUTDIR/1oom-mp"
 
-[ -n "$LLVM" ]   && [ -d "$LLVM" ]   || { echo "ERROR: llvm-mingw toolchain not found in $ROOT (expected llvm-mingw-*-macos-universal)"; exit 1; }
+# toolchain: use a cross-gcc already on PATH if there is one (CI: apt gcc-mingw-w64-x86-64),
+# else the workspace llvm-mingw (the macOS setup)
+if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    LLVMBIN=""
+else
+    [ -n "$LLVM" ] && [ -d "$LLVM" ] || { echo "ERROR: no x86_64-w64-mingw32-gcc on PATH and no llvm-mingw in $ROOT (expected llvm-mingw-*-macos-universal)"; exit 1; }
+    LLVMBIN="$LLVM/bin:"
+fi
 [ -n "$SDLDIR" ] && [ -d "$SDLDIR" ] || { echo "ERROR: SDL2-mingw not found in $ROOT (expected sdl2-mingw/SDL2-*/x86_64-w64-mingw32)"; exit 1; }
 [ -d "$DATA" ]   || { echo "ERROR: game data dir not found: $DATA"; exit 1; }
-export PATH="$LLVM/bin:$SDLDIR/bin:$PATH"
+export PATH="${LLVMBIN}$SDLDIR/bin:$PATH"
 
 # 1. fresh copy of the source (picks up uncommitted fixes; does NOT disturb the Mac build)
 rsync -a --exclude='.git' --exclude='build-win' --exclude='build-win.sh' "$SRC/" "$WORK/"
 make -C "$WORK" distclean >/dev/null 2>&1 || true
+[ -x "$WORK/configure" ] || ( cd "$WORK" && autoreconf -i )   # fresh git checkout (CI) has no generated configure
 
 # 2. cross-configure: audio ON, no SDL1/X11, link Winsock (ws2_32 -- net.c needs it on Windows)
 ( cd "$WORK" && sdl2_config="$SDLDIR/bin/sdl2-config" ./configure --host=x86_64-w64-mingw32 \
@@ -105,8 +113,39 @@ cat > "$BUNDLE/Play Solo.bat" <<'BAT'
 start "" "%~dp0Play.exe" -data "%~dp0data"
 BAT
 
-# 4b. self-updater: downloads the latest published no-data update zip from GitHub releases and
-#     unpacks it over this folder (exes/dlls/bats only -- the data/ folder is never touched).
+# 4b. self-updater. Two flavors, chosen by whether the family read-token exists:
+#     - PRIVATE (preferred): ~/.config/1oom/release_token_ro holds a fine-grained GitHub token
+#       (Contents: read-only, scoped to jacob-t-radford/1oom-mp-releases). It's baked into
+#       Update.bat, which then pulls the latest release from the private repo via the API.
+#     - PUBLIC fallback (no token file): the old public-releases URL on the code repo.
+#     Either way only exes/dlls/bats are replaced -- the data/ folder is never touched.
+TOKEN_RO_FILE="$HOME/.config/1oom/release_token_ro"
+if [ -f "$TOKEN_RO_FILE" ]; then
+cat > "$BUNDLE/Update.bat" <<'BAT'
+@echo off
+title Master of Orion - Update
+echo Downloading the latest version...
+powershell -NoProfile -Command "try { $t='__RELEASE_TOKEN__'; $h=@{Authorization=('Bearer '+$t)}; $r=Invoke-RestMethod -Headers $h -Uri 'https://api.github.com/repos/jacob-t-radford/1oom-mp-releases/releases/latest'; $u=($r.assets | Where-Object name -eq '1oom-mp-update.zip').url; & curl.exe -sL -H ('Authorization: Bearer '+$t) -H 'Accept: application/octet-stream' -o ($env:TEMP+'\1oom-mp-update.zip') $u } catch { exit 1 }; if (-not (Test-Path ($env:TEMP+'\1oom-mp-update.zip'))) { exit 1 }"
+if errorlevel 1 goto fail
+echo Installing...
+taskkill /f /im Play.exe >nul 2>&1
+taskkill /f /im Server.exe >nul 2>&1
+powershell -NoProfile -Command "Expand-Archive -Force ($env:TEMP+'\1oom-mp-update.zip') '%~dp0'"
+if errorlevel 1 goto fail
+del "%TEMP%\1oom-mp-update.zip" >nul 2>&1
+echo.
+echo Updated! Double-click Play.exe to play.
+pause
+exit /b 0
+:fail
+echo.
+echo Update failed (no internet, or no release published yet).
+pause
+exit /b 1
+BAT
+perl -pi -e "s/__RELEASE_TOKEN__/$(tr -d ' \t\r\n' < "$TOKEN_RO_FILE")/" "$BUNDLE/Update.bat"
+else
+echo "NOTE: no $TOKEN_RO_FILE -- Update.bat will use the PUBLIC releases URL (family updates need the private-repo token)"
 cat > "$BUNDLE/Update.bat" <<'BAT'
 @echo off
 title Master of Orion - Update
@@ -129,6 +168,7 @@ echo Update failed (no internet, or no release published yet).
 pause
 exit /b 1
 BAT
+fi
 perl -pi -e 's/(?<!\r)\n/\r\n/g' "$BUNDLE/"*.bat   # Windows (CRLF) line endings
 
 # 5. zip: the full unzip-and-play bundle (with data -- hand to people who own the game, don't post),

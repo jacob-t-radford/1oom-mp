@@ -66,6 +66,8 @@ The command-line flags below still work and do the same things.
   *unzip-and-double-click* Windows bundle (`1oom-mp.zip`). Its **`Play Together.bat`** launcher just
   asks **Host or Join** — no command line needed. (Building the bundle needs an `llvm-mingw` +
   `SDL2-mingw` cross-toolchain; the resulting zip is what you hand to friends.)
+  `publish-release.sh` can publish the bundle as a release on a **private** GitHub repo for your
+  group — the bundle's `Update.bat` then self-updates from there (see the script headers).
 
 ### 2. One person hosts
 
