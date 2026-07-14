@@ -124,13 +124,26 @@ if [ -f "$TOKEN_RO_FILE" ]; then
 cat > "$BUNDLE/Update.bat" <<'BAT'
 @echo off
 title Master of Orion - Update
+rem re-launch from a temp copy: the update replaces Update.bat itself, and Windows
+rem misbehaves when a running .bat is overwritten under it
+if "%~1"=="" (
+    copy /y "%~f0" "%TEMP%\1oom-mp-updater.bat" >nul
+    "%TEMP%\1oom-mp-updater.bat" "%~dp0"
+)
+set "GAMEDIR=%~1"
 echo Downloading the latest version...
-powershell -NoProfile -Command "try { $t='__RELEASE_TOKEN__'; $h=@{Authorization=('Bearer '+$t)}; $r=Invoke-RestMethod -Headers $h -Uri 'https://api.github.com/repos/jacob-t-radford/1oom-mp-releases/releases/latest'; $u=($r.assets | Where-Object name -eq '1oom-mp-update.zip').url; & curl.exe -sL -H ('Authorization: Bearer '+$t) -H 'Accept: application/octet-stream' -o ($env:TEMP+'\1oom-mp-update.zip') $u } catch { exit 1 }; if (-not (Test-Path ($env:TEMP+'\1oom-mp-update.zip'))) { exit 1 }"
+powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://github.com/jacob-t-radford/1oom-mp/releases/latest/download/1oom-mp-update.zip' -OutFile ($env:TEMP+'\1oom-mp-update.zip')"
 if errorlevel 1 goto fail
 echo Installing...
 taskkill /f /im Play.exe >nul 2>&1
 taskkill /f /im Server.exe >nul 2>&1
-powershell -NoProfile -Command "Expand-Archive -Force ($env:TEMP+'\1oom-mp-update.zip') '%~dp0'"
+timeout /t 2 /nobreak >nul
+powershell -NoProfile -Command "Expand-Archive -Force ($env:TEMP+'\1oom-mp-update.zip') '%GAMEDIR%'"
+if errorlevel 1 (
+    echo A file was still in use -- retrying...
+    timeout /t 3 /nobreak >nul
+    powershell -NoProfile -Command "Expand-Archive -Force ($env:TEMP+'\1oom-mp-update.zip') '%GAMEDIR%'"
+)
 if errorlevel 1 goto fail
 del "%TEMP%\1oom-mp-update.zip" >nul 2>&1
 echo.
@@ -139,7 +152,7 @@ pause
 exit /b 0
 :fail
 echo.
-echo Update failed (no internet, or no release published yet).
+echo Update failed. Is the game still running? Close it and run Update.bat again.
 pause
 exit /b 1
 BAT
