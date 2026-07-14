@@ -917,8 +917,25 @@ static main_menu_action_t main_menu_do(struct main_menu_data_s *d)
 
 /* a plain full-screen list chooser: click an entry to pick it, Esc/Back to cancel. Returns the
    picked index or -1. */
+/* 1oom-mp: the menu-context palette maps most font ramps to murky blues (and 0xd to
+   near-black), so these custom MP screens were barely readable. Force ramp 0xf to the
+   palette's brightest entry -- the same trick the lobby uses -- and draw everything with it.
+   Returns that brightest palette index (used for the text-input cursor). */
+static uint8_t mm_mp_font_white(void)
+{
+    const uint8_t *pal = lbxpal_fontcolors - 0x300;
+    int best = 0xff, bestsum = -1;
+    for (int i = 0; i < 256; ++i) {
+        int v = (int)pal[i * 3] + pal[i * 3 + 1] + pal[i * 3 + 2];
+        if (v > bestsum) { bestsum = v; best = i; }
+    }
+    for (int k = 0; k < 16; ++k) { lbxpal_fontcolors[(0xf << 4) + k] = (uint8_t)best; }
+    return (uint8_t)best;
+}
+
 static int mm_mp_choose(const char *title, char items[][96], int n)
 {
+    mm_mp_font_white();
     bool flag_done = false;
     int picked = -1;
     int16_t oi_esc = UIOBJI_INVALID, oi_back = UIOBJI_INVALID, oi_item[12];
@@ -942,19 +959,19 @@ static int mm_mp_choose(const char *title, char items[][96], int n)
         }
         uiobj_table_clear();
         ui_draw_erase_buf();
-        lbxfont_select(2, 0xd, 0, 0);
+        lbxfont_select(2, 0xf, 0, 0);
         lbxfont_print_str_center(160, 14, title, UI_SCREEN_W, ui_scale);
         if (n == 0) {
-            lbxfont_select(0, 6, 0, 0);
+            lbxfont_select(0, 0xf, 0, 0);
             lbxfont_print_str_center(160, 90, "No multiplayer saves found on this machine.", UI_SCREEN_W, ui_scale);
         }
         for (int i = 0; i < n; ++i) {
             int y = 34 + i * 12;
-            lbxfont_select(0, 1, 0, 0);
+            lbxfont_select(0, 0xf, 0, 0);
             lbxfont_print_str_center(160, y, items[i], UI_SCREEN_W, ui_scale);
             oi_item[i] = uiobj_add_mousearea(20, y - 2, 300, y + 8, (i < 9) ? (MOO_KEY_1 + i) : MOO_KEY_UNKNOWN);
         }
-        lbxfont_select(2, 6, 0, 0);
+        lbxfont_select(2, 0xf, 0, 0);
         lbxfont_print_str_center(160, 184, "[ Back ]", UI_SCREEN_W, ui_scale);
         oi_back = uiobj_add_mousearea(130, 180, 190, 192, MOO_KEY_UNKNOWN);
         oi_esc = uiobj_add_inputkey(MOO_KEY_ESCAPE);
@@ -1062,6 +1079,7 @@ static int mm_mp_scan_saves(struct mm_mp_save_s *tbl, int max)
 static bool mm_mp_screen_host(void)
 {
     bool flag_done = false, confirmed = false;
+    mm_mp_font_white();
     char addrs[6][16];
     int naddr = net_get_local_ipv4(addrs, 6);
     int16_t oi_esc = UIOBJI_INVALID, oi_cancel = UIOBJI_INVALID, oi_start = UIOBJI_INVALID;
@@ -1082,14 +1100,14 @@ static bool mm_mp_screen_host(void)
         }
         uiobj_table_clear();
         ui_draw_erase_buf();
-        lbxfont_select(2, 0xd, 0, 0);
+        lbxfont_select(2, 0xf, 0, 0);
         lbxfont_print_str_center(160, 14, "HOST GAME", UI_SCREEN_W, ui_scale);
-        lbxfont_select(0, 0xd, 0, 0);
+        lbxfont_select(0, 0xf, 0, 0);
         lib_sprintf(buf, sizeof(buf), "The server runs on this machine, seating up to %d players.", (int)mm_mp_humans);
         lbxfont_print_str_center(160, 34, buf, UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(160, 50, "The other players connect to one of these addresses:", UI_SCREEN_W, ui_scale);
         y = 64;
-        lbxfont_select(0, 2, 0, 0);
+        lbxfont_select(0, 0xf, 0, 0);
         if (naddr == 0) {
             lbxfont_print_str_center(160, y, "(no network addresses found)", UI_SCREEN_W, ui_scale);
             y += 12;
@@ -1099,10 +1117,10 @@ static bool mm_mp_screen_host(void)
             lbxfont_print_str_center(160, y, buf, UI_SCREEN_W, ui_scale);
             y += 12;
         }
-        lbxfont_select(0, 6, 0, 0);
+        lbxfont_select(0, 0xf, 0, 0);
         lbxfont_print_str_center(160, y + 6, "A 100.x (Tailscale/VPN) address is best over the internet.", UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(160, y + 18, "You pick races and options together in the lobby.", UI_SCREEN_W, ui_scale);
-        lbxfont_select(2, 6, 0, 0);
+        lbxfont_select(2, 0xf, 0, 0);
         lbxfont_print_str_center(120, 176, "[ Start Hosting ]", UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(215, 176, "[ Back ]", UI_SCREEN_W, ui_scale);
         oi_start = uiobj_add_mousearea(75, 172, 165, 184, MOO_KEY_SPACE);
@@ -1145,27 +1163,31 @@ static bool mm_mp_screen_resume(void)
 static bool mm_mp_screen_join(void)
 {
     static char addr[128];
-    const uint8_t ctbl[] = { 5, 6, 7, 8, 9, 10, 0, 0, 0, 0 };
+    uint8_t ctbl[10];
+    memset(ctbl, mm_mp_font_white(), sizeof(ctbl)); /* cursor blinks in the bright color too */
     if (!addr[0] && ui_mp_last_addr && ui_mp_last_addr[0]) {
         lib_strcpy(addr, ui_mp_last_addr, sizeof(addr)); /* prefill with the last address used */
     }
     while (1) {
         uiobj_table_clear();
         ui_draw_erase_buf();
-        lbxfont_select(2, 0xd, 0, 0);
+        lbxfont_select(2, 0xf, 0, 0);
         lbxfont_print_str_center(160, 14, "JOIN GAME", UI_SCREEN_W, ui_scale);
-        lbxfont_select(0, 0xd, 0, 0);
+        lbxfont_select(0, 0xf, 0, 0);
         lbxfont_print_str_center(160, 48, "Host address:", UI_SCREEN_W, ui_scale);
         ui_draw_filled_rect(78, 62, 242, 74, 0x00, ui_scale);
         ui_draw_line1(78, 75, 242, 75, 0x2f, ui_scale);
-        lbxfont_select(0, 6, 0, 0);
+        lbxfont_select(0, 0xf, 0, 0);
         lbxfont_print_str_center(160, 90, "e.g. 100.89.54.91  (port 24695 is assumed)", UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(160, 104, "Resumed games open a lobby where you CLICK your empire.", UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(160, 114, "Dropped mid-game? Join the same address again to rejoin.", UI_SCREEN_W, ui_scale);
-        lbxfont_select(2, 6, 0, 0);
+        lbxfont_select(2, 0xf, 0, 0);
         lbxfont_print_str_center(160, 150, "just type  -  ENTER connects  -  ESC goes back", UI_SCREEN_W, ui_scale);
         uiobj_finish_frame();
-        lbxfont_select(0, 1, 0, 0);
+        ui_draw_copy_buf(); /* sync both video buffers: the modal below redraws only the field, and
+                               unsynced buffers alternate on screen (rapid flashing) */
+        hw_video_copy_back_to_page2();
+        lbxfont_select(0, 0xf, 0, 0);
         if (!uiobj_read_str(82, 64, 156, addr, sizeof(addr) - 1, 1, false, ctbl)) {
             ui_sound_play_sfx_06();
             return false; /* ESC */

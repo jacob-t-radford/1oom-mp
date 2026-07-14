@@ -209,6 +209,9 @@ static bool ui_mp_save_name_prompt(struct game_s *g, char *name, int namelen)
         lbxfont_select(2, 6, 0, 0);
         lbxfont_print_str_center(160, 120, "just type  -  ENTER saves  -  ESC cancels", UI_SCREEN_W, ui_scale);
         uiobj_finish_frame();
+        ui_draw_copy_buf(); /* sync both video buffers: the modal below redraws only the field, and
+                               unsynced buffers alternate on screen (rapid flashing) */
+        hw_video_copy_back_to_page2();
         lbxfont_select(0, 1, 0, 0);
         if (!uiobj_read_str(82, 96, 156, name, namelen - 1, 1, false, ctbl)) {
             return false; /* ESC */
