@@ -39,6 +39,7 @@
 #include "uisound.h"
 #include "uipal.h"
 #include "uiplanets.h"
+#include "net.h"
 #include "uiraces.h"
 #include "uisearch.h"
 #include "uispecs.h"
@@ -194,22 +195,9 @@ static void ui_mp_diplo_msgbox(struct game_s *g, player_id_t pi, player_id_t pa,
    be empty -> default naming), false on Esc/cancel. */
 static bool ui_mp_save_name_prompt(struct game_s *g, char *name, int namelen)
 {
-    bool flag_done = false, confirmed = false;
-    int16_t oi_input = UIOBJI_INVALID, oi_esc = UIOBJI_INVALID, oi_ok = UIOBJI_INVALID, oi_cancel = UIOBJI_INVALID;
     const uint8_t ctbl[] = { 5, 6, 7, 8, 9, 10, 0, 0, 0, 0 };
-    uiobj_table_clear();
-    while (!flag_done) {
-        int16_t oi;
-        oi = uiobj_handle_input_cond();
-        ui_delay_prepare();
-        if ((oi == oi_esc) || (oi == oi_cancel) || (oi == UIOBJI_ESC)) {
-            ui_sound_play_sfx_06();
-            flag_done = true;
-        } else if ((oi == oi_input) || (oi == oi_ok)) { /* Enter in the field, or OK */
-            ui_sound_play_sfx_24();
-            confirmed = true;
-            flag_done = true;
-        }
+    (void)g;
+    while (1) {
         uiobj_table_clear();
         ui_draw_erase_buf();
         lbxfont_select(2, 0xd, 0, 0);
@@ -218,21 +206,15 @@ static bool ui_mp_save_name_prompt(struct game_s *g, char *name, int namelen)
         lbxfont_print_str_center(160, 80, "Save name (all players get a copy):", UI_SCREEN_W, ui_scale);
         ui_draw_filled_rect(78, 94, 242, 106, 0x00, ui_scale);
         ui_draw_line1(78, 107, 242, 107, 0x2f, ui_scale);
-        lbxfont_select(0, 1, 0, 0);
-        oi_input = uiobj_add_textinput(82, 96, 156, name, namelen - 1, 1, false, true, ctbl, MOO_KEY_UNKNOWN);
         lbxfont_select(2, 6, 0, 0);
-        lbxfont_print_str_center(120, 120, "[ Save ]", UI_SCREEN_W, ui_scale);
-        lbxfont_print_str_center(200, 120, "[ Cancel ]", UI_SCREEN_W, ui_scale);
-        oi_ok = uiobj_add_mousearea(95, 116, 145, 128, MOO_KEY_UNKNOWN);
-        oi_cancel = uiobj_add_mousearea(175, 116, 225, 128, MOO_KEY_UNKNOWN);
-        oi_esc = uiobj_add_inputkey(MOO_KEY_ESCAPE);
-        if (!flag_done) {
-            uiobj_finish_frame();
-            ui_delay_ticks_or_click(1);
+        lbxfont_print_str_center(160, 120, "just type  -  ENTER saves  -  ESC cancels", UI_SCREEN_W, ui_scale);
+        uiobj_finish_frame();
+        lbxfont_select(0, 1, 0, 0);
+        if (!uiobj_read_str(82, 96, 156, name, namelen - 1, 1, false, ctbl)) {
+            return false; /* ESC */
         }
+        if (name[0]) { return true; } /* empty name -> stay on the screen */
     }
-    uiobj_table_clear();
-    return confirmed;
 }
 
 /* 1oom-mp: Esc -> Save in a networked game. The single-player save would only write a LOCAL,
@@ -1349,6 +1331,22 @@ int ui_mp_lobby_run(int my_id)
         for (int k = 0; k < 16; ++k) { lbxpal_fontcolors[(0xf << 4) + k] = (uint8_t)best; }
     }
 
+    char host_line[80];
+    host_line[0] = '\0';
+    if (g_mp_cl_local_server) { /* menu Host/Resume: show what the other players should type into Join */
+        char addrs[6][16];
+        int na = net_get_local_ipv4(addrs, 6);
+        if (na > 0) {
+            int i1 = 0, i2 = -1;
+            for (int i = 0; i < na; ++i) { if (strncmp(addrs[i], "100.", 4) == 0) { i1 = i; break; } } /* Tailscale first */
+            for (int i = 0; i < na; ++i) { if (i != i1) { i2 = i; break; } }
+            if (i2 >= 0) {
+                lib_sprintf(host_line, sizeof(host_line), "PLAYERS JOIN: %s  (or %s)", addrs[i1], addrs[i2]);
+            } else {
+                lib_sprintf(host_line, sizeof(host_line), "PLAYERS JOIN: %s", addrs[i1]);
+            }
+        }
+    }
     while (!done) {
         int16_t oi;
         int16_t oi_my_race = UIOBJI_INVALID, oi_my_flag = UIOBJI_INVALID, oi_ready = UIOBJI_INVALID, oi_leave = UIOBJI_INVALID, oi_start = UIOBJI_INVALID;
@@ -1379,6 +1377,10 @@ int ui_mp_lobby_run(int my_id)
             lbxfont_print_str_center(160, 3, buf, UI_SCREEN_W, ui_scale);
         } else {
             lbxfont_print_str_center(160, 3, "MULTIPLAYER  LOBBY", UI_SCREEN_W, ui_scale);
+        }
+        if (host_line[0]) {
+            lbxfont_select(2, 0xf, 0, 0);
+            lbxfont_print_str_center(160, 11, host_line, UI_SCREEN_W, ui_scale);
         }
         uiobj_table_clear();
 

@@ -1140,31 +1140,16 @@ static bool mm_mp_screen_resume(void)
     return true;
 }
 
-/* JOIN: type (or reuse) the host's address; Claim Race applies when joining a resumed game. */
+/* JOIN: type the host's address -- the field is active immediately (no clicking needed);
+   ENTER connects, ESC goes back. Prefilled with the last address used. */
 static bool mm_mp_screen_join(void)
 {
     static char addr[128];
-    bool flag_done = false, confirmed = false;
-    int16_t oi_esc = UIOBJI_INVALID, oi_cancel = UIOBJI_INVALID, oi_ok = UIOBJI_INVALID, oi_input = UIOBJI_INVALID;
     const uint8_t ctbl[] = { 5, 6, 7, 8, 9, 10, 0, 0, 0, 0 };
     if (!addr[0] && ui_mp_last_addr && ui_mp_last_addr[0]) {
         lib_strcpy(addr, ui_mp_last_addr, sizeof(addr)); /* prefill with the last address used */
     }
-    uiobj_table_clear();
-    while (!flag_done) {
-        int16_t oi;
-        oi = uiobj_handle_input_cond();
-        ui_delay_prepare();
-        if ((oi == oi_esc) || (oi == oi_cancel) || (oi == UIOBJI_ESC)) {
-            ui_sound_play_sfx_06();
-            flag_done = true;
-        } else if ((oi == oi_input) || (oi == oi_ok)) {
-            if (addr[0]) {
-                ui_sound_play_sfx_24();
-                confirmed = true;
-                flag_done = true;
-            }
-        }
+    while (1) {
         uiobj_table_clear();
         ui_draw_erase_buf();
         lbxfont_select(2, 0xd, 0, 0);
@@ -1173,31 +1158,26 @@ static bool mm_mp_screen_join(void)
         lbxfont_print_str_center(160, 48, "Host address:", UI_SCREEN_W, ui_scale);
         ui_draw_filled_rect(78, 62, 242, 74, 0x00, ui_scale);
         ui_draw_line1(78, 75, 242, 75, 0x2f, ui_scale);
-        lbxfont_select(0, 1, 0, 0);
-        oi_input = uiobj_add_textinput(82, 64, 156, addr, sizeof(addr) - 1, 1, false, true, ctbl, MOO_KEY_UNKNOWN);
         lbxfont_select(0, 6, 0, 0);
         lbxfont_print_str_center(160, 90, "e.g. 100.89.54.91  (port 24695 is assumed)", UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(160, 104, "Resumed games open a lobby where you CLICK your empire.", UI_SCREEN_W, ui_scale);
         lbxfont_print_str_center(160, 114, "Dropped mid-game? Join the same address again to rejoin.", UI_SCREEN_W, ui_scale);
         lbxfont_select(2, 6, 0, 0);
-        lbxfont_print_str_center(120, 150, "[ Connect ]", UI_SCREEN_W, ui_scale);
-        lbxfont_print_str_center(205, 150, "[ Back ]", UI_SCREEN_W, ui_scale);
-        oi_ok = uiobj_add_mousearea(90, 146, 150, 158, MOO_KEY_UNKNOWN);
-        oi_cancel = uiobj_add_mousearea(180, 146, 230, 158, MOO_KEY_UNKNOWN);
-        oi_esc = uiobj_add_inputkey(MOO_KEY_ESCAPE);
-        if (!flag_done) {
-            uiobj_finish_frame();
-            ui_delay_ticks_or_click(1);
+        lbxfont_print_str_center(160, 150, "just type  -  ENTER connects  -  ESC goes back", UI_SCREEN_W, ui_scale);
+        uiobj_finish_frame();
+        lbxfont_select(0, 1, 0, 0);
+        if (!uiobj_read_str(82, 64, 156, addr, sizeof(addr) - 1, 1, false, ctbl)) {
+            ui_sound_play_sfx_06();
+            return false; /* ESC */
         }
+        if (addr[0]) { break; } /* empty -> stay on the screen */
     }
-    uiobj_table_clear();
-    if (confirmed) {
-        lib_strcpy(ui_mp_setup.join_addr, addr, sizeof(ui_mp_setup.join_addr));
-        ui_mp_setup.req_race = -1; /* reconnects auto-reclaim by address; resume uses the seat lobby */
-        ui_mp_setup.load_path[0] = '\0';
-        ui_mp_setup.humans = 2;
-    }
-    return confirmed;
+    ui_sound_play_sfx_24();
+    lib_strcpy(ui_mp_setup.join_addr, addr, sizeof(ui_mp_setup.join_addr));
+    ui_mp_setup.req_race = -1; /* reconnects auto-reclaim by address; resume uses the seat lobby */
+    ui_mp_setup.load_path[0] = '\0';
+    ui_mp_setup.humans = 2;
+    return true;
 }
 
 /* -------------------------------------------------------------------------- */

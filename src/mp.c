@@ -169,6 +169,7 @@ void (*g_mp_cl_diplo_send)(uint16_t, const uint8_t *, int) = NULL;
 void (*g_mp_cl_timer_notify)(int) = NULL;
 int g_mp_cl_req_race = -1; /* 1oom-mp: -mprace request for a resumed game (-1 = no preference / connection order) */
 bool g_mp_cl_game_started = false; /* 1oom-mp: did this session load an initial game state? (a spawned server for a session that never started is reaped on exit) */
+bool g_mp_cl_local_server = false; /* 1oom-mp: menu Host/Resume -- the lobby shows this machine's addresses for the others to join */
 uint8_t g_mp_cl_ready_mask = 0;     /* 1oom-mp: latest READY_STATUS bitmask (bit i = player i ready/dropped) */
 uint8_t g_mp_cl_ready_nplayers = 0; /* 0 = no status yet */
 uint8_t g_mp_cl_conn_mask = 0xff;   /* 1oom-mp: bit i = player i's client is connected (drop notice) */

@@ -282,6 +282,7 @@ extern void (*g_mp_chat_recv)(const void *data, int len);
    with that race instead of the next free slot). -1 = no preference (connection order). */
 extern int g_mp_cl_req_race;
 extern bool g_mp_cl_game_started; /* did this client session load an initial state? */
+extern bool g_mp_cl_local_server; /* the server runs on THIS machine (menu Host/Resume) -- lobby shows our addresses */
 
 /* client save-sync hooks (set by the game layer): GAME_META delivers the save-header identity;
    SAVE_NAMED delivers a player-named snapshot for this machine to store locally. */

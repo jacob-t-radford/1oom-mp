@@ -2728,6 +2728,7 @@ static int game_mp_menu_launch(int action) {
     int spawned = -1, rc;
     game_aux_shutdown(&game_aux); /* the menu path inited it; game_mp_join_addr re-inits */
     g_mp_cl_req_race = ui_mp_setup.req_race;
+    g_mp_cl_local_server = ((action == MAIN_MENU_ACT_MP_HOST) || (action == MAIN_MENU_ACT_MP_RESUME));
     if (((action == MAIN_MENU_ACT_MP_HOST) || (action == MAIN_MENU_ACT_MP_RESUME)) && net_probe_local_port(24695)) {
         /* a server from a previous session (e.g. a crashed client) is still running on this machine --
            rejoin it instead of spawning a second one that couldn't bind the port anyway */
