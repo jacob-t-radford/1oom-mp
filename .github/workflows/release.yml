@@ -1,0 +1,57 @@
+# Auto-release: every push to master cross-builds the Windows bundle and publishes it as a
+# release on the PRIVATE distribution repo (jacob-t-radford/1oom-mp-releases). Family machines
+# pick it up via the bundle's Update.bat (Windows) or git pull + make (Mac).
+#
+# Needs two repository secrets (Settings -> Secrets and variables -> Actions):
+#   RELEASE_TOKEN_RO -- fine-grained token, Contents: READ on 1oom-mp-releases
+#                       (baked into Update.bat; also fetches the game data + moo1-data.zip)
+#   RELEASE_TOKEN_RW -- fine-grained token, Contents: READ+WRITE on 1oom-mp-releases
+#                       (creates the release and uploads the zips)
+# The game data (copyrighted) lives ONLY in the private repo, as moo1-data.zip.
+name: release
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  windows-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc-mingw-w64-x86-64 autoconf automake zip unzip curl rsync
+
+      - name: Lay out the workspace (SDL2-mingw + game data where build-win.sh expects them)
+        env:
+          TOKEN_RO: ${{ secrets.RELEASE_TOKEN_RO }}
+        run: |
+          ROOT="$(cd "$GITHUB_WORKSPACE/../.." && pwd)"
+          mkdir -p "$ROOT/sdl2-mingw" "$ROOT/game"
+          curl -sfL -o /tmp/sdl2.tar.gz https://github.com/libsdl-org/SDL/releases/download/release-2.28.5/SDL2-devel-2.28.5-mingw.tar.gz
+          curl -sfL -o /tmp/mix.tar.gz  https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.0/SDL2_mixer-devel-2.8.0-mingw.tar.gz
+          tar -xzf /tmp/sdl2.tar.gz -C "$ROOT/sdl2-mingw"
+          tar -xzf /tmp/mix.tar.gz -C /tmp
+          cp -a /tmp/SDL2_mixer-2.8.0/x86_64-w64-mingw32/. "$ROOT/sdl2-mingw/SDL2-2.28.5/x86_64-w64-mingw32/"
+          curl -sfL -H "Authorization: Bearer $TOKEN_RO" \
+              -o /tmp/moo1-data.zip https://raw.githubusercontent.com/jacob-t-radford/1oom-mp-releases/main/moo1-data.zip
+          unzip -q /tmp/moo1-data.zip -d "$ROOT/game"
+
+      - name: Build the bundle
+        env:
+          TOKEN_RO: ${{ secrets.RELEASE_TOKEN_RO }}
+        run: |
+          mkdir -p ~/.config/1oom
+          printf '%s' "$TOKEN_RO" > ~/.config/1oom/release_token_ro
+          bash build-win.sh
+
+      - name: Publish to the private releases repo
+        env:
+          TOKEN_RW: ${{ secrets.RELEASE_TOKEN_RW }}
+        run: |
+          mkdir -p ~/.config/1oom
+          printf '%s' "$TOKEN_RW" > ~/.config/1oom/release_token_rw
+          bash publish-release.sh --no-build
