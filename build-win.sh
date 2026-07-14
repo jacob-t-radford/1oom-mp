@@ -131,6 +131,7 @@ if [ -f "$TOKEN_RO_FILE" ]; then
 cat > "$BUNDLE/Update.ps1" <<'PS1'
 # 1oom-mp updater: fetch the latest release from the private repo and install it in place.
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 try {
     $t = '__RELEASE_TOKEN__'
     $dir = $PSScriptRoot
@@ -142,8 +143,7 @@ try {
     & curl.exe -sL -H ('Authorization: Bearer ' + $t) -H 'Accept: application/octet-stream' -o $zip $u
     if (-not (Test-Path $zip)) { throw 'download failed (no internet?)' }
     Write-Host ('Installing ' + $r.tag_name + ' ...')
-    & taskkill /f /im Play.exe 2>$null | Out-Null
-    & taskkill /f /im Server.exe 2>$null | Out-Null
+    Stop-Process -Name Play, Server -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
     try {
         Expand-Archive -Force -Path $zip -DestinationPath $dir
@@ -175,8 +175,7 @@ try {
     $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest -Uri 'https://github.com/jacob-t-radford/1oom-mp/releases/latest/download/1oom-mp-update.zip' -OutFile $zip
     Write-Host 'Installing...'
-    & taskkill /f /im Play.exe 2>$null | Out-Null
-    & taskkill /f /im Server.exe 2>$null | Out-Null
+    Stop-Process -Name Play, Server -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
     try {
         Expand-Archive -Force -Path $zip -DestinationPath $dir
