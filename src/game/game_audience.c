@@ -329,6 +329,48 @@ static void game_audience_ai_breaks_alliance(struct audience_s *au)
     game_audience_set_dtype(au, 77, 3);
 }
 
+/* 1oom-mp teams (server): a human is accepting the AI's peace/NAP/alliance offer mid-relay.
+   The client-side consensus hook can't run here (it lives in the player UIs), so ask each other
+   human teammate to assent through the SAME audience relay the offer itself used -- everyone is
+   at the wait screen during resolution, so the prompt shows immediately. Returns true iff a
+   teammate refused (the caller must NOT apply the stance); the accepter is told inside their
+   still-open audience. A disconnected teammate's relay falls back to option 0 = assent (their
+   empire coasts); AI teammates always follow the team. */
+static bool game_audience_mp_team_consent(struct audience_s *au, const char *act)
+{
+    struct game_s *g = au->g;
+    player_id_t ph = au->ph, pa = au->pa;
+    bool refused = false;
+    if (!game_mp_is_server) { return false; }
+    if (g->mp_team[ph] == 0) { return false; }
+    for (player_id_t t = PLAYER_0; (t < g->players) && !refused; ++t) {
+        struct audience_s tau;
+        char msg[160];
+        if ((t == ph) || (g->mp_team[t] != g->mp_team[ph]) || IS_AI(g, t)) { continue; }
+        memset(&tau, 0, sizeof(tau));
+        tau.g = g; tau.ph = t; tau.pa = ph; /* the accepting ALLY fronts the prompt */
+        ui_audience_start(&tau);
+        lib_sprintf(msg, sizeof(msg), "Our ally wishes to %s the %s. Do you assent?", act, game_str_tbl_race[g->eto[pa].race]);
+        tau.buf = msg;
+        tau.strtbl[0] = "Assent";
+        tau.strtbl[1] = "Refuse";
+        tau.strtbl[2] = NULL;
+        tau.condtbl = NULL;
+        if (ui_audience_ask4(&tau) != 0) { refused = true; }
+        ui_audience_end(&tau);
+    }
+    if (refused) { /* the accepter finds out inside their still-open audience */
+        game_audience_clear_strtbl(au);
+        lib_strcpy(au->diplo_msg, "OUR ALLIES REFUSE THE ARRANGEMENT. THE DEAL IS OFF.", AUDIENCE_DIPLO_MSG_SIZE);
+        au->buf = au->diplo_msg;
+        au->strtbl[0] = "Understood";
+        au->strtbl[1] = NULL;
+        au->condtbl = NULL;
+        ui_audience_ask4(au);
+    }
+    return refused;
+}
+
 static bool game_audience_ai_offers_treaty(struct audience_s *au)
 {
     struct game_s *g = au->g;
@@ -363,16 +405,19 @@ static bool game_audience_ai_offers_treaty(struct audience_s *au)
     if (selected == 0) {  /* Player accepted. */
         switch (au->dtype) {
             case 24:
-                /* 1oom-mp teams: accepting a NAP with a common enemy is a team stance -> consensus first,
-                   same as proposing one (game_audience_do). Apply directly only when there's no team. */
-                if (!(g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_NAP))) {
+                /* 1oom-mp teams: accepting a NAP is a team stance -> consensus first. On the server
+                   (relayed AI offer) ask the teammates over the audience relay; on a client use the
+                   async vote hook. Apply directly only when there's no team / nobody to ask. */
+                if (!(game_mp_is_server ? game_audience_mp_team_consent(au, "sign a non-aggression pact with")
+                                        : (g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_NAP)))) {
                     game_diplo_set_treaty(g, ph, pa, TREATY_NONAGGRESSION);
                 }
                 break;
             case 25:
                 /* 1oom-mp teams: an alliance binds the whole team (it can drag everyone into the
-                   ally's wars) -> team consensus first, like peace/NAP. Direct only with no team. */
-                if (!(g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_ALLIANCE))) {
+                   ally's wars) -> team consensus first, like peace/NAP. Server: relay-ask; client: hook. */
+                if (!(game_mp_is_server ? game_audience_mp_team_consent(au, "form an alliance with")
+                                        : (g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_ALLIANCE)))) {
                     game_diplo_set_treaty(g, ph, pa, TREATY_ALLIANCE);
                 }
                 break;
@@ -384,9 +429,10 @@ static bool game_audience_ai_offers_treaty(struct audience_s *au)
                 game_diplo_break_treaty(g, ph, eh->au_ask_break_treaty[pa]);
                 break;
             case 30:
-                /* 1oom-mp teams: accepting peace with a common enemy is a team stance -> consensus first
-                   (the AI already agreed; now our allies must too). Apply directly only with no team. */
-                if (!(g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_PEACE))) {
+                /* 1oom-mp teams: accepting peace is a team stance -> consensus first (the AI already
+                   agreed; now our allies must too). Server: relay-ask the teammates; client: hook. */
+                if (!(game_mp_is_server ? game_audience_mp_team_consent(au, "make peace with")
+                                        : (g_mp_team_stance_propose_hook && g_mp_team_stance_propose_hook(g, ph, pa, MP_TEAM_STANCE_PEACE)))) {
                     game_diplo_stop_war(g, ph, pa);
                     if (eh->relation1[pa] < 80) {
                         eh->relation1[pa] += 20;
