@@ -339,7 +339,10 @@ static void mp_diplo_propose_tech(struct game_s *g, player_id_t pi, player_id_t 
     char namebuf[TECH_SPY_MAX][48];
     int want_num = 0, give_num = 0;
     s->spy = pi; s->target = pa; /* techs pa has that pi lacks = what we can RECEIVE */
-    if (game_spy_esp_sub1(g, s, 0, 1) > 0) {
+    /* a6=0: list their FULL research (the espionage callers pass 1 to exclude the newest tech
+       per field -- a spy can't steal what isn't deployed -- but a willing trade has no such
+       rule, and early game that exclusion left BOTH sides with "no technology we lack"). */
+    if (game_spy_esp_sub1(g, s, 0, 0) > 0) {
         want_num = (s->tnum < (AUDIENCE_STR_MAX - 2)) ? s->tnum : (AUDIENCE_STR_MAX - 2); /* leave room for "Forget it" + NULL */
         for (int i = 0; i < want_num; ++i) { want_f[i] = s->tbl_field[i]; want_t[i] = s->tbl_tech2[i]; }
     }
