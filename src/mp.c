@@ -1,6 +1,7 @@
 /* 1oom-mp: simultaneous-turn MP protocol + server/client loops over net.c. */
 #include "mp.h"
 #include "log.h"
+#include "hw.h"
 #include "net.h"
 
 #include <stdio.h>
@@ -964,7 +965,8 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
            the game. Clearing them each turn makes any stalled handshake self-heal at the next turn. */
         for (int i = 0; i < MP_MAX_PLAYERS; ++i) { s_diplo_sess[i].active = false; s_diplo_busy[i] = false; }
         bool all_ready = false;
-        bool timer_sent = false; /* have we broadcast TIMER_START this turn? */
+        int64_t timer_deadline_us = 0;   /* server-side authoritative deadline (0 = not armed) */
+        int64_t timer_last_bcast_us = 0; /* heartbeat: re-broadcast remaining seconds so clients stay in sync */
         int wait_log = 0; /* DIAG: throttle the "waiting" log to ~once/2s while stuck */
         while (!all_ready) {
             /* 1oom-mp: while a slot is dropped, let a re-launched client rejoin that (coasting) empire. */
@@ -1063,16 +1065,30 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
             }
             if (!all_ready) {
                 if ((wait_log++ % 1000) == 0) { MP_MSG("server DIAG: turn %d WAITING -- player %d blocking (ready=%d diplo_busy=%d)\n", turn, block_i, ready[block_i] ? 1 : 0, s_diplo_busy[block_i] ? 1 : 0); }
-                /* arm/cancel the client-side countdown: fire when exactly one live player hasn't readied up yet */
+                /* arm/cancel the client-side countdown: fires when exactly one live player hasn't
+                   readied up yet. The SERVER owns the deadline; the remaining seconds are re-broadcast
+                   every ~3s so a client that processed the start late (mid-replay/sub-screen) converges
+                   instead of running its own skewed countdown. */
                 if (turn_timer_secs > 0 && nlive >= 2) {
                     bool one_left = (nready == nlive - 1);
-                    if (one_left && !timer_sent) {
-                        uint8_t secs = turn_timer_secs;
-                        for (int i = 0; i < num_clients; ++i) { mp_send(conns[i], MP_MSG_TIMER_START, &secs, 1); }
-                        timer_sent = true;
-                    } else if (!one_left && timer_sent) {
+                    if (one_left) {
+                        int64_t now = hw_get_time_us();
+                        if (timer_deadline_us == 0) {
+                            timer_deadline_us = now + (int64_t)turn_timer_secs * 1000000LL;
+                            timer_last_bcast_us = 0;
+                        }
+                        if ((now - timer_last_bcast_us) >= 3000000LL) {
+                            int64_t rem = (timer_deadline_us - now + 999999LL) / 1000000LL;
+                            uint8_t secs;
+                            if (rem < 0) { rem = 0; }
+                            if (rem > 255) { rem = 255; }
+                            secs = (uint8_t)rem;
+                            for (int i = 0; i < num_clients; ++i) { mp_send(conns[i], MP_MSG_TIMER_START, &secs, 1); }
+                            timer_last_bcast_us = now;
+                        }
+                    } else if (timer_deadline_us != 0) {
+                        timer_deadline_us = 0;
                         for (int i = 0; i < num_clients; ++i) { mp_send(conns[i], MP_MSG_TIMER_CANCEL, NULL, 0); }
-                        timer_sent = false;
                     }
                 }
                 usleep(2000);

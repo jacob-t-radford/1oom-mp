@@ -2212,8 +2212,18 @@ static bool mp_orders_changed(void) {
     if (!s_mp_orders_tmp) { return false; }
     int n = game_mp_write_orders(&game, (player_id_t)s_mp_my_pid, s_mp_orders_tmp, s_mp_orders_cap);
     if (n < 0) { n = 0; }
-    if (n != s_mp_orders_len) { return true; }
-    return memcmp(s_mp_orders_tmp, s_mp_orders_buf, (size_t)n) != 0;
+    if (n != s_mp_orders_len) {
+        log_message("MP ORDERSDIAG: len %d -> %d\n", s_mp_orders_len, n); /* 1oom-mp: churn diagnosis */
+        return true;
+    }
+    if (memcmp(s_mp_orders_tmp, s_mp_orders_buf, (size_t)n) != 0) {
+        int off = 0;
+        while ((off < n) && (s_mp_orders_tmp[off] == s_mp_orders_buf[off])) { ++off; }
+        log_message("MP ORDERSDIAG: diff at offset %d/%d (old %02x new %02x)\n",
+                    off, n, s_mp_orders_buf[off], s_mp_orders_tmp[off]);
+        return true;
+    }
+    return false;
 }
 
 /* called by mp.c when TIMER_START (seconds >= 0) or TIMER_CANCEL (seconds < 0) arrives */
@@ -2236,7 +2246,13 @@ static int mp_turn_timer_remaining_s_impl(void) {
     return (int)(rem / 1000000LL);
 }
 /* "Next Turn": toggle my ready lock (submitting my current orders when I lock in). */
-static void mp_turn_set_ready_impl(int ready) { mp_submit_orders(ready != 0); }
+static void mp_turn_set_ready_impl(int ready) {
+    if (!ready && s_mp_timer_active && (hw_get_time_us() >= s_mp_timer_deadline_us)) {
+        return; /* time's up: un-readying is meaningless (the auto-submit would re-lock instantly) --
+                   ignoring it prevents a ready/unready flap against the expired timer */
+    }
+    mp_submit_orders(ready != 0);
+}
 /* pump the socket once; if the countdown expired, auto-submit our orders; returns true once
    the server signalled resolution (planning is over). */
 /* 1oom-mp: transient one-line banner note ("ORDERS UPDATED", "TIME'S UP"), so silent automatic
@@ -2254,8 +2270,7 @@ static const char *mp_turn_note_impl(void) {
 static bool mp_turn_poll_impl(void) {
     if (s_mp_dead && !s_mp_ready) { mp_submit_orders(true); } /* eliminated spectator never blocks the turn */
     if (s_mp_ready && mp_orders_changed()) {
-        mp_submit_orders(true);
-        mp_set_note("ORDERS UPDATED", 15); /* feedback: the post-Ready edit was re-sent */
+        mp_submit_orders(true); /* post-Ready edits re-send silently; you stay ready (no banner noise) */
     }
     if (s_mp_timer_active && !s_mp_ready && hw_get_time_us() >= s_mp_timer_deadline_us) {
         mp_submit_orders(true); /* timer expired: submit whatever we have */
@@ -2267,13 +2282,18 @@ static bool mp_turn_poll_impl(void) {
 /* 1oom-mp: name of a (human) player everyone is still waiting on, for the READY banner -- from the
    server's READY_STATUS broadcast. NULL when unknown or nobody is blocking. */
 static const char *mp_turn_waiting_race_impl(void) {
+    static char buf[96];
+    int n = 0;
     if (g_mp_cl_ready_nplayers == 0) { return NULL; }
+    buf[0] = '\0';
     for (int i = 0; (i < g_mp_cl_ready_nplayers) && (i < (int)game.players) && (i < 8); ++i) {
         if ((i != s_mp_my_pid) && !(g_mp_cl_ready_mask & (1u << i)) && IS_HUMAN(&game, i)) {
-            return game_str_tbl_races[game.eto[i].race];
+            if (n) { lib_strcat(buf, " + ", sizeof(buf)); } /* list EVERY blocker, not just the first */
+            lib_strcat(buf, game_str_tbl_races[game.eto[i].race], sizeof(buf));
+            ++n;
         }
     }
-    return NULL;
+    return n ? buf : NULL;
 }
 
 /* 1oom-mp: race name of a DISCONNECTED human (empire on autopilot until they rejoin), or NULL. */
