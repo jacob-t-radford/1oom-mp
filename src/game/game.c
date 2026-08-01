@@ -2445,6 +2445,8 @@ static int mp_if_setup_game(void *ctx, const struct mp_lobby_s *lobby) {
     (void)ctx;
     int humans = lobby->num_humans;
     int total = humans + lobby->num_ai;
+    s_mp_humans = humans; /* the open lobby GREW past the bootstrap count -- every save header and
+                             GAME_META must carry the real human count, or resumes open a 1-seat lobby */
     if (total < 1) { total = 1; }
     if (total > PLAYER_NUM) { total = PLAYER_NUM; }
     s_mp_opts.players = (uint32_t)total;
