@@ -1054,11 +1054,31 @@ static int mm_mp_scan_saves(struct mm_mp_save_s *tbl, int max)
         }
         closedir(d);
     }
-    /* describe each save (who's in it, what year) so the list is easy to pick from */
+    /* describe each save (who's in it, what year) so the list is easy to pick from. A game FOLDER
+       row peeks its latest turn blob -- unlabeled folder rows made a dead test game look identical
+       to the real one. 1-player games are labeled too, so they can't masquerade as the family game. */
     for (int i = 0; i < n; ++i) {
         int humans = 0, year = 0;
         uint8_t races[PLAYER_NUM];
-        if (game_mp_peek_save(tbl[i].path, &humans, races, &year) == 0) {
+        char peekpath[1300];
+        struct stat st;
+        lib_strcpy(peekpath, tbl[i].path, sizeof(peekpath));
+        if ((stat(tbl[i].path, &st) == 0) && S_ISDIR(st.st_mode)) {
+            DIR *pd = opendir(tbl[i].path);
+            if (pd) {
+                struct dirent *pe;
+                int best = -1;
+                while ((pe = readdir(pd)) != NULL) {
+                    int y = 0;
+                    if ((sscanf(pe->d_name, "y%d.blob", &y) == 1) && (y > best)) {
+                        best = y;
+                        lib_sprintf(peekpath, sizeof(peekpath), "%s/%s", tbl[i].path, pe->d_name);
+                    }
+                }
+                closedir(pd);
+            }
+        }
+        if (game_mp_peek_save(peekpath, &humans, races, &year) == 0) {
             char info[64];
             if ((humans >= 2) && (races[0] < RACE_NUM) && (races[1] < RACE_NUM)) {
                 if (humans == 2) {
@@ -1066,9 +1086,11 @@ static int mm_mp_scan_saves(struct mm_mp_save_s *tbl, int max)
                 } else {
                     lib_sprintf(info, sizeof(info), "  (%d players, y%d)", humans, year);
                 }
-                if (strlen(tbl[i].label) + strlen(info) < sizeof(tbl[i].label)) {
-                    strcat(tbl[i].label, info);
-                }
+            } else {
+                lib_sprintf(info, sizeof(info), "  (1 player, y%d)", year);
+            }
+            if (strlen(tbl[i].label) + strlen(info) < sizeof(tbl[i].label)) {
+                strcat(tbl[i].label, info);
             }
         }
     }
