@@ -1094,7 +1094,13 @@ int mp_server_run(uint16_t port, int num_clients, int max_turns, const mp_game_i
                 usleep(2000);
             }
         }
-        /* everyone is ready: end the clients' planning phase, then apply orders + resolve */
+        /* everyone is ready: end the clients' planning phase, then apply orders + resolve.
+           Cancel any armed countdown first -- a client must never carry an expired timer into
+           the next turn (it would insta-auto-submit with a stuck "TIME'S UP" banner). */
+        if (timer_deadline_us != 0) {
+            timer_deadline_us = 0;
+            for (int i = 0; i < num_clients; ++i) { mp_send(conns[i], MP_MSG_TIMER_CANCEL, NULL, 0); }
+        }
         for (int i = 0; i < num_clients; ++i) {
             if (mp_send(conns[i], MP_MSG_RESOLVE_START, NULL, 0) != 0) { rc = -1; goto done; }
         }
