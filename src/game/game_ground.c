@@ -298,8 +298,10 @@ const uint8_t *game_turn_ground_resolve_all(struct game_s *g)
                 if ((powner != PLAYER_NONE) && (p->inbound[i] > 0)) {
                     /* 1oom-mp teams: troops never invade a teammate -- the locked alliance holds on the
                        ground too. Disband the inbound troops (no reinforcement in v1); the send UI also
-                       blocks targeting a teammate, so this is the authoritative safety net. */
-                    if ((g->mp_team[i] != 0) && (g->mp_team[i] == g->mp_team[powner])) {
+                       blocks targeting a teammate, so this is the authoritative safety net.
+                       OWN planet is exempt: sender == owner only gets here for a REBELLION, and those
+                       troops are the recapture force, not an invasion (the guard used to eat them). */
+                    if ((i != powner) && (g->mp_team[i] != 0) && (g->mp_team[i] == g->mp_team[powner])) {
                         p->inbound[i] = 0; p->total_inbound[i] = 0;
                         continue;
                     }
