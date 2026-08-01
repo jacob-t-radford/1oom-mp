@@ -183,10 +183,12 @@ bool ui_starmap_remove_build_finished(struct game_s *g, player_id_t api, planet_
     int num = g->evn.build_finished_num[api];
     if (num) {
         g->evn.build_finished_num[api] = --num;
-        for (planet_finished_t i = 0; i < FINISHED_SHIP; ++i) {
-            if (BOOLVEC_IS1(p->finished, i)) {
-                BOOLVEC_SET0(p->finished, i);
-                break;
+        if (p->owner == api) { /* 1oom-mp: never consume another player's completion flag */
+            for (planet_finished_t i = 0; i < FINISHED_SHIP; ++i) {
+                if (BOOLVEC_IS1(p->finished, i)) {
+                    BOOLVEC_SET0(p->finished, i);
+                    break;
+                }
             }
         }
         if (!num) {

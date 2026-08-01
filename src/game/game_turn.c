@@ -155,6 +155,11 @@ static void game_turn_init_z_finished(struct game_s *g)
         BOOLVEC_CLEAR(e->contact_broken, PLAYER_NUM);
     }
     memset(g->evn.build_finished_num, 0, sizeof(g->evn.build_finished_num));
+    /* 1oom-mp: clear last turn's finished flags authoritatively -- clients only clear their local
+       copies, so stale flags rode the sync and could resurface as repeated completion popups */
+    for (int pli = 0; pli < g->galaxy_stars; ++pli) {
+        BOOLVEC_CLEAR(g->planet[pli].finished, FINISHED_NUM);
+    }
 }
 
 static void game_turn_send_transport(struct game_s *g)

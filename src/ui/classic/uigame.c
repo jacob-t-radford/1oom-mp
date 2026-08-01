@@ -1001,7 +1001,9 @@ ui_turn_action_t ui_game_turn(struct game_s *g, int *load_game_i_ptr, int pi)
         if (g->evn.build_finished_num[pi] > 0) {
             uint8_t pli;
             for (pli = 0; pli < g->galaxy_stars; ++pli) {
-                if (g->planet[pli].finished[0] & (~(1 << FINISHED_SHIP))) {
+                /* 1oom-mp: OWN planets only -- the synced state carries every player's finished
+                   flags, and the unfiltered walk showed a teammate's completions as ours */
+                if ((g->planet[pli].owner == pi) && (g->planet[pli].finished[0] & (~(1 << FINISHED_SHIP)))) {
                     break;
                 }
             }
